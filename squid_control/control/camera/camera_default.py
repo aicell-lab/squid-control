@@ -734,7 +734,7 @@ class Camera_Simulation(object):
                     
                     print(f"Retrieving Zarr group with workspace={workspace}, artifact_alias={artifact_alias}")
                     
-                    # Get the Zarr group
+                    # Get the Zarr group using the direct zip-files endpoint approach
                     zarr_group = await self.artifact_manager.get_zarr_group(
                         workspace=workspace,
                         artifact_alias=artifact_alias,
@@ -869,23 +869,10 @@ class Camera_Simulation(object):
                 # Use the zarr-based approach to get the image
                 self.image = await get_image_from_zarr()
                 
-                # If no valid image from Zarr, use fallback
-                if self.image is None or getattr(self.image, 'size', 0) == 0 or (isinstance(self.image, np.ndarray) and np.count_nonzero(self.image) == 0):
-                    print("No valid image returned from ZarrImageManager, using fallback")
-                    fallback_path = os.path.join(script_dir, f"example-data/{self.image_paths[channel]}")
-                    print(f"Loading fallback image from: {fallback_path}")
-                    self.image = np.array(Image.open(fallback_path))
-                else:
-                    print(f"Successfully retrieved image from {channel_name} at {x},{y}")
-                    print(f"Image shape: {self.image.shape}, dtype: {self.image.dtype}")
-                    print(f"Image min: {self.image.min()}, max: {self.image.max()}")
             except Exception as e:
                 print(f"Error getting image from ZarrImageManager: {str(e)}")
                 import traceback
                 print(traceback.format_exc())
-                fallback_path = os.path.join(script_dir, f"example-data/{self.image_paths[channel]}")
-                print(f"Loading fallback image from: {fallback_path}")
-                self.image = np.array(Image.open(fallback_path))
 
         # Apply exposure and intensity scaling
         exposure_factor = max(0.1, exposure_time / 100)  # Ensure minimum factor to prevent black images

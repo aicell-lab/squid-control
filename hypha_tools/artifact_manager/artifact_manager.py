@@ -298,33 +298,46 @@ class SquidArtifactManager:
         zip_file_path = f"{timestamp}/{channel}.zip"
 
         try:
-            print(f"Getting download URL for: {art_id}/{zip_file_path}")
-            # Get the direct download URL for the zip file
-            download_url = await self._svc.get_file(art_id, zip_file_path)
-            print(f"Obtained download URL.")
-
-            # Construct the URL for FSStore using fsspec's zip chaining
-            store_url = f"zip::{download_url}"
-
+            print(f"Accessing artifact via zip-files endpoint: {art_id}/{zip_file_path}")
+            
+            # Use the AGENT_LENS_WORKSPACE_TOKEN for authentication
+            token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
+            if not token:
+                raise ValueError("AGENT_LENS_WORKSPACE_TOKEN environment variable is not set")
+            
+            # Base URL for accessing the contents of the zip file
+            base_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/zip-files/{zip_file_path}/~"
+            
+            # Create HTTP headers with authorization
+            headers = {"Authorization": f"Bearer {token}"}
+            
             # Define the synchronous function to open the Zarr store and group
-            def _open_zarr_sync(url, cache_size):
-                print(f"Opening Zarr store: {url}")
-                store = FSStore(url, mode="r")
+            def _open_zarr_sync(url, headers, cache_size):
+                print(f"Opening Zarr store using zip-files endpoint: {url}")
+                
+                # Create an HTTP file system with custom headers
+                http_fs = fsspec.filesystem("http", headers=headers)
+                
+                # Create a mapper for accessing the zip contents
+                store = zarr.storage.FSStore(url, mode="r", fs=http_fs)
+                
                 if cache_size and cache_size > 0:
                     print(f"Using LRU cache with size: {cache_size} bytes")
                     store = LRUStoreCache(store, max_size=cache_size)
-                # It's generally recommended to open the root group
-                root_group = zarr.group(store=store)
-                print(f"Zarr group opened successfully.")
+                
+                # Create a root group from the store
+                root_group = zarr.open_group(store, mode="r")
+                print(f"Zarr group opened successfully")
+                
                 return root_group
 
             # Run the synchronous Zarr operations in a thread pool
             print("Running Zarr open in thread executor...")
-            zarr_group = await asyncio.to_thread(_open_zarr_sync, store_url, cache_max_size)
+            zarr_group = await asyncio.to_thread(_open_zarr_sync, base_url, headers, cache_max_size)
             return zarr_group
 
         except RemoteException as e:
-            print(f"Error getting file URL from Artifact Manager: {e}")
+            print(f"Error accessing zip file via zip-files endpoint: {e}")
             raise FileNotFoundError(f"Could not find or access zip file {zip_file_path} in artifact {art_id}") from e
         except Exception as e:
             print(f"An error occurred while accessing the Zarr group: {e}")
@@ -334,7 +347,7 @@ class SquidArtifactManager:
 
 # Constants
 SERVER_URL = "https://hypha.aicell.io"
-WORKSPACE_TOKEN = os.environ.get("WORKSPACE_TOKEN")
+AGENT_LENS_WORKSPACE_TOKEN = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
 ARTIFACT_ALIAS = "image-map-20250429-treatment-zip"
 DEFAULT_CHANNEL = "BF_LED_matrix_full"
 
@@ -360,7 +373,7 @@ class ZarrImageManager:
     async def connect(self, workspace_token=None, server_url="https://hypha.aicell.io"):
         """Connect to the Artifact Manager service"""
         try:
-            token = workspace_token or os.environ.get("WORKSPACE_TOKEN")
+            token = workspace_token or os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
             if not token:
                 raise ValueError("Workspace token not provided")
             
@@ -411,38 +424,61 @@ class ZarrImageManager:
             return self.zarr_groups_cache[cache_key]
         
         try:
+            # Parse the dataset_id to extract workspace and artifact_alias
+            # dataset_id format is expected to be "workspace/artifact_alias"
+            parts = dataset_id.split('/', 1)
+            if len(parts) != 2:
+                raise ValueError(f"Invalid dataset_id format: {dataset_id}. Expected 'workspace/artifact_alias'")
+            
+            workspace, artifact_alias = parts
+            
             # We no longer need to parse the dataset_id into workspace and artifact_alias
             # Just use the dataset_id directly since it's already the full path
-            print(f"Accessing artifact at: {dataset_id}/{timestamp}/{channel}.zip")
+            print(f"Accessing artifact via zip-files endpoint: {dataset_id}/{timestamp}/{channel}.zip")
             
-            # Get the direct download URL for the zip file
+            # Construct the zip file path
             zip_file_path = f"{timestamp}/{channel}.zip"
-            download_url = await self.artifact_manager._svc.get_file(dataset_id, zip_file_path)
             
-            # Construct the URL for FSStore using fsspec's zip chaining
-            store_url = f"zip::{download_url}"
+            # Instead of getting a download URL that expires, use the direct zip-files endpoint with tilde notation
+            token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
+            if not token:
+                raise ValueError("AGENT_LENS_WORKSPACE_TOKEN environment variable is not set")
+            
+            # Base URL for accessing the contents of the zip file with tilde notation
+            base_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/zip-files/{zip_file_path}/~"
+            
+            # Create HTTP headers with authorization
+            headers = {"Authorization": f"Bearer {token}"}
             
             # Define the synchronous function to open the Zarr store and group
-            def _open_zarr_sync(url, cache_size):
-                print(f"Opening Zarr store: {url}")
-                store = FSStore(url, mode="r")
+            def _open_zarr_sync(url, headers, cache_size):
+                print(f"Opening Zarr store using zip-files endpoint: {url}")
+                
+                # Create an HTTP file system with custom headers
+                http_fs = fsspec.filesystem("http", headers=headers)
+                
+                # Create a mapper for accessing the zip contents
+                store = zarr.storage.FSStore(url, mode="r", fs=http_fs)
+                
                 if cache_size and cache_size > 0:
                     store = LRUStoreCache(store, max_size=cache_size)
-                # It's generally recommended to open the root group
-                root_group = zarr.group(store=store)
-                print(f"Zarr group opened successfully.")
+                
+                # Create a root group from the store
+                root_group = zarr.open_group(store, mode="r")
+                print(f"Zarr group opened successfully")
+                
                 return root_group
                 
             # Run the synchronous Zarr operations in a thread pool
             print("Running Zarr open in thread executor...")
-            zarr_group = await asyncio.to_thread(_open_zarr_sync, store_url, 2**28)  # Using default cache size
+            zarr_group = await asyncio.to_thread(_open_zarr_sync, base_url, headers, 2**28)  # Using default cache size
             
             # Cache the Zarr group for future use
             self.zarr_groups_cache[cache_key] = zarr_group
             
             return zarr_group
         except Exception as e:
-            print(f"Error getting Zarr group: {e}")
+            print(f"Error accessing zarr group via zip-files endpoint: {e}")
             import traceback
             print(traceback.format_exc())
             return None
