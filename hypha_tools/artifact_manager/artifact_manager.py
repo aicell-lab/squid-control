@@ -308,6 +308,23 @@ class SquidArtifactManager:
             # Base URL for accessing the contents of the zip file
             base_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/zip-files/{zip_file_path}/~"
             
+            # Test accessing a specific Zarr chunk file in the zip file
+            zarr_chunk_path = "scale0/335.384"
+            test_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/zip-files/{zip_file_path}/~/{zarr_chunk_path}"
+            print(f"Testing direct access to Zarr chunk: {test_url}")
+            
+            # Test accessing the chunk using httpx
+            try:
+                async with httpx.AsyncClient() as client:
+                    headers = {"Authorization": f"Bearer {token}"}
+                    response = await client.get(test_url, headers=headers)
+                    if response.status_code == 200:
+                        print(f"Successfully accessed Zarr chunk '{zarr_chunk_path}', content length: {len(response.content)} bytes")
+                    else:
+                        print(f"Failed to access Zarr chunk '{zarr_chunk_path}', status code: {response.status_code}")
+            except Exception as test_e:
+                print(f"Error testing Zarr chunk access: {test_e}")
+            
             # Create HTTP headers with authorization
             headers = {"Authorization": f"Bearer {token}"}
             
@@ -446,6 +463,8 @@ class ZarrImageManager:
             
             # Base URL for accessing the contents of the zip file with tilde notation
             base_url = f"{SERVER_URL}/{workspace}/artifacts/{artifact_alias}/zip-files/{zip_file_path}/~"
+            #test accessing a zarr file in the zip file, location is scale0/335.384
+            zarr_file_path = f"scale0/335.384"
             
             # Create HTTP headers with authorization
             headers = {"Authorization": f"Bearer {token}"}
