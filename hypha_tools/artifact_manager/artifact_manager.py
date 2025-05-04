@@ -386,7 +386,7 @@ class ZarrImageManager:
         self.is_running = True
         self.session = None
         self.default_timestamp = "2025-04-29_16-38-27"  # Set a default timestamp
-
+        self.scale_key = 'scale0'
     async def connect(self, workspace_token=None, server_url="https://hypha.aicell.io"):
         """Connect to the Artifact Manager service"""
         try:
@@ -531,34 +531,8 @@ class ZarrImageManager:
             try:
                 # Debug: Print available keys in the zarr group
                 print(f"Available keys in Zarr group: {list(zarr_group.keys())}")
-                
-                # Dynamically determine the correct scale key
-                scale_key = None
-                
-                # Try different naming conventions for scale levels
-                potential_keys = [
-                    f'scale{scale}',  # Standard format: scale0, scale1, etc.
-                    str(scale),       # Just the number: 0, 1, etc.
-                    f's{scale}',      # Alternative prefix: s0, s1, etc.
-                    f'level{scale}'   # Another common format: level0, level1, etc.
-                ]
-                
-                for key in potential_keys:
-                    if key in zarr_group:
-                        scale_key = key
-                        print(f"Found matching scale key: {scale_key}")
-                        break
-                
-                # If no matching key, use the first available key
-                if scale_key is None and len(list(zarr_group.keys())) > 0:
-                    scale_key = list(zarr_group.keys())[0]
-                    print(f"No matching scale key found, using first available key: {scale_key}")
-                
-                if scale_key is None:
-                    raise KeyError("No usable keys found in Zarr group")
-                
                 # Get the scale array
-                scale_array = zarr_group[scale_key]
+                scale_array = zarr_group[self.scale_key]
                 print(f"Scale array shape: {scale_array.shape}, dtype: {scale_array.dtype}")
                 
                 # Ensure chunk coordinates are valid
