@@ -117,7 +117,7 @@ class SquidController:
         self.microcontroller.configure_actuators()
 
         self.configurationManager = core.ConfigurationManager(
-            filename="./uc2_fucci_illumination_configurations.xml"
+            filename="./u2os_fucci_illumination_configurations.xml"
         )
 
         self.streamHandler = core.StreamHandler(
@@ -301,7 +301,7 @@ class SquidController:
         self.current_channel = 0
         self.current_expousre_time = 100
         self.current_intensity = 100
-        self.pixel_size_xy = 0.1665
+        self.pixel_size_xy = 0.333
         self.get_pixel_size()
 
 

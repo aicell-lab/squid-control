@@ -3,6 +3,7 @@ import glob
 import time
 import numpy as np
 from PIL import Image
+import io
 try:
     import squid_control.control.gxipy as gx
 except:
@@ -12,8 +13,9 @@ from squid_control.control.config import CONFIG
 from squid_control.control.camera import TriggerModeSetting
 from scipy.ndimage import gaussian_filter
 import zarr
-from hypha_tools.artifact_manager.step2_get_tiles import TileManager
+from hypha_tools.artifact_manager.artifact_manager import SquidArtifactManager, ZarrImageManager
 import asyncio
+import aiohttp
 script_dir = os.path.dirname(__file__)
 
 def get_sn_by_model(model_name):
@@ -461,8 +463,6 @@ class Camera(object):
 
 class Camera_Simulation(object):
 
-
-
     def __init__(
         self, sn=None, is_global_shutter=False, rotate_image_angle=None, flip_image=None
     ):
@@ -533,10 +533,11 @@ class Camera_Simulation(object):
             14: 'Fluorescence_561_nm_Ex.bmp',
             13: 'Fluorescence_638_nm_Ex.bmp',
         }
+        # Configuration for ZarrImageManager
         self.SERVER_URL = "https://hypha.aicell.io"
         self.WORKSPACE_TOKEN = os.getenv("AGENT_LENS_WORKSPACE_TOKEN")
-        self.ARTIFACT_ALIAS = "microscopy-tiles"
-        
+        self.ARTIFACT_ALIAS = "image-map-20250429-treatment-zip"
+        self.DEFAULT_TIMESTAMP = "2025-04-29_16-38-27"  # Default timestamp for the dataset
         
     def open(self, index=0):
         pass
@@ -598,8 +599,51 @@ class Camera_Simulation(object):
         pass
 
     def close(self):
+        self.cleanup_zarr_resources()
         pass
-
+        
+    def cleanup_zarr_resources(self):
+        """
+        Synchronous wrapper for async cleanup method
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # Create a new event loop if the current one is already running
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                new_loop.run_until_complete(self._cleanup_zarr_resources_async())
+                new_loop.close()
+            else:
+                loop.run_until_complete(self._cleanup_zarr_resources_async())
+        except Exception as e:
+            print(f"Error in cleanup_zarr_resources: {e}")
+        
+    async def _cleanup_zarr_resources_async(self):
+        """
+        Clean up Zarr-related resources to prevent resource leaks
+        """
+        try:
+            if hasattr(self, 'zarr_image_manager') and self.zarr_image_manager:
+                await self.zarr_image_manager.close()
+                self.zarr_image_manager = None
+                print("ZarrImageManager closed successfully")
+                
+            if hasattr(self, 'artifact_manager') and self.artifact_manager:
+                # Close the artifact manager if it has a close method
+                if hasattr(self.artifact_manager, 'close'):
+                    await self.artifact_manager.close()
+                self.artifact_manager = None
+                print("ArtifactManager closed successfully")
+        except Exception as e:
+            print(f"Error closing Zarr resources: {e}")
+            
+    async def cleanup_zarr_resources(self):
+        """
+        Legacy method for backward compatibility
+        """
+        await self._cleanup_zarr_resources_async()
+            
     def set_exposure_time(self, exposure_time):
         pass
 
@@ -635,7 +679,8 @@ class Camera_Simulation(object):
     def set_hardware_triggered_acquisition(self):
         pass
 
-    async def send_trigger(self, x=29.81, y=36.85, dz=0, pixel_size_um=0.1665, channel=0, intensity=100, exposure_time=100, magnification_factor=20, performace_mode=True):
+    async def send_trigger(self, x=29.81, y=36.85, dz=0, pixel_size_um=0.333, channel=0, intensity=100, exposure_time=100, magnification_factor=20, performace_mode=False):
+        print(f"Sending trigger with x={x}, y={y}, dz={dz}, pixel_size_um={pixel_size_um}, channel={channel}, intensity={intensity}, exposure_time={exposure_time}, magnification_factor={magnification_factor}, performace_mode={performace_mode}")
         self.frame_ID += 1
         self.timestamp = time.time()
 
@@ -648,43 +693,211 @@ class Camera_Simulation(object):
         }
         channel_name = channel_map.get(channel, None)
 
-        if channel_name is None:
+        if channel_name is None or performace_mode:
+            # Use example image for invalid channel or performance mode
             self.image = np.array(Image.open(os.path.join(script_dir, f"example-data/{self.image_paths[channel]}")))
-            print(f"Channel {channel} not found, returning a random image")
-        
-        elif performace_mode:
-            self.image = np.array(Image.open(os.path.join(script_dir, f"example-data/{self.image_paths[channel]}")))
-            print(f"Using performance mode, example image for channel {channel}")
+            print(f"Using example image for channel {channel} (performance mode: {performace_mode})")
         else:
-            async def get_image_from_tiles():
-                if not hasattr(self, 'tile_manager'):
-                    self.tile_manager = TileManager()
-                    print("Connecting to TileManager...")
-                    await self.tile_manager.connect()
-                    print("Connected to TileManager")
-                pixel_x = int(x / pixel_size_um) * 1000
-                pixel_y = int(y / pixel_size_um) * 1000
-                return await self.tile_manager.get_region(
-                    channel=channel_name,
-                    scale=0,
-                    x_start=max(0, pixel_x - self.Width // 2),
-                    y_start=max(0, pixel_y - self.Height // 2),
-                    width=self.Width,
-                    height=self.Height
-                )
-
+            # Direct zip file access implementation
             try:
-                self.image = await get_image_from_tiles()
-                if self.image is None:
-                    raise ValueError("No image returned from TileManager")
-                print(f"Successfully retrieved image from {channel_name} at {x},{y}")
+                # Convert microscope coordinates (mm) to pixel coordinates
+                pixel_x = int((x / pixel_size_um) * 1000)
+                pixel_y = int((y / pixel_size_um) * 1000)
+                print(f"Converted coords (mm) x={x}, y={y} to pixel coords: x={pixel_x}, y={pixel_y}")
+                
+                # Set up configuration
+                workspace = "agent-lens"
+                artifact_alias = self.ARTIFACT_ALIAS
+                timestamp = self.DEFAULT_TIMESTAMP
+                zip_file_path = f"{timestamp}/{channel_name}.zip"
+                
+                # Get token for authorization
+                token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
+                if not token:
+                    raise ValueError("AGENT_LENS_WORKSPACE_TOKEN environment variable is not set")
+                
+                # Calculate chunk coordinates
+                chunk_size = 256  # Fixed chunk size
+                region_data = np.zeros((self.Height, self.Width), dtype=np.uint8)
+                
+                # Calculate the starting position
+                x_start = max(0, pixel_x - self.Width // 2)
+                y_start = max(0, pixel_y - self.Height // 2)
+                
+                # Import the necessary libraries for decompression and HTTP requests
+                import blosc
+                import requests
+                
+                # Define the chunk decompression function
+                def decompress_chunk(chunk_bytes):
+                    # Decompress using blosc
+                    try:
+                        # Use blosc.decompress to get the raw bytes
+                        decompressed = blosc.decompress(chunk_bytes)
+                        # Convert to numpy array of uint8 and reshape to chunk size
+                        return np.frombuffer(decompressed, dtype=np.uint8).reshape(chunk_size, chunk_size)
+                    except Exception as e:
+                        print(f"Error decompressing chunk: {e}")
+                        return None
+                
+                # Test with a specific chunk to verify the code works
+                print("\n=== TESTING SPECIFIC file ACCESS ===")
+                
+                test_url = f"https://hypha.aicell.io/agent-lens/artifacts/image-map-20250429-treatment-example/zip-files/BF_LED_matrix_full.zip"
+                print(f"Testing chunk access with URL: {test_url}")
+                try:
+                    # Try to get the test chunk
+                    test_response = requests.get(test_url, params={"path":'.zgroup'}, stream=True, headers={"Authorization": f"Bearer {token}"})
+                    print(f"Test response status: {test_response.status_code}")
+                    
+                    if test_response.status_code == 200:
+                        test_bytes = test_response.content
+                        print(f"Test chunk size: {len(test_bytes)} bytes")
+                        
+                        # Try to decompress
+                        test_chunk_data = decompress_chunk(test_bytes)
+                        if test_chunk_data is not None:
+                            print(f"Successfully decompressed test chunk! Shape: {test_chunk_data.shape}, Min: {test_chunk_data.min()}, Max: {test_chunk_data.max()}")
+                            
+                            # Save this test chunk to a file for inspection
+                            test_img = Image.fromarray(test_chunk_data)
+                            test_img_path = os.path.join(script_dir, "test_chunk_335_384.png")
+                            test_img.save(test_img_path)
+                            print(f"Saved test chunk to {test_img_path}")
+                        else:
+                            print("Failed to decompress test chunk")
+                    else:
+                        print(f"Could not access test chunk, status code: {test_response.status_code}")
+                except Exception as e:
+                    print(f"Error testing chunk access: {e}")
+                print("=== END TEST ===\n")
+                
+                # Determine how many chunks we need
+                chunks_x = (self.Width + chunk_size - 1) // chunk_size
+                chunks_y = (self.Height + chunk_size - 1) // chunk_size
+                
+                print(f"Fetching chunks starting at {x_start}, {y_start}, ends at {x_start + self.Width}, {y_start + self.Height}")
+                
+                # Set up headers with authorization
+                headers = {"Authorization": f"Bearer {token}"}
+                
+                # Process chunks sequentially using requests as shown in the tutorial
+                successful_chunks = 0
+                
+                # Define a function to fetch a single chunk using requests
+                # This will be executed in a thread pool to not block the event loop
+                def fetch_chunk(chunk_x, chunk_y):
+                    try:
+                        # The path inside the zip is expected to be 'scale0/{chunk_y}.{chunk_x}'
+                        chunk_path = f"scale0/{chunk_y}.{chunk_x}"
+                        
+                        # Use the tilde method according to the documentation
+                        chunk_url = f"{self.SERVER_URL}/{workspace}/artifacts/{artifact_alias}/zip-files/{zip_file_path}/~/{chunk_path}"
+                        
+                        print(f"Fetching chunk at {chunk_x}, {chunk_y} using URL: {chunk_url}")
+                        
+                        # Use requests.get as in the tutorial
+                        response = requests.get(chunk_url, headers=headers)
+                        
+                        if response.status_code == 200:
+                            # Read response content as bytes
+                            chunk_bytes = response.content
+                            print(f"Got chunk data of size {len(chunk_bytes)} bytes")
+                            
+                            if len(chunk_bytes) == 0:
+                                print(f"Warning: Empty chunk received at position ({chunk_x}, {chunk_y})")
+                                return None, None, None
+                            
+                            # Decompress the chunk
+                            chunk_data = decompress_chunk(chunk_bytes)
+                            if chunk_data is not None:
+                                return chunk_data, chunk_x, chunk_y
+                        else:
+                            print(f"Failed to fetch chunk, status code: {response.status_code}")
+                    except Exception as e:
+                        print(f"Error processing chunk {chunk_x}, {chunk_y}: {e}")
+                        import traceback
+                        print(traceback.format_exc())
+                    
+                    return None, None, None
+                
+                # Create a list of tasks to run in a thread pool
+                tasks = []
+                for ty in range(chunks_y):
+                    for tx in range(chunks_x):
+                        # Calculate chunk coordinates
+                        chunk_x = (x_start // chunk_size) + tx
+                        chunk_y = (y_start // chunk_size) + ty
+                        region_x = tx * chunk_size
+                        region_y = ty * chunk_size
+                        
+                        # Create a task to fetch this chunk
+                        tasks.append((chunk_x, chunk_y, region_x, region_y))
+                
+                # Process tasks in parallel using a thread pool to maintain async behavior
+                async def process_chunks():
+                    nonlocal successful_chunks
+                    loop = asyncio.get_event_loop()
+                    
+                    # Process chunks in groups to limit concurrency
+                    chunk_groups = [tasks[i:i+10] for i in range(0, len(tasks), 10)]
+                    
+                    for group in chunk_groups:
+                        # Create a list of futures for this group
+                        futures = []
+                        for chunk_x, chunk_y, region_x, region_y in group:
+                            # Run the synchronous fetch_chunk in a thread pool
+                            future = loop.run_in_executor(None, fetch_chunk, chunk_x, chunk_y)
+                            futures.append((future, region_x, region_y))
+                        
+                        # Wait for all futures in this group to complete
+                        for future, region_x, region_y in futures:
+                            chunk_data, _, _ = await future
+                            
+                            if chunk_data is not None:
+                                # Calculate how much of the chunk to use
+                                copy_height = min(chunk_data.shape[0], self.Height - region_y)
+                                copy_width = min(chunk_data.shape[1], self.Width - region_x)
+                                
+                                if copy_height > 0 and copy_width > 0:
+                                    # Copy chunk data to the region
+                                    region_data[region_y:region_y+copy_height, region_x:region_x+copy_width] = \
+                                        chunk_data[:copy_height, :copy_width]
+                                    successful_chunks += 1
+                                    print(f"Successfully added chunk at ({region_x}, {region_y})")
+                
+                # Run the async chunk processing
+                await process_chunks()
+                
+                print(f"Successfully processed {successful_chunks} out of {len(tasks)} chunks")
+                
+                # Check if we got any valid data
+                if np.count_nonzero(region_data) > 0:
+                    print(f"Retrieved valid image data with shape {region_data.shape}")
+                    self.image = region_data
+                else:
+                    print("No valid chunks retrieved, using zero image")
+                    self.image = np.zeros((self.Height, self.Width), dtype=np.uint8)
+                    
             except Exception as e:
-                print(f"Error getting image from TileManager: {str(e)}")
-                self.image = np.array(Image.open(os.path.join(script_dir, f"example-data/{self.image_paths[channel]}")))
+                print(f"Error accessing chunks directly: {str(e)}")
+                import traceback
+                print(traceback.format_exc())
+                # Fall back to zero image
+                self.image = np.zeros((self.Height, self.Width), dtype=np.uint8)
 
-        exposure_factor = exposure_time / 100
-        intensity_factor = intensity / 60
-        self.image = np.clip(self.image * exposure_factor * intensity_factor, 0, 255).astype(np.uint8)
+        # Apply exposure and intensity scaling
+        exposure_factor = max(0.1, exposure_time / 100)  # Ensure minimum factor to prevent black images
+        intensity_factor = max(0.1, intensity / 60)      # Ensure minimum factor to prevent black images
+        
+        # Convert to float32 for scaling, apply factors, then clip and convert back to uint8
+        self.image = np.clip(self.image.astype(np.float32) * exposure_factor * intensity_factor, 0, 255).astype(np.uint8)
+        
+        # Check if image contains any valid data after scaling
+        if np.count_nonzero(self.image) == 0:
+            print("WARNING: Image contains all zeros after scaling!")
+            # Set to a gray image instead of black
+            self.image = np.ones((self.Height, self.Width), dtype=np.uint8) * 128
 
         if self.pixel_format == "MONO8":
             self.current_frame = self.image
@@ -692,11 +905,25 @@ class Camera_Simulation(object):
             self.current_frame = (self.image.astype(np.uint16) * 16).astype(np.uint16)
         elif self.pixel_format == "MONO16":
             self.current_frame = (self.image.astype(np.uint16) * 256).astype(np.uint16)
+        else:
+            # For any other format, default to MONO8
+            print(f"Unrecognized pixel format {self.pixel_format}, using MONO8")
+            self.current_frame = self.image
 
         if dz != 0:
             sigma = abs(dz) * 6
             self.current_frame = gaussian_filter(self.current_frame, sigma=sigma)
             print(f"The image is blurred with dz={dz}, sigma={sigma}")
+        
+        # Final check to ensure we're not sending a completely black image
+        if np.count_nonzero(self.current_frame) == 0:
+            print("CRITICAL: Final image is completely black, setting to gray")
+            if self.pixel_format == "MONO8":
+                self.current_frame = np.ones((self.Height, self.Width), dtype=np.uint8) * 128
+            elif self.pixel_format == "MONO12":
+                self.current_frame = np.ones((self.Height, self.Width), dtype=np.uint16) * 2048
+            elif self.pixel_format == "MONO16":
+                self.current_frame = np.ones((self.Height, self.Width), dtype=np.uint16) * 32768
 
         if self.new_image_callback_external is not None and self.callback_is_enabled:
             self.new_image_callback_external(self)
