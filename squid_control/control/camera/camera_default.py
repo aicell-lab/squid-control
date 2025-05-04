@@ -744,12 +744,12 @@ class Camera_Simulation(object):
                 print("\n=== TESTING SPECIFIC file ACCESS ===")
                 
                 test_file_path = f".zgroup"
-                test_url = f"{self.SERVER_URL}/{workspace}/artifacts/{artifact_alias}/zip-files/{zip_file_path}/~/{test_file_path}"
+                test_url = f"https://hypha.aicell.io/agent-lens/artifacts/image-map-20250429-treatment-example/zip-files/BF_LED_matrix_full.zip"
                 print(f"Testing chunk access with URL: {test_url}")
                 
                 try:
                     # Try to get the test chunk
-                    test_response = requests.get(test_url, stream=True)# headers={"Authorization": f"Bearer {token}"})
+                    test_response = requests.get(test_url, params={"path":'scale5/0.0'}, stream=True, headers={"Authorization": f"Bearer {token}"})
                     print(f"Test response status: {test_response.status_code}")
                     
                     if test_response.status_code == 200:
