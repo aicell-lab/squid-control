@@ -1,5 +1,23 @@
-include squid_control/icon/*
-include squid_control/images/*
-include squid_control/control/*
-include squid_control/configurations/*
+# Include package data
+include squid_control/*.xml
+include squid_control/*.ini
+include squid_control/*.txt
+recursive-include squid_control/icon *
+recursive-include squid_control/images *
+recursive-include squid_control/control *
+recursive-include squid_control/configurations *
+
+# Include documentation and metadata
+include README.md
+include LICENSE
+include MANIFEST.in
+include pyproject.toml
+
+# Exclude unnecessary files
+global-exclude *.pyc
+global-exclude *.pyo
+global-exclude *.pyd
+global-exclude __pycache__
+global-exclude .git*
+global-exclude .DS_Store
 
