@@ -71,35 +71,44 @@ class VideoBuffer:
         self.buffer = deque(maxlen=max_size)
         self.lock = threading.Lock()
         self.last_frame_data = None  # Store compressed frame data
+        self.last_metadata = None  # Store metadata for last frame
         self.frame_timestamp = 0
         
-    def put_frame(self, frame_data):
-        """Add a compressed frame to the buffer
+    def put_frame(self, frame_data, metadata=None):
+        """Add a compressed frame and its metadata to the buffer
         
         Args:
             frame_data: dict with compressed frame info from _encode_frame_jpeg()
+            metadata: dict with frame metadata including stage position and timestamp
         """
         with self.lock:
             self.buffer.append({
                 'frame_data': frame_data,
+                'metadata': metadata,
                 'timestamp': time.time()
             })
             self.last_frame_data = frame_data
+            self.last_metadata = metadata
             self.frame_timestamp = time.time()
             
     def get_frame_data(self):
-        """Get the most recent compressed frame data from buffer"""
+        """Get the most recent compressed frame data and metadata from buffer
+        
+        Returns:
+            tuple: (frame_data, metadata) or (None, None) if no frame available
+        """
         with self.lock:
             if self.buffer:
-                return self.buffer[-1]['frame_data']
+                buffer_entry = self.buffer[-1]
+                return buffer_entry['frame_data'], buffer_entry.get('metadata')
             elif self.last_frame_data is not None:
-                return self.last_frame_data
+                return self.last_frame_data, self.last_metadata
             else:
-                return None
+                return None, None
     
     def get_frame(self):
         """Get the most recent decompressed frame from buffer (for backward compatibility)"""
-        frame_data = self.get_frame_data()
+        frame_data, _ = self.get_frame_data()  # Ignore metadata for backward compatibility
         if frame_data is None:
             return None
             
@@ -114,7 +123,7 @@ class VideoBuffer:
                     return cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
             elif frame_data['format'] == 'raw':
                 # Raw numpy data
-                return np.frombuffer(frame_data['data'], dtype=np.uint8).reshape((-1, 640, 3))
+                return np.frombuffer(frame_data['data'], dtype=np.uint8).reshape((-1, 750, 3))
         except Exception as e:
             logger.error(f"Error decoding frame: {e}")
         
@@ -133,6 +142,7 @@ class VideoBuffer:
         with self.lock:
             self.buffer.clear()
             self.last_frame_data = None
+            self.last_metadata = None
             self.frame_timestamp = 0
 
 class MicroscopeVideoTrack(MediaStreamTrack):
@@ -143,34 +153,23 @@ class MicroscopeVideoTrack(MediaStreamTrack):
     kind = "video"
 
     def __init__(self, microscope_instance):
-        super().__init__()
+        super().__init__()  # Initialize parent MediaStreamTrack
         self.microscope_instance = microscope_instance
-        self.count = 0
         self.running = True
+        self.fps = 5  # Default to 5 FPS
+        self.count = 0
         self.start_time = None
-        # Use the same FPS as the microscope's buffer FPS for synchronization
-        self.fps = self.microscope_instance.buffer_fps
-        self.frame_width = 640
-        self.frame_height = 640
-        # Set WebRTC connection status
-        self.microscope_instance.webrtc_connected = True
-        logger.info(f"MicroscopeVideoTrack initialized with {self.fps} FPS")
+        self.frame_width = 750
+        self.frame_height = 750
+        logger.info(f"MicroscopeVideoTrack initialized with FPS: {self.fps}")
 
     def draw_crosshair(self, img, center_x, center_y, size=20, color=[255, 255, 255]):
-        """Draw a crosshair at the specified position"""
-        height, width = img.shape[:2]
-        
-        # Horizontal line
-        if 0 <= center_y < height:
-            start_x = max(0, center_x - size)
-            end_x = min(width, center_x + size)
-            img[center_y, start_x:end_x] = color
-        
-        # Vertical line
-        if 0 <= center_x < width:
-            start_y = max(0, center_y - size)
-            end_y = min(height, center_y + size)
-            img[start_y:end_y, center_x] = color
+        """Draw a crosshair on the image"""
+        import cv2
+        # Draw horizontal line
+        cv2.line(img, (center_x - size, center_y), (center_x + size, center_y), color, 2)
+        # Draw vertical line
+        cv2.line(img, (center_x, center_y - size), (center_x, center_y + size), color, 2)
 
     async def recv(self):
         if not self.running:
@@ -186,30 +185,63 @@ class MicroscopeVideoTrack(MediaStreamTrack):
             if sleep_duration > 0:
                 await asyncio.sleep(sleep_duration)
 
-            # Get compressed frame data from microscope
-            frame_data = await self.microscope_instance.get_video_frame(
+            # Get compressed frame data WITH METADATA from microscope
+            frame_response = await self.microscope_instance.get_video_frame(
                 frame_width=self.frame_width,
                 frame_height=self.frame_height
             )
             
+            # Extract frame data and metadata
+            if isinstance(frame_response, dict) and 'data' in frame_response:
+                frame_data = frame_response
+                frame_metadata = frame_response.get('metadata', {})
+            else:
+                # Fallback for backward compatibility
+                frame_data = frame_response
+                frame_metadata = {}
+            
             # Decompress JPEG data to numpy array for WebRTC
             processed_frame = self.microscope_instance._decode_frame_jpeg(frame_data)
-            
+
             current_time = time.time()
             # Use a 90kHz timebase, common for video, to provide accurate frame timing.
             # This prevents video from speeding up if frame acquisition is slow.
             time_base = fractions.Fraction(1, 90000)
             pts = int((current_time - self.start_time) * time_base.denominator)
 
+            # Create VideoFrame
             new_video_frame = VideoFrame.from_ndarray(processed_frame, format="rgb24")
             new_video_frame.pts = pts
             new_video_frame.time_base = time_base
+
+            # SEND METADATA VIA WEBRTC DATA CHANNEL
+            # Send metadata through data channel instead of embedding in video frame
+            if frame_metadata and hasattr(self.microscope_instance, 'metadata_data_channel'):
+                try:
+                    # Metadata already includes gray level statistics calculated in background acquisition
+                    metadata_json = json.dumps(frame_metadata)
+                    # Send metadata via WebRTC data channel
+                    asyncio.create_task(self._send_metadata_via_datachannel(metadata_json))
+                    logger.debug(f"Sent metadata via data channel: {len(metadata_json)} bytes (with gray level stats)")
+                except Exception as e:
+                    logger.warning(f"Failed to send metadata via data channel: {e}")
             
             if self.count % (self.fps * 5) == 0:  # Log every 5 seconds
                 duration = current_time - self.start_time
                 if duration > 0:
                     actual_fps = (self.count + 1) / duration
                     logger.info(f"MicroscopeVideoTrack: Sent frame {self.count}, actual FPS: {actual_fps:.2f}")
+                    if frame_metadata:
+                        stage_pos = frame_metadata.get('stage_position', {})
+                        x_mm = stage_pos.get('x_mm')
+                        y_mm = stage_pos.get('y_mm')
+                        z_mm = stage_pos.get('z_mm')
+                        # Handle None values in position logging
+                        x_str = f"{x_mm:.2f}" if x_mm is not None else "None"
+                        y_str = f"{y_mm:.2f}" if y_mm is not None else "None"
+                        z_str = f"{z_mm:.2f}" if z_mm is not None else "None"
+                        logger.info(f"Frame metadata: stage=({x_str}, {y_str}, {z_str}), "
+                                   f"channel={frame_metadata.get('channel')}, intensity={frame_metadata.get('intensity')}")
                 else:
                     logger.info(f"MicroscopeVideoTrack: Sent frame {self.count}")
             
@@ -225,6 +257,18 @@ class MicroscopeVideoTrack(MediaStreamTrack):
         """Update the FPS of the video track"""
         self.fps = new_fps
         logger.info(f"MicroscopeVideoTrack FPS updated to {new_fps}")
+
+    async def _send_metadata_via_datachannel(self, metadata_json):
+        """Send metadata via WebRTC data channel"""
+        try:
+            if hasattr(self.microscope_instance, 'metadata_data_channel') and self.microscope_instance.metadata_data_channel:
+                if self.microscope_instance.metadata_data_channel.readyState == 'open':
+                    self.microscope_instance.metadata_data_channel.send(metadata_json)
+                    logger.debug(f"Metadata sent via data channel: {len(metadata_json)} bytes")
+                else:
+                    logger.debug(f"Data channel not ready, state: {self.microscope_instance.metadata_data_channel.readyState}")
+        except Exception as e:
+            logger.warning(f"Error sending metadata via data channel: {e}")
 
     def stop(self):
         logger.info("MicroscopeVideoTrack stop() called.")
@@ -295,6 +339,7 @@ class Microscope:
         self.similarity_search_svc = None
         self.video_contrast_min = 0
         self.video_contrast_max = None
+        self.metadata_data_channel = None  # WebRTC data channel for metadata
 
         # Video buffering attributes
         self.video_buffer = VideoBuffer(max_size=5)
@@ -303,6 +348,12 @@ class Microscope:
         self.buffer_fps = 5  # Background frame acquisition FPS
         self.last_parameters_update = 0
         self.parameters_update_interval = 1.0  # Update parameters every 1 second
+        
+        # Adjustable frame size attributes - replaces hardcoded 750x750
+        self.buffer_frame_width = 750  # Current buffer frame width
+        self.buffer_frame_height = 750  # Current buffer frame height
+        self.default_frame_width = 750  # Default frame size
+        self.default_frame_height = 750
         
         # Auto-stop video buffering attributes
         self.last_video_request_time = None
@@ -338,6 +389,7 @@ class Microscope:
             "adjust_video_frame": "not_started",
             "start_video_buffering": "not_started",
             "stop_video_buffering": "not_started",
+            "get_current_well_location": "not_started",
         }
 
     def load_authorized_emails(self, login_required=True):
@@ -602,6 +654,9 @@ class Microscope:
             is_illumination_on = self.squidController.liveController.illumination_on
             scan_channel = self.squidController.multipointController.selected_configurations
             is_busy = self.squidController.is_busy
+            # Get current well location information
+            well_info = self.squidController.get_well_from_position('96')  # Default to 96-well plate
+            
             self.parameters = {
                 'is_busy': is_busy,
                 'current_x': current_x,
@@ -622,6 +677,7 @@ class Microscope:
                 'F730_intensity_exposure': self.F730_intensity_exposure,
                 'video_fps': self.buffer_fps,
                 'video_buffering_active': self.frame_acquisition_running,
+                'current_well_location': well_info,  # Add well location information
             }
             self.task_status[task_name] = "finished"
             return self.parameters
@@ -733,10 +789,10 @@ class Microscope:
                 await self.start_video_buffering()
 
     @schema_function(skip_self=True)
-    async def get_video_frame(self, frame_width: int=Field(640, description="Width of the video frame"), frame_height: int=Field(640, description="Height of the video frame"), context=None):
+    async def get_video_frame(self, frame_width: int=Field(750, description="Width of the video frame"), frame_height: int=Field(750, description="Height of the video frame"), context=None):
         """
-        Get compressed frame data from the microscope using video buffering
-        Returns: Compressed frame data (JPEG bytes) for efficient network transmission
+        Get compressed frame data with metadata from the microscope using video buffering
+        Returns: Compressed frame data (JPEG bytes) with associated metadata including stage position and timestamp
         """
         try:
             # Update last video request time for auto-stop functionality
@@ -751,13 +807,14 @@ class Microscope:
             if self.video_idle_check_task is None or self.video_idle_check_task.done():
                 self.video_idle_check_task = asyncio.create_task(self._monitor_video_idle())
             
-            # Get compressed frame data from buffer
-            frame_data = self.video_buffer.get_frame_data()
+            # Get compressed frame data and metadata from buffer
+            frame_data, frame_metadata = self.video_buffer.get_frame_data()
             
             if frame_data is not None:
                 # Check if we need to resize the frame
-                buffered_width = 640  # Buffer always stores 640x640 frames
-                buffered_height = 640
+                # Use current buffer frame size instead of hardcoded values
+                buffered_width = self.buffer_frame_width
+                buffered_height = self.buffer_frame_height
                 
                 if frame_width != buffered_width or frame_height != buffered_height:
                     # Need to resize - decompress, resize, and recompress
@@ -773,7 +830,8 @@ class Microscope:
                             'width': frame_width,
                             'height': frame_height,
                             'size_bytes': resized_compressed['size_bytes'],
-                            'compression_ratio': resized_compressed.get('compression_ratio', 1.0)
+                            'compression_ratio': resized_compressed.get('compression_ratio', 1.0),
+                            'metadata': frame_metadata
                         }
                     else:
                         # Fallback to placeholder if decompression fails
@@ -785,7 +843,8 @@ class Microscope:
                             'width': frame_width,
                             'height': frame_height,
                             'size_bytes': placeholder_compressed['size_bytes'],
-                            'compression_ratio': placeholder_compressed.get('compression_ratio', 1.0)
+                            'compression_ratio': placeholder_compressed.get('compression_ratio', 1.0),
+                            'metadata': frame_metadata
                         }
                 else:
                     # Return buffered frame directly (no resize needed)
@@ -795,20 +854,33 @@ class Microscope:
                         'width': frame_width,
                         'height': frame_height,
                         'size_bytes': frame_data['size_bytes'],
-                        'compression_ratio': frame_data.get('compression_ratio', 1.0)
+                        'compression_ratio': frame_data.get('compression_ratio', 1.0),
+                        'metadata': frame_metadata
                     }
             else:
                 # No buffered frame available, create and compress placeholder
                 logger.warning("No buffered frame available")
                 placeholder = self._create_placeholder_frame(frame_width, frame_height, "No buffered frame available")
                 placeholder_compressed = self._encode_frame_jpeg(placeholder, quality=85)
+                
+                # Create metadata for placeholder frame
+                placeholder_metadata = {
+                    'stage_position': {'x_mm': None, 'y_mm': None, 'z_mm': None},
+                    'timestamp': time.time(),
+                    'channel': None,
+                    'intensity': None,
+                    'exposure_time_ms': None,
+                    'error': 'No buffered frame available'
+                }
+                
                 return {
                     'format': placeholder_compressed['format'],
                     'data': placeholder_compressed['data'],
                     'width': frame_width,
                     'height': frame_height,
                     'size_bytes': placeholder_compressed['size_bytes'],
-                    'compression_ratio': placeholder_compressed.get('compression_ratio', 1.0)
+                    'compression_ratio': placeholder_compressed.get('compression_ratio', 1.0),
+                    'metadata': placeholder_metadata
                 }
                 
         except Exception as e:
@@ -845,23 +917,23 @@ class Microscope:
     def get_video_buffer_status(self, context=None):
         """Get the current status of the video buffer."""
         try:
-            with self.frame_buffer_lock:
-                buffer_fill = len(self.frame_buffer)
-                buffer_capacity = self.frame_buffer.maxlen
-                has_buffered_frame = self.last_buffered_frame is not None
-                
+            buffer_fill = len(self.video_buffer.frame_buffer)
+            buffer_capacity = self.video_buffer.max_size
+            
             return {
                 "success": True,
-                "buffer_running": self.buffer_acquisition_running,
+                "buffer_running": self.frame_acquisition_running,
                 "buffer_fill": buffer_fill,
                 "buffer_capacity": buffer_capacity,
                 "buffer_fill_percent": (buffer_fill / buffer_capacity * 100) if buffer_capacity > 0 else 0,
-                "has_buffered_frame": has_buffered_frame,
-                "target_fps": self.buffer_fps_target,
+                "buffer_fps": self.buffer_fps,
                 "frame_dimensions": {
                     "width": self.buffer_frame_width,
                     "height": self.buffer_frame_height
-                }
+                },
+                "video_idle_timeout": self.video_idle_timeout,
+                "last_video_request": self.last_video_request_time,
+                "webrtc_connected": self.webrtc_connected
             }
         except Exception as e:
             logger.error(f"Failed to get video buffer status: {e}")
@@ -1226,10 +1298,14 @@ class Microscope:
         self.task_status[task_name] = "started"
         try:
             if illumination_settings is None:
+                logger.warning("No illumination settings provided, using default settings")
                 illumination_settings = [
-                    {'channel': 'BF LED matrix full', 'intensity': 28.0, 'exposure_time': 20.0},
-                    {'channel': 'Fluorescence 488 nm Ex', 'intensity': 27.0, 'exposure_time': 60.0},
-                    {'channel': 'Fluorescence 561 nm Ex', 'intensity': 98.0, 'exposure_time': 100.0}
+                    {'channel': 'BF LED matrix full', 'intensity': 18, 'exposure_time': 10},
+                    {'channel': 'Fluorescence 405 nm Ex', 'intensity': 45, 'exposure_time': 30},
+                    {'channel': 'Fluorescence 488 nm Ex', 'intensity': 30, 'exposure_time': 100},
+                    {'channel': 'Fluorescence 561 nm Ex', 'intensity': 100, 'exposure_time': 200},
+                    {'channel': 'Fluorescence 638 nm Ex', 'intensity': 100, 'exposure_time': 200},
+                    {'channel': 'Fluorescence 730 nm Ex', 'intensity': 100, 'exposure_time': 200},
                 ]
             logger.info("Start scanning well plate with custom illumination settings")
             self.squidController.plate_scan(well_plate_type, illumination_settings, do_contrast_autofocus, do_reflection_af, scanning_zone, Nx, Ny, action_ID)
@@ -1654,6 +1730,15 @@ class Microscope:
         query_input: str = Field(..., description="The URL of the image of the query input for the similarity search.")
         top_k: int = Field(..., description="The number of similar images to return.")
 
+    class GetCurrentWellLocationInput(BaseModel):
+        """Get the current well location based on the stage position."""
+        wellplate_type: str = Field('96', description="Type of the well plate (e.g., '6', '12', '24', '96', '384')")
+
+    class GetMicroscopeConfigurationInput(BaseModel):
+        """Get microscope configuration information in JSON format."""
+        config_section: str = Field('all', description="Configuration section to retrieve ('all', 'camera', 'stage', 'illumination', 'acquisition', 'limits', 'hardware', 'wellplate', 'optics', 'autofocus')")
+        include_defaults: bool = Field(True, description="Whether to include default values from config.py")
+
     async def inspect_tool(self, images: List[dict], query: str, context_description: str) -> str:
         image_infos = [
             self.ImageInfo(url=image_dict['http_url'], title=image_dict.get('title'))
@@ -1735,6 +1820,14 @@ class Microscope:
         response = self.get_status(context)
         return {"result": response}
 
+    def get_current_well_location_schema(self, config: GetCurrentWellLocationInput, context=None):
+        response = self.get_current_well_location(config.wellplate_type, context)
+        return {"result": response}
+
+    def get_microscope_configuration_schema(self, config: GetMicroscopeConfigurationInput, context=None):
+        response = self.get_microscope_configuration(config.config_section, config.include_defaults, context)
+        return {"result": response}
+
     def get_schema(self, context=None):
         return {
             "move_by_distance": self.MoveByDistanceInput.model_json_schema(),
@@ -1752,7 +1845,9 @@ class Microscope:
             "set_laser_reference": self.SetLaserReferenceInput.model_json_schema(),
             "get_status": self.GetStatusInput.model_json_schema(),
             "find_similar_image_text": self.FindSimilarImageTextInput.model_json_schema(),
-            "find_similar_image_image": self.FindSimilarImageImageInput.model_json_schema()
+            "find_similar_image_image": self.FindSimilarImageImageInput.model_json_schema(),
+            "get_current_well_location": self.GetCurrentWellLocationInput.model_json_schema(),
+            "get_microscope_configuration": self.GetMicroscopeConfigurationInput.model_json_schema(),
         }
 
     async def start_hypha_service(self, server, service_id, run_in_executor=None):
@@ -1807,6 +1902,9 @@ class Microscope:
                 "stop_video_buffering": self.stop_video_buffering_api,
                 "get_video_buffering_status": self.get_video_buffering_status,
                 "set_video_fps": self.set_video_fps,
+                "get_current_well_location": self.get_current_well_location,
+                "get_microscope_configuration": self.get_microscope_configuration,
+                "get_canvas_chunk": self.get_canvas_chunk,
             },
         )
 
@@ -1846,7 +1944,9 @@ class Microscope:
                 "set_laser_reference": self.set_laser_reference_schema,
                 "get_status": self.get_status_schema,
                 "find_similar_image_text": self.find_similar_image_text_schema,
-                "find_similar_image_image": self.find_similar_image_image_schema
+                "find_similar_image_image": self.find_similar_image_image_schema,
+                "get_current_well_location": self.get_current_well_location_schema,
+                "get_microscope_configuration": self.get_microscope_configuration_schema,
             }
         }
 
@@ -1862,12 +1962,29 @@ class Microscope:
             # Mark as connected when peer connection starts
             self.webrtc_connected = True
             
+            # Create data channel for metadata transmission
+            self.metadata_data_channel = peer_connection.createDataChannel("metadata", ordered=True)
+            logger.info("Created metadata data channel")
+            
+            @self.metadata_data_channel.on("open")
+            def on_data_channel_open():
+                logger.info("Metadata data channel opened")
+            
+            @self.metadata_data_channel.on("close")
+            def on_data_channel_close():
+                logger.info("Metadata data channel closed")
+            
+            @self.metadata_data_channel.on("error")
+            def on_data_channel_error(error):
+                logger.error(f"Metadata data channel error: {error}")
+            
             @peer_connection.on("connectionstatechange")
             async def on_connectionstatechange():
                 logger.info(f"WebRTC connection state changed to: {peer_connection.connectionState}")
                 if peer_connection.connectionState in ["closed", "failed", "disconnected"]:
                     # Mark as disconnected
                     self.webrtc_connected = False
+                    self.metadata_data_channel = None
                     if self.video_track and self.video_track.running:
                         logger.info(f"Connection state is {peer_connection.connectionState}. Stopping video track.")
                         self.video_track.stop()
@@ -1898,6 +2015,7 @@ class Microscope:
                         self.video_track.stop()  # Now synchronous
                         self.video_track = None
                     self.is_streaming = False
+                    self.metadata_data_channel = None
                     
                     # Stop video buffering when WebRTC ends
                     asyncio.create_task(self.stop_video_buffering())
@@ -2150,10 +2268,24 @@ class Microscope:
                         logger.warning(f"Camera frame acquisition returned None - camera may be overloaded (failure #{consecutive_failures})")
                         # Create placeholder frame on None return
                         placeholder_frame = self._create_placeholder_frame(
-                            640, 640, "Camera Overloaded"
+                            self.buffer_frame_width, self.buffer_frame_height, "Camera Overloaded"
                         )
                         compressed_placeholder = self._encode_frame_jpeg(placeholder_frame, quality=85)
-                        self.video_buffer.put_frame(compressed_placeholder)
+                        
+                        # Calculate gray level statistics for placeholder frame
+                        placeholder_gray_stats = self._calculate_gray_level_statistics(placeholder_frame)
+                        
+                        # Create placeholder metadata
+                        placeholder_metadata = {
+                            'stage_position': {'x_mm': None, 'y_mm': None, 'z_mm': None},
+                            'timestamp': time.time(),
+                            'channel': channel,
+                            'intensity': intensity,
+                            'exposure_time_ms': exposure_time,
+                            'gray_level_stats': placeholder_gray_stats,
+                            'error': 'Camera Overloaded'
+                        }
+                        self.video_buffer.put_frame(compressed_placeholder, placeholder_metadata)
                         
                         # If too many failures, wait longer before next attempt
                         if consecutive_failures >= 5:
@@ -2167,8 +2299,8 @@ class Microscope:
                         # LATENCY MEASUREMENT: Start timing image processing
                         T_process_start = time.time()
                         
-                        processed_frame = self._process_raw_frame(
-                            raw_frame, frame_width=640, frame_height=640
+                        processed_frame, gray_level_stats = self._process_raw_frame(
+                            raw_frame, frame_width=self.buffer_frame_width, frame_height=self.buffer_frame_height
                         )
                         
                         # LATENCY MEASUREMENT: End timing image processing
@@ -2183,6 +2315,43 @@ class Microscope:
                         # LATENCY MEASUREMENT: End timing JPEG compression
                         T_compress_complete = time.time()
                         
+                        # METADATA CAPTURE: Get current stage position and create metadata
+                        frame_timestamp = time.time()
+                        try:
+                            # Update position and get current coordinates
+                            self.squidController.navigationController.update_pos(microcontroller=self.squidController.microcontroller)
+                            current_x = self.squidController.navigationController.x_pos_mm
+                            current_y = self.squidController.navigationController.y_pos_mm
+                            current_z = self.squidController.navigationController.z_pos_mm
+                            print(f"current_x: {current_x}, current_y: {current_y}, current_z: {current_z}")
+                            frame_metadata = {
+                                'stage_position': {
+                                    'x_mm': current_x,
+                                    'y_mm': current_y,
+                                    'z_mm': current_z
+                                },
+                                'timestamp': frame_timestamp,
+                                'channel': channel,
+                                'intensity': intensity,
+                                'exposure_time_ms': exposure_time,
+                                'gray_level_stats': gray_level_stats
+                            }
+                        except Exception as e:
+                            logger.warning(f"Failed to capture stage position for metadata: {e}")
+                            # Fallback metadata without stage position
+                            frame_metadata = {
+                                'stage_position': {
+                                    'x_mm': None,
+                                    'y_mm': None,
+                                    'z_mm': None
+                                },
+                                'timestamp': frame_timestamp,
+                                'channel': channel,
+                                'intensity': intensity,
+                                'exposure_time_ms': exposure_time,
+                                'gray_level_stats': gray_level_stats
+                            }
+                        
                         # Calculate timing statistics
                         processing_time_ms = (T_process_complete - T_process_start) * 1000
                         compression_time_ms = (T_compress_complete - T_compress_start) * 1000
@@ -2195,18 +2364,32 @@ class Microscope:
                                    f"compression_ratio={compressed_frame['compression_ratio']:.1f}x, "
                                    f"size: {compressed_frame['original_size']//1024}KB -> {compressed_frame['size_bytes']//1024}KB")
                         
-                        # Store compressed frame in buffer
-                        self.video_buffer.put_frame(compressed_frame)
+                        # Store compressed frame with metadata in buffer
+                        self.video_buffer.put_frame(compressed_frame, frame_metadata)
                     
                 except Exception as e:
                     consecutive_failures += 1
                     logger.error(f"Error in background frame acquisition: {e}")
                     # Create placeholder frame on error
                     placeholder_frame = self._create_placeholder_frame(
-                        640, 640, f"Acquisition Error: {str(e)}"
+                        self.buffer_frame_width, self.buffer_frame_height, f"Acquisition Error: {str(e)}"
                     )
                     compressed_placeholder = self._encode_frame_jpeg(placeholder_frame, quality=85)
-                    self.video_buffer.put_frame(compressed_placeholder)
+                    
+                    # Calculate gray level statistics for placeholder frame
+                    placeholder_gray_stats = self._calculate_gray_level_statistics(placeholder_frame)
+                    
+                    # Create placeholder metadata for error case
+                    error_metadata = {
+                        'stage_position': {'x_mm': None, 'y_mm': None, 'z_mm': None},
+                        'timestamp': time.time(),
+                        'channel': channel if 'channel' in locals() else 0,
+                        'intensity': intensity if 'intensity' in locals() else 0,
+                        'exposure_time_ms': exposure_time if 'exposure_time' in locals() else 0,
+                        'gray_level_stats': placeholder_gray_stats,
+                        'error': f"Acquisition Error: {str(e)}"
+                    }
+                    self.video_buffer.put_frame(compressed_placeholder, error_metadata)
                 
                 # Control frame rate with adaptive timing
                 elapsed = time.time() - start_time
@@ -2222,7 +2405,7 @@ class Microscope:
                 
         logger.info("Background frame acquisition stopped")
         
-    def _process_raw_frame(self, raw_frame, frame_width=640, frame_height=640):
+    def _process_raw_frame(self, raw_frame, frame_width=750, frame_height=750):
         """Process raw frame for video streaming - OPTIMIZED"""
         try:
             # OPTIMIZATION 1: Resize FIRST to reduce data for all subsequent operations
@@ -2231,6 +2414,9 @@ class Microscope:
                 processed_frame = cv2.resize(raw_frame, (frame_width, frame_height), interpolation=cv2.INTER_AREA)
             else:
                 processed_frame = raw_frame.copy()
+            
+            # Calculate gray level statistics on original frame BEFORE min/max adjustments
+            gray_level_stats = self._calculate_gray_level_statistics(processed_frame)
             
             # OPTIMIZATION 2: Robust contrast adjustment (fixed)
             min_val = self.video_contrast_min
@@ -2270,11 +2456,13 @@ class Microscope:
             elif processed_frame.shape[2] == 1:
                 processed_frame = np.repeat(processed_frame, 3, axis=2)
             
-            return processed_frame
+            return processed_frame, gray_level_stats
             
         except Exception as e:
             logger.error(f"Error processing frame: {e}")
-            return self._create_placeholder_frame(frame_width, frame_height, f"Processing Error: {str(e)}")
+            placeholder_frame = self._create_placeholder_frame(frame_width, frame_height, f"Processing Error: {str(e)}")
+            placeholder_stats = self._calculate_gray_level_statistics(placeholder_frame)
+            return placeholder_frame, placeholder_stats
             
     def _create_placeholder_frame(self, width, height, message="No Frame Available"):
         """Create a placeholder frame with error message"""
@@ -2303,16 +2491,77 @@ class Microscope:
                     return cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
             elif frame_data['format'] == 'raw':
                 # Raw numpy data
-                height = frame_data.get('height', 640)
-                width = frame_data.get('width', 640)
+                height = frame_data.get('height', 750)
+                width = frame_data.get('width', 750)
                 return np.frombuffer(frame_data['data'], dtype=np.uint8).reshape((height, width, 3))
         except Exception as e:
             logger.error(f"Error decoding frame: {e}")
         
         # Return placeholder on error
-        width = frame_data.get('width', 640)
-        height = frame_data.get('height', 640)
+        width = frame_data.get('width', self.buffer_frame_width)
+        height = frame_data.get('height', self.buffer_frame_height)
         return self._create_placeholder_frame(width, height, "Decode Error")
+
+    def _calculate_gray_level_statistics(self, rgb_frame):
+        """Calculate comprehensive gray level statistics for microscope analysis"""
+        try:
+            import numpy as np
+            
+            # Convert RGB to grayscale for analysis (standard luminance formula)
+            if len(rgb_frame.shape) == 3:
+                # RGB to grayscale: Y = 0.299*R + 0.587*G + 0.114*B
+                gray_frame = np.dot(rgb_frame[...,:3], [0.299, 0.587, 0.114])
+            else:
+                gray_frame = rgb_frame
+            
+            # Ensure we have a valid grayscale image
+            if gray_frame.size == 0:
+                return None
+                
+            # Convert to 0-100% range for analysis
+            gray_normalized = (gray_frame / 255.0) * 100.0
+            
+            # Calculate comprehensive statistics
+            stats = {
+                'mean_percent': float(np.mean(gray_normalized)),
+                'std_percent': float(np.std(gray_normalized)),
+                'min_percent': float(np.min(gray_normalized)),
+                'max_percent': float(np.max(gray_normalized)),
+                'median_percent': float(np.median(gray_normalized)),
+                'percentiles': {
+                    'p5': float(np.percentile(gray_normalized, 5)),
+                    'p25': float(np.percentile(gray_normalized, 25)),
+                    'p75': float(np.percentile(gray_normalized, 75)),
+                    'p95': float(np.percentile(gray_normalized, 95))
+                },
+                'histogram': {
+                    'bins': 20,  # 20 bins for 0-100% range (5% per bin)
+                    'counts': [],
+                    'bin_edges': []
+                }
+            }
+            
+            # Calculate histogram (20 bins from 0-100%)
+            hist_counts, bin_edges = np.histogram(gray_normalized, bins=20, range=(0, 100))
+            stats['histogram']['counts'] = hist_counts.tolist()
+            stats['histogram']['bin_edges'] = bin_edges.tolist()
+            
+            # Additional microscope-specific metrics
+            stats['dynamic_range_percent'] = stats['max_percent'] - stats['min_percent']
+            stats['contrast_ratio'] = stats['std_percent'] / stats['mean_percent'] if stats['mean_percent'] > 0 else 0
+            
+            # Exposure quality indicators
+            stats['exposure_quality'] = {
+                'underexposed_pixels_percent': float(np.sum(gray_normalized < 5) / gray_normalized.size * 100),
+                'overexposed_pixels_percent': float(np.sum(gray_normalized > 95) / gray_normalized.size * 100),
+                'well_exposed_pixels_percent': float(np.sum((gray_normalized >= 5) & (gray_normalized <= 95)) / gray_normalized.size * 100)
+            }
+            
+            return stats
+            
+        except Exception as e:
+            logger.warning(f"Error calculating gray level statistics: {e}")
+            return None
 
     def _encode_frame_jpeg(self, frame, quality=85):
         """
@@ -2392,6 +2641,215 @@ class Microscope:
                 await asyncio.sleep(2.0)  # Longer sleep on error
                 
         logger.info("Video idle monitoring stopped")
+
+    @schema_function(skip_self=True)
+    def get_current_well_location(self, wellplate_type: str=Field('96', description="Type of the well plate (e.g., '6', '12', '24', '96', '384')"), context=None):
+        """
+        Get the current well location based on the stage position.
+        Returns: Dictionary with well location information including row, column, well_id, and position status
+        """
+        task_name = "get_current_well_location"
+        if task_name not in self.task_status:
+            self.task_status[task_name] = "not_started"
+        self.task_status[task_name] = "started"
+        try:
+            well_info = self.squidController.get_well_from_position(wellplate_type)
+            logger.info(f'Current well location: {well_info["well_id"]} ({well_info["position_status"]})')
+            self.task_status[task_name] = "finished"
+            return well_info
+        except Exception as e:
+            self.task_status[task_name] = "failed"
+            logger.error(f"Failed to get current well location: {e}")
+            raise e
+
+    @schema_function(skip_self=True)
+    def configure_video_buffer_frame_size(self, frame_width: int = Field(750, description="Width of the video buffer frames"), frame_height: int = Field(750, description="Height of the video buffer frames"), context=None):
+        """Configure video buffer frame size for optimal streaming performance."""
+        try:
+            # Validate frame size parameters
+            frame_width = max(64, min(4096, frame_width))  # Clamp between 64-4096 pixels
+            frame_height = max(64, min(4096, frame_height))  # Clamp between 64-4096 pixels
+            
+            old_width = self.buffer_frame_width
+            old_height = self.buffer_frame_height
+            
+            # Update buffer frame size
+            self.buffer_frame_width = frame_width
+            self.buffer_frame_height = frame_height
+            
+            # If buffer is running and size changed, restart it to use new size
+            restart_needed = (frame_width != old_width or frame_height != old_height) and self.frame_acquisition_running
+            
+            if restart_needed:
+                logger.info(f"Buffer frame size changed from {old_width}x{old_height} to {frame_width}x{frame_height}, restarting buffer")
+                # Clear existing buffer to remove old-sized frames
+                self.video_buffer.clear()
+                # Note: The frame acquisition loop will automatically use the new size for subsequent frames
+            
+            # Update WebRTC video track if it exists
+            if hasattr(self, 'video_track') and self.video_track:
+                self.video_track.frame_width = frame_width
+                self.video_track.frame_height = frame_height
+                logger.info(f"Updated WebRTC video track frame size to {frame_width}x{frame_height}")
+            
+            logger.info(f"Video buffer frame size configured: {frame_width}x{frame_height} (was {old_width}x{old_height})")
+            
+            return {
+                "success": True,
+                "message": f"Video buffer frame size configured to {frame_width}x{frame_height}",
+                "previous_size": {"width": old_width, "height": old_height},
+                "new_size": {"width": frame_width, "height": frame_height},
+                "buffer_restarted": restart_needed
+            }
+        except Exception as e:
+            logger.error(f"Failed to configure video buffer frame size: {e}")
+            return {
+                "success": False,
+                "message": f"Failed to configure video buffer frame size: {str(e)}"
+            }
+
+    @schema_function(skip_self=True)
+    def get_microscope_configuration(self, config_section: str = Field("all", description="Configuration section to retrieve ('all', 'camera', 'stage', 'illumination', 'acquisition', 'limits', 'hardware', 'wellplate', 'optics', 'autofocus')"), include_defaults: bool = Field(True, description="Whether to include default values from config.py"), context=None):
+        """
+        Get microscope configuration information in JSON format.
+        Input: config_section: str = Field("all", description="Configuration section to retrieve ('all', 'camera', 'stage', 'illumination', 'acquisition', 'limits', 'hardware', 'wellplate', 'optics', 'autofocus')"), include_defaults: bool = Field(True, description="Whether to include default values from config.py")
+        Returns: Configuration data as a JSON object
+        """
+        try:
+            from squid_control.control.config import get_microscope_configuration_data
+            
+            # Call the configuration function from config.py
+            result = get_microscope_configuration_data(
+                config_section=config_section,
+                include_defaults=include_defaults,
+                is_simulation=self.is_simulation,
+                is_local=self.is_local
+            )
+            
+            logger.info(f"Retrieved microscope configuration for section: {config_section}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Failed to get microscope configuration: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "section": config_section
+            }
+
+    @schema_function(skip_self=True)
+    async def get_canvas_chunk(self, x_mm: float = Field(..., description="X coordinate of the stage location in millimeters"), y_mm: float = Field(..., description="Y coordinate of the stage location in millimeters"), scale_level: int = Field(1, description="Scale level for the chunk (0-2, where 0 is highest resolution)"), context=None):
+        """Get a canvas chunk based on microscope stage location (available only in simulation mode when not running locally)"""
+        
+        # Check if this function is available in current mode
+        if self.is_local:
+            return {
+                "success": False,
+                "error": "get_canvas_chunk is not available in local mode"
+            }
+        
+        if not self.is_simulation:
+            return {
+                "success": False,
+                "error": "get_canvas_chunk is only available in simulation mode"
+            }
+        
+        try:
+            logger.info(f"Getting canvas chunk at position: x={x_mm}mm, y={y_mm}mm, scale_level={scale_level}")
+            
+            # Initialize ZarrImageManager if not already initialized
+            if not hasattr(self, 'zarr_image_manager') or self.zarr_image_manager is None:
+                from squid_control.hypha_tools.artifact_manager.artifact_manager import ZarrImageManager
+                self.zarr_image_manager = ZarrImageManager()
+                success = await self.zarr_image_manager.connect(server_url=self.server_url)
+                if not success:
+                    raise RuntimeError("Failed to connect to ZarrImageManager")
+                logger.info("ZarrImageManager initialized for get_canvas_chunk")
+            
+            # Use the current simulated sample data alias
+            dataset_id = self.get_simulated_sample_data_alias()
+            channel_name = 'BF_LED_matrix_full'  # Always use brightfield channel
+            
+            # Use parameters similar to the simulation camera
+            pixel_size_um = 0.333  # Default pixel size used in simulation
+            
+            # Get scale factor based on scale level
+            scale_factors = {0: 1, 1: 4, 2: 16}  # scale0=1x, scale1=1/4x, scale2=1/16x
+            scale_factor = scale_factors.get(scale_level, 4)  # Default to scale1
+            
+            # Convert microscope coordinates (mm) to pixel coordinates
+            pixel_x = int((x_mm / pixel_size_um) * 1000 / scale_factor)
+            pixel_y = int((y_mm / pixel_size_um) * 1000 / scale_factor)
+            
+            # Convert pixel coordinates to chunk coordinates
+            chunk_size = 256  # Default chunk size used by ZarrImageManager
+            chunk_x = pixel_x // chunk_size
+            chunk_y = pixel_y // chunk_size
+            
+            logger.info(f"Converted coordinates: x={x_mm}mm, y={y_mm}mm to pixel coords: x={pixel_x}, y={pixel_y}, chunk coords: x={chunk_x}, y={chunk_y} (scale{scale_level})")
+            
+            # Get the single chunk data from ZarrImageManager
+            region_data = await self.zarr_image_manager.get_region_np_data(
+                dataset_id, 
+                channel_name, 
+                scale_level,
+                chunk_x,  # Chunk X coordinate
+                chunk_y,  # Chunk Y coordinate
+                direct_region=None,  # Don't use direct_region, use chunk coordinates instead
+                width=chunk_size,
+                height=chunk_size
+            )
+            
+            if region_data is None:
+                return {
+                    "success": False,
+                    "error": "Failed to retrieve chunk data from Zarr storage"
+                }
+            
+            # Convert numpy array to base64 encoded PNG for transmission
+            try:
+                # Ensure data is in uint8 format
+                if region_data.dtype != np.uint8:
+                    if region_data.dtype == np.float32 or region_data.dtype == np.float64:
+                        # Normalize floating point data
+                        if region_data.max() > 0:
+                            region_data = (region_data / region_data.max() * 255).astype(np.uint8)
+                        else:
+                            region_data = np.zeros(region_data.shape, dtype=np.uint8)
+                    else:
+                        # For other integer types, scale appropriately
+                        region_data = (region_data / region_data.max() * 255).astype(np.uint8) if region_data.max() > 0 else region_data.astype(np.uint8)
+                        
+                # Convert to PIL Image and then to base64
+                pil_image = Image.fromarray(region_data)
+                buffer = io.BytesIO()
+                pil_image.save(buffer, format="PNG")
+                img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                
+                return {
+                    "data": img_base64,
+                    "format": "png_base64",
+                    "scale_level": scale_level,
+                    "stage_location": {"x_mm": x_mm, "y_mm": y_mm},
+                    "chunk_coordinates": {"chunk_x": chunk_x, "chunk_y": chunk_y}
+                }
+                
+            except Exception as e:
+                logger.error(f"Error converting chunk data to base64: {e}")
+                return {
+                    "success": False,
+                    "error": f"Failed to convert chunk data: {str(e)}"
+                }
+                
+        except Exception as e:
+            logger.error(f"Error in get_canvas_chunk: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "success": False,
+                "error": f"Failed to get canvas chunk: {str(e)}"
+            }
 
 # Define a signal handler for graceful shutdown
 def signal_handler(sig, frame):

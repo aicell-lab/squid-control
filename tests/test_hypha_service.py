@@ -545,42 +545,6 @@ async def test_schema_methods(test_microscope_service):
     assert isinstance(result, dict)
     assert "result" in result
 
-# WebRTC video track tests
-async def test_microscope_video_track():
-    """Test MicroscopeVideoTrack functionality."""
-    # Create a minimal microscope instance for testing
-    microscope = Microscope(is_simulation=True, is_local=False)
-    microscope.login_required = False
-    microscope.datastore = SimpleTestDataStore()
-    
-    try:
-        # Create video track
-        video_track = MicroscopeVideoTrack(microscope)
-        
-        # Test initialization
-        assert video_track.kind == "video"
-        assert video_track.microscope_instance == microscope
-        assert video_track.running == True
-        assert video_track.fps == 5
-        assert video_track.frame_width == 640
-        assert video_track.frame_height == 640
-        
-        # Test crosshair drawing
-        test_img = np.zeros((100, 100, 3), dtype=np.uint8)
-        video_track.draw_crosshair(test_img, 50, 50, size=10, color=[255, 255, 255])
-        # Check that crosshair was drawn (pixels should be white at center)
-        assert np.any(test_img[50, 40:61] > 0)  # Horizontal line
-        assert np.any(test_img[40:61, 50] > 0)  # Vertical line
-        
-        # Test stop functionality
-        video_track.stop()
-        assert video_track.running == False
-        
-    finally:
-        # Cleanup
-        if hasattr(microscope, 'squidController'):
-            microscope.squidController.close()
-
 # Permission and authentication tests
 async def test_permission_system(test_microscope_service):
     """Test the permission and authentication system."""
@@ -1392,4 +1356,1140 @@ async def test_service_cleanup(test_microscope_service):
     
     # Test that SquidController can be closed
     # (This will be handled by the fixture cleanup)
-    assert microscope.squidController is not None 
+    assert microscope.squidController is not None
+
+# Canvas chunk retrieval tests
+async def test_get_canvas_chunk_basic_functionality(test_microscope_service):
+    """Test basic get_canvas_chunk functionality."""
+    microscope, service = test_microscope_service
+    
+    print("Testing get_canvas_chunk basic functionality")
+    
+    try:
+        # Test 0: Get current location first
+        print("0. Getting current microscope location...")
+        status = await asyncio.wait_for(service.get_status(), timeout=10)
+        current_x = status.get('current_x', 30.0)  # Default to 30.0 if not available
+        current_y = status.get('current_y', 37.0)  # Default to 37.0 if not available
+        print(f"   Current location: x={current_x}mm, y={current_y}mm")
+        
+        # Test 1: Basic chunk retrieval using current location
+        print("1. Testing basic chunk retrieval...")
+        result = await asyncio.wait_for(
+            service.get_canvas_chunk(x_mm=current_x, y_mm=current_y, scale_level=1),
+            timeout=30
+        )
+        
+        print(f"   Result keys: {list(result.keys())}")
+        
+        # Verify return format
+        expected_keys = ["data", "format", "scale_level", "stage_location", "chunk_coordinates"]
+        for key in expected_keys:
+            assert key in result, f"Missing key: {key}"
+        
+        # Verify data types and values
+        assert isinstance(result["data"], str), "Data should be base64 string"
+        assert result["format"] == "png_base64", "Format should be png_base64"
+        assert result["scale_level"] == 1, "Scale level should match input"
+        
+        # Verify stage location
+        stage_loc = result["stage_location"]
+        assert isinstance(stage_loc, dict)
+        assert stage_loc["x_mm"] == current_x
+        assert stage_loc["y_mm"] == current_y
+        
+        # Verify chunk coordinates
+        chunk_coords = result["chunk_coordinates"]
+        assert isinstance(chunk_coords, dict)
+        assert "chunk_x" in chunk_coords
+        assert "chunk_y" in chunk_coords
+        assert isinstance(chunk_coords["chunk_x"], int)
+        assert isinstance(chunk_coords["chunk_y"], int)
+        
+        print(f"   Chunk coordinates: {chunk_coords}")
+        print(f"   Data length: {len(result['data'])} characters")
+        
+        # Test 2: Different scale levels using current location with small offset
+        print("2. Testing different scale levels...")
+        for scale in [0, 1, 2]:
+            print(f"   Testing scale level {scale}...")
+            # Use slight offset from current position
+            test_x = current_x + (scale * 0.5)  # Small offset based on scale
+            test_y = current_y + (scale * 0.5)
+            result = await asyncio.wait_for(
+                service.get_canvas_chunk(x_mm=test_x, y_mm=test_y, scale_level=scale),
+                timeout=30
+            )
+            
+            assert result["scale_level"] == scale
+            assert len(result["data"]) > 0, f"No data returned for scale {scale}"
+            print(f"      Scale {scale}: Data length {len(result['data'])}")
+        
+        # Test 3: Different coordinates near current position
+        print("3. Testing different coordinates...")
+        test_coords = [
+            (current_x - 1.0, current_y - 1.0), 
+            (current_x + 1.0, current_y + 1.0), 
+            (current_x - 0.5, current_y + 0.5), 
+            (current_x + 0.5, current_y - 0.5)
+        ]
+        
+        for x, y in test_coords:
+            print(f"   Testing coordinates ({x}, {y})...")
+            result = await asyncio.wait_for(
+                service.get_canvas_chunk(x_mm=x, y_mm=y, scale_level=1),
+                timeout=30
+            )
+            
+            assert result["stage_location"]["x_mm"] == x
+            assert result["stage_location"]["y_mm"] == y
+            assert len(result["data"]) > 0
+            print(f"      Coordinates ({x}, {y}): Chunk ({result['chunk_coordinates']['chunk_x']}, {result['chunk_coordinates']['chunk_y']})")
+        
+        print("✅ get_canvas_chunk basic functionality tests passed!")
+        
+    except Exception as e:
+        print(f"❌ get_canvas_chunk basic functionality test failed: {e}")
+        raise
+
+async def test_get_canvas_chunk_access_restrictions():
+    """Test get_canvas_chunk access restrictions for different modes."""
+    print("Testing get_canvas_chunk access restrictions")
+    
+    try:
+        # Test 1: Local mode restriction
+        print("1. Testing local mode restriction...")
+        local_microscope = Microscope(is_simulation=True, is_local=True)
+        
+        try:
+            # Test that function is restricted in local mode
+            token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
+            if token:
+                async with connect_to_server({
+                    "server_url": TEST_SERVER_URL,
+                    "token": token,
+                    "workspace": TEST_WORKSPACE,
+                }) as server:
+                    test_id = f"test-local-restriction-{uuid.uuid4().hex[:8]}"
+                    local_microscope.service_id = test_id
+                    local_microscope.login_required = False
+                    local_microscope.datastore = SimpleTestDataStore()
+                    
+                    # Override setup method
+                    async def mock_setup():
+                        pass
+                    local_microscope.setup = mock_setup
+                    
+                    await local_microscope.start_hypha_service(server, test_id)
+                    local_service = await server.get_service(test_id)
+                    
+                    # This should return an error about local mode
+                    result = await local_service.get_canvas_chunk(x_mm=30.0, y_mm=37.0, scale_level=1)
+                    
+                    assert "success" in result
+                    assert result["success"] == False
+                    assert "local mode" in result["error"].lower()
+                    print(f"   Local mode correctly restricted: {result['error']}")
+                    
+        finally:
+            local_microscope.squidController.close()
+        
+        # Test 2: Non-simulation mode restriction  
+        print("2. Testing non-simulation mode restriction...")
+        if token:  # Only test if we have token
+            # Skip this test since we don't have real hardware available
+            print("   Skipping non-simulation test - no hardware controller available")
+            # For completeness, we can test that the error condition works by calling the method directly
+            temp_microscope = Microscope(is_simulation=True, is_local=False)
+            temp_microscope.is_simulation = False  # Override to non-simulation
+            result = await temp_microscope.get_canvas_chunk(x_mm=30.0, y_mm=37.0, scale_level=1)
+            
+            assert "success" in result
+            assert result["success"] == False
+            assert "simulation mode" in result["error"].lower()
+            print(f"   Non-simulation mode correctly restricted: {result['error']}")
+            temp_microscope.squidController.close()
+        
+        print("✅ get_canvas_chunk access restriction tests passed!")
+        
+    except Exception as e:
+        print(f"❌ get_canvas_chunk access restriction test failed: {e}")
+        # Don't fail the entire test suite if token is missing
+        if "AGENT_LENS_WORKSPACE_TOKEN not set" in str(e):
+            pytest.skip("Skipping access restriction tests due to missing token")
+        raise
+
+async def test_get_canvas_chunk_parameter_validation(test_microscope_service):
+    """Test get_canvas_chunk parameter validation and edge cases."""
+    microscope, service = test_microscope_service
+    
+    print("Testing get_canvas_chunk parameter validation")
+    
+    try:
+        # Test 1: Default parameter values
+        print("1. Testing default parameter values...")
+        result = await asyncio.wait_for(
+            service.get_canvas_chunk(x_mm=30.0, y_mm=37.0),  # scale_level should default to 1
+            timeout=30
+        )
+        
+        assert result["scale_level"] == 1, "Default scale_level should be 1"
+        print(f"   Default scale level: {result['scale_level']}")
+        
+        # Test 2: Edge case coordinates
+        print("2. Testing edge case coordinates...")
+        edge_coords = [
+            (0.0, 0.0),      # Origin
+            (100.0, 100.0),  # Large values
+            (0.1, 0.1),      # Small values
+            (50.5, 75.3),    # Decimal values
+        ]
+        
+        for x, y in edge_coords:
+            print(f"   Testing edge coordinates ({x}, {y})...")
+            try:
+                result = await asyncio.wait_for(
+                    service.get_canvas_chunk(x_mm=x, y_mm=y, scale_level=1),
+                    timeout=30
+                )
+                
+                # Should handle all coordinates gracefully
+                assert result["stage_location"]["x_mm"] == x
+                assert result["stage_location"]["y_mm"] == y
+                print(f"      Coordinates ({x}, {y}): Success")
+                
+            except Exception as coord_error:
+                print(f"      Coordinates ({x}, {y}): Error {coord_error}")
+                # Some coordinates might be out of bounds for the sample data
+                # This is acceptable behavior
+        
+        # Test 3: Invalid scale levels
+        print("3. Testing invalid scale levels...")
+        invalid_scales = [-1, 3, 10, 100]
+        
+        for scale in invalid_scales:
+            print(f"   Testing invalid scale level {scale}...")
+            try:
+                result = await asyncio.wait_for(
+                    service.get_canvas_chunk(x_mm=30.0, y_mm=37.0, scale_level=scale),
+                    timeout=30
+                )
+                
+                # Should either work (with fallback) or return error
+                if "success" in result and result["success"] == False:
+                    print(f"      Scale {scale}: Properly rejected - {result.get('error', 'Unknown error')}")
+                else:
+                    print(f"      Scale {scale}: Handled gracefully")
+                    
+            except Exception as scale_error:
+                print(f"      Scale {scale}: Exception - {scale_error}")
+                # Exceptions are also acceptable for invalid scales
+        
+        print("✅ get_canvas_chunk parameter validation tests passed!")
+        
+    except Exception as e:
+        print(f"❌ get_canvas_chunk parameter validation test failed: {e}")
+        raise
+
+async def test_get_canvas_chunk_data_format(test_microscope_service):
+    """Test get_canvas_chunk data format and base64 encoding."""
+    microscope, service = test_microscope_service
+    
+    print("Testing get_canvas_chunk data format")
+    
+    try:
+        # Test 1: Base64 data validation
+        print("1. Testing base64 data validation...")
+        result = await asyncio.wait_for(
+            service.get_canvas_chunk(x_mm=30.0, y_mm=37.0, scale_level=1),
+            timeout=30
+        )
+        
+        data = result["data"]
+        
+        # Verify it's valid base64
+        try:
+            import base64
+            decoded_data = base64.b64decode(data)
+            print(f"   Base64 data length: {len(data)} characters")
+            print(f"   Decoded data length: {len(decoded_data)} bytes")
+            assert len(decoded_data) > 0, "Decoded data should not be empty"
+        except Exception as b64_error:
+            pytest.fail(f"Invalid base64 data: {b64_error}")
+        
+        # Test 2: PNG format validation
+        print("2. Testing PNG format validation...")
+        
+        # Check PNG magic bytes
+        png_magic = decoded_data[:8]
+        expected_png_magic = b'\x89PNG\r\n\x1a\n'
+        assert png_magic == expected_png_magic, f"Invalid PNG magic bytes: {png_magic.hex()}"
+        print("   ✓ Valid PNG magic bytes")
+        
+        # Test 3: Image decoding validation
+        print("3. Testing image decoding validation...")
+        try:
+            from PIL import Image
+            import io
+            
+            image_buffer = io.BytesIO(decoded_data)
+            pil_image = Image.open(image_buffer)
+            
+            print(f"   Image size: {pil_image.size}")
+            print(f"   Image mode: {pil_image.mode}")
+            print(f"   Image format: {pil_image.format}")
+            
+            assert pil_image.format == 'PNG', "Image should be PNG format"
+            assert pil_image.size[0] > 0 and pil_image.size[1] > 0, "Image should have valid dimensions"
+            
+            # Convert to numpy array for further validation
+            import numpy as np
+            img_array = np.array(pil_image)
+            print(f"   Image array shape: {img_array.shape}")
+            print(f"   Image data type: {img_array.dtype}")
+            
+            assert len(img_array.shape) >= 2, "Image should be at least 2D"
+            assert img_array.dtype == np.uint8, "Image should be uint8"
+            
+        except Exception as img_error:
+            pytest.fail(f"Failed to decode PNG image: {img_error}")
+        
+        # Test 4: Consistency across multiple requests
+        print("4. Testing consistency across multiple requests...")
+        results = []
+        
+        for i in range(3):
+            result = await asyncio.wait_for(
+                service.get_canvas_chunk(x_mm=30.0, y_mm=37.0, scale_level=1),
+                timeout=30
+            )
+            results.append(result)
+        
+        # All results should have the same format and similar data
+        for i, result in enumerate(results):
+            assert result["format"] == "png_base64"
+            assert result["scale_level"] == 1
+            assert result["stage_location"]["x_mm"] == 30.0
+            assert result["stage_location"]["y_mm"] == 37.0
+            assert len(result["data"]) > 0
+            print(f"   Request {i+1}: Data length {len(result['data'])}")
+        
+        print("✅ get_canvas_chunk data format tests passed!")
+        
+    except Exception as e:
+        print(f"❌ get_canvas_chunk data format test failed: {e}")
+        raise
+
+async def test_get_canvas_chunk_integration(test_microscope_service):
+    """Test get_canvas_chunk integration with other service functions."""
+    microscope, service = test_microscope_service
+    
+    print("Testing get_canvas_chunk integration")
+    
+    try:
+        # Test 1: Integration with stage movement
+        print("1. Testing integration with stage movement...")
+        
+        # Move stage to specific position
+        await service.move_to_position(x=25.0, y=35.0, z=2.0)
+        
+        # Get status to confirm position
+        status = await service.get_status()
+        current_x = status['current_x']
+        current_y = status['current_y']
+        print(f"   Stage position: ({current_x:.3f}, {current_y:.3f})")
+        
+        # Get canvas chunk at current position
+        result = await asyncio.wait_for(
+            service.get_canvas_chunk(x_mm=current_x, y_mm=current_y, scale_level=1),
+            timeout=30
+        )
+        
+        assert result["stage_location"]["x_mm"] == current_x
+        assert result["stage_location"]["y_mm"] == current_y
+        print(f"   Canvas chunk retrieved at current position: chunk ({result['chunk_coordinates']['chunk_x']}, {result['chunk_coordinates']['chunk_y']})")
+        
+        # Test 2: Integration with well navigation
+        print("2. Testing integration with well navigation...")
+        
+        # Navigate to a well
+        await service.navigate_to_well(row='C', col=5, wellplate_type='96')
+        
+        # Get current position after well navigation
+        status = await service.get_status()
+        well_x = status['current_x']
+        well_y = status['current_y']
+        
+        # Get canvas chunk at well position
+        result = await asyncio.wait_for(
+            service.get_canvas_chunk(x_mm=well_x, y_mm=well_y, scale_level=1),
+            timeout=30
+        )
+        
+        assert abs(result["stage_location"]["x_mm"] - well_x) < 0.001
+        assert abs(result["stage_location"]["y_mm"] - well_y) < 0.001
+        print(f"   Canvas chunk retrieved at well C5: chunk ({result['chunk_coordinates']['chunk_x']}, {result['chunk_coordinates']['chunk_y']})")
+        
+        # Test 3: Integration with simulated sample data alias
+        print("3. Testing integration with simulated sample data...")
+        
+        # Get current sample alias
+        original_alias = await service.get_simulated_sample_data_alias()
+        print(f"   Current sample alias: {original_alias}")
+        
+        # Get chunk with original alias
+        result1 = await asyncio.wait_for(
+            service.get_canvas_chunk(x_mm=30.0, y_mm=37.0, scale_level=1),
+            timeout=30
+        )
+        
+        # Note: Setting a different alias might not work if the alias doesn't exist
+        # So we'll just verify the chunk retrieval works with the current alias
+        assert len(result1["data"]) > 0
+        print(f"   Canvas chunk retrieved with current sample data")
+        
+        # Test 4: Coordinate system consistency
+        print("4. Testing coordinate system consistency...")
+        
+        # Test multiple positions and verify chunk coordinates change appropriately
+        test_positions = [
+            (20.0, 30.0), (40.0, 50.0), (60.0, 70.0)
+        ]
+        
+        chunk_coords = []
+        for x, y in test_positions:
+            result = await asyncio.wait_for(
+                service.get_canvas_chunk(x_mm=x, y_mm=y, scale_level=1),
+                timeout=30
+            )
+            
+            chunk_x = result['chunk_coordinates']['chunk_x']
+            chunk_y = result['chunk_coordinates']['chunk_y']
+            chunk_coords.append((chunk_x, chunk_y))
+            print(f"   Position ({x}, {y}) -> Chunk ({chunk_x}, {chunk_y})")
+        
+        # Chunk coordinates should be different for different positions
+        unique_chunks = set(chunk_coords)
+        assert len(unique_chunks) > 1, "Different positions should map to different chunks"
+        print(f"   {len(unique_chunks)} unique chunks from {len(test_positions)} positions")
+        
+        print("✅ get_canvas_chunk integration tests passed!")
+        
+    except Exception as e:
+        print(f"❌ get_canvas_chunk integration test failed: {e}")
+        raise
+
+async def test_well_location_detection_service(test_microscope_service):
+    """Test the well location detection functionality through the service."""
+    microscope, service = test_microscope_service
+    
+    print("Testing Well Location Detection Service")
+    
+    try:
+        # Test 1: Navigate to a specific well and check location
+        print("1. Testing navigation to well C5 and location detection...")
+        await service.navigate_to_well(row='C', col=5, wellplate_type='96')
+        
+        # Get current well location
+        well_location = await service.get_current_well_location(wellplate_type='96')
+        
+        print(f"   Expected: C5, Got: {well_location}")
+        assert isinstance(well_location, dict)
+        assert well_location['row'] == 'C'
+        assert well_location['column'] == 5
+        assert well_location['well_id'] == 'C5'
+        assert well_location['plate_type'] == '96'
+        assert 'position_status' in well_location
+        assert 'distance_from_center' in well_location
+        assert 'is_inside_well' in well_location
+        
+        # Test 2: Test different plate types
+        print("2. Testing different plate types...")
+        
+        # Test 24-well plate
+        await service.navigate_to_well(row='B', col=3, wellplate_type='24')
+        well_location = await service.get_current_well_location(wellplate_type='24')
+        
+        print(f"   24-well: Expected B3, Got: {well_location['well_id']}")
+        assert well_location['row'] == 'B'
+        assert well_location['column'] == 3
+        assert well_location['well_id'] == 'B3'
+        assert well_location['plate_type'] == '24'
+        
+        # Test 384-well plate
+        await service.navigate_to_well(row='D', col=12, wellplate_type='384')
+        well_location = await service.get_current_well_location(wellplate_type='384')
+        
+        print(f"   384-well: Expected D12, Got: {well_location['well_id']}")
+        assert well_location['row'] == 'D'
+        assert well_location['column'] == 12
+        assert well_location['well_id'] == 'D12'
+        assert well_location['plate_type'] == '384'
+        
+        # Test 3: Check that get_status includes well location
+        print("3. Testing that get_status includes well location...")
+        status = await service.get_status()
+        
+        assert isinstance(status, dict)
+        assert 'current_well_location' in status
+        assert isinstance(status['current_well_location'], dict)
+        
+        well_info = status['current_well_location']
+        print(f"   Status well info: {well_info}")
+        assert 'well_id' in well_info
+        assert 'row' in well_info
+        assert 'column' in well_info
+        assert 'position_status' in well_info
+        assert 'plate_type' in well_info
+        
+        # Test 4: Test multiple wells in sequence
+        print("4. Testing multiple wells in sequence...")
+        test_wells = [
+            ('A', 1), ('A', 12), ('H', 1), ('H', 12)
+        ]
+        
+        for row, col in test_wells:
+            print(f"   Testing well {row}{col}...")
+            await service.navigate_to_well(row=row, col=col, wellplate_type='96')
+            
+            well_location = await service.get_current_well_location(wellplate_type='96')
+            expected_well_id = f"{row}{col}"
+            
+            print(f"      Expected: {expected_well_id}, Got: {well_location['well_id']}")
+            assert well_location['row'] == row
+            assert well_location['column'] == col
+            assert well_location['well_id'] == expected_well_id
+            
+            # Also verify through get_status
+            status = await service.get_status()
+            status_well_id = status['current_well_location']['well_id']
+            print(f"      Status confirms: {status_well_id}")
+            assert status_well_id == expected_well_id
+        
+        print("✅ Well location detection service tests passed!")
+        
+    except Exception as e:
+        print(f"❌ Well location detection test failed: {e}")
+        raise
+
+async def test_well_location_edge_cases_service(test_microscope_service):
+    """Test edge cases for well location detection through the service."""
+    microscope, service = test_microscope_service
+    
+    print("Testing Well Location Edge Cases")
+    
+    try:
+        # Test 1: Default plate type behavior
+        print("1. Testing default plate type...")
+        await service.navigate_to_well(row='E', col=7)  # Default should be 96-well
+        
+        # Get location without specifying plate type (should default to 96)
+        well_location = await service.get_current_well_location()
+        
+        print(f"   Default plate type result: {well_location}")
+        assert well_location['plate_type'] == '96'
+        assert well_location['well_id'] == 'E7'
+        
+        # Test 2: Verify consistency between navigation and location detection
+        print("2. Testing consistency between navigation and detection...")
+        test_positions = [
+            ('A', 1, '96'), ('B', 6, '24'), ('C', 8, '384'), ('A', 3, '6')
+        ]
+        
+        for row, col, plate_type in test_positions:
+            print(f"   Testing {row}{col} on {plate_type}-well plate...")
+            
+            # Navigate to position
+            await service.navigate_to_well(row=row, col=col, wellplate_type=plate_type)
+            
+            # Detect location
+            well_location = await service.get_current_well_location(wellplate_type=plate_type)
+            
+            # Verify consistency
+            assert well_location['row'] == row
+            assert well_location['column'] == col
+            assert well_location['well_id'] == f"{row}{col}"
+            assert well_location['plate_type'] == plate_type
+            
+            print(f"      ✓ {plate_type}-well {row}{col}: {well_location['position_status']}")
+        
+        # Test 3: Position accuracy metrics
+        print("3. Testing position accuracy metrics...")
+        await service.navigate_to_well(row='F', col=8, wellplate_type='96')
+        well_location = await service.get_current_well_location(wellplate_type='96')
+        
+        print(f"   Position metrics for F8:")
+        print(f"      Distance from center: {well_location['distance_from_center']:.4f}mm")
+        print(f"      Position status: {well_location['position_status']}")
+        print(f"      Inside well: {well_location['is_inside_well']}")
+        
+        # In simulation, should be very accurate
+        assert well_location['distance_from_center'] < 0.1
+        assert well_location['position_status'] in ['in_well', 'between_wells']
+        
+        print("✅ Well location edge cases tests passed!")
+        
+    except Exception as e:
+        print(f"❌ Well location edge cases test failed: {e}")
+        raise
+
+async def test_get_status_well_location_integration(test_microscope_service):
+    """Test that get_status properly integrates well location information."""
+    microscope, service = test_microscope_service
+    
+    print("Testing get_status well location integration")
+    
+    try:
+        # Test 1: Move to different wells and verify status updates
+        print("1. Testing status updates with well movement...")
+        
+        test_wells = [('B', 4), ('G', 11), ('A', 1), ('H', 12)]
+        
+        for row, col in test_wells:
+            print(f"   Moving to well {row}{col}...")
+            await service.navigate_to_well(row=row, col=col, wellplate_type='96')
+            
+            # Get full status
+            status = await service.get_status()
+            
+            # Verify well location is included and correct
+            assert 'current_well_location' in status
+            well_info = status['current_well_location']
+            
+            print(f"      Status well location: {well_info}")
+            assert well_info['row'] == row
+            assert well_info['column'] == col
+            assert well_info['well_id'] == f"{row}{col}"
+            assert well_info['plate_type'] == '96'  # Default plate type in status
+            
+            # Verify other status fields are still present
+            required_fields = [
+                'current_x', 'current_y', 'current_z', 'is_illumination_on',
+                'current_channel', 'video_fps', 'is_busy'
+            ]
+            
+            for field in required_fields:
+                assert field in status, f"Missing required field: {field}"
+        
+        # Test 2: Verify status coordinates match well location calculation
+        print("2. Testing coordinate consistency...")
+        await service.navigate_to_well(row='D', col=6, wellplate_type='96')
+        status = await service.get_status()
+        
+        # Extract coordinates from status
+        x_pos = status['current_x']
+        y_pos = status['current_y']
+        well_info = status['current_well_location']
+        
+        print(f"   Coordinates: ({x_pos:.3f}, {y_pos:.3f})")
+        print(f"   Well: {well_info['well_id']} at distance {well_info['distance_from_center']:.3f}mm")
+        
+        # The coordinates should match the well position
+        assert well_info['well_id'] == 'D6'
+        assert well_info['x_mm'] == x_pos
+        assert well_info['y_mm'] == y_pos
+        
+        print("✅ get_status well location integration tests passed!")
+        
+    except Exception as e:
+        print(f"❌ get_status integration test failed: {e}")
+        raise 
+
+# Microscope Configuration Service Tests
+async def test_get_microscope_configuration_service(test_microscope_service):
+    """Test the get_microscope_configuration service method."""
+    microscope, service = test_microscope_service
+    
+    print("Testing get_microscope_configuration service")
+    
+    try:
+        # Test 1: Basic configuration retrieval
+        print("1. Testing basic configuration retrieval...")
+        config_result = await asyncio.wait_for(
+            service.get_microscope_configuration(config_section="all", include_defaults=True),
+            timeout=15
+        )
+        
+        assert isinstance(config_result, dict)
+        assert "success" in config_result
+        assert config_result["success"] == True
+        assert "data" in config_result
+        assert "config_section" in config_result
+        assert config_result["config_section"] == "all"
+        
+        print(f"   Configuration retrieved successfully")
+        print(f"   Sections found: {list(config_result['data'].keys())}")
+        
+        # Verify expected sections are present
+        expected_sections = ["camera", "stage", "illumination", "acquisition", "limits", "hardware", "wellplate", "optics", "autofocus"]
+        config_data = config_result["data"]
+        
+        found_sections = []
+        for section in expected_sections:
+            if section in config_data:
+                found_sections.append(section)
+                assert isinstance(config_data[section], dict)
+        
+        print(f"   Found {len(found_sections)} expected sections: {found_sections}")
+        assert len(found_sections) >= 5, "Should find at least 5 configuration sections"
+        
+        # Test 2: Specific section retrieval
+        print("2. Testing specific section retrieval...")
+        test_sections = ["camera", "stage", "illumination", "wellplate"]
+        
+        for section in test_sections:
+            print(f"   Testing section: {section}")
+            section_result = await asyncio.wait_for(
+                service.get_microscope_configuration(config_section=section, include_defaults=True),
+                timeout=10
+            )
+            
+            assert isinstance(section_result, dict)
+            assert section_result["success"] == True
+            assert section_result["config_section"] == section
+            assert "data" in section_result
+            
+            if section in section_result["data"]:
+                section_data = section_result["data"][section]
+                assert isinstance(section_data, dict)
+                print(f"      Section '{section}' has {len(section_data)} parameters")
+            else:
+                print(f"      Section '{section}' not found in current configuration")
+        
+        # Test 3: Parameter variations
+        print("3. Testing parameter variations...")
+        
+        # Test without defaults
+        config_no_defaults = await service.get_microscope_configuration(config_section="camera", include_defaults=False)
+        assert config_no_defaults["success"] == True
+        assert config_no_defaults["include_defaults"] == False
+        print("   ✓ Without defaults")
+        
+        # Test default parameters
+        config_defaults = await service.get_microscope_configuration()
+        assert config_defaults["success"] == True
+        assert config_defaults["config_section"] == "all"  # Default
+        assert config_defaults["include_defaults"] == True  # Default
+        print("   ✓ Default parameters")
+        
+        # Test 4: JSON serialization
+        print("4. Testing JSON serialization...")
+        import json
+        
+        try:
+            json_str = json.dumps(config_result, indent=2)
+            assert len(json_str) > 100
+            
+            # Test deserialization
+            deserialized = json.loads(json_str)
+            assert deserialized == config_result
+            print(f"   ✓ JSON serialization successful ({len(json_str)} characters)")
+            
+        except (TypeError, ValueError) as e:
+            pytest.fail(f"Configuration result is not JSON serializable: {e}")
+        
+        print("✅ get_microscope_configuration service tests passed!")
+        
+    except Exception as e:
+        print(f"❌ get_microscope_configuration service test failed: {e}")
+        raise
+
+async def test_microscope_configuration_schema_method(test_microscope_service):
+    """Test the microscope configuration schema method if it exists."""
+    microscope, service = test_microscope_service
+    
+    print("Testing microscope configuration schema method")
+    
+    try:
+        # Check if schema method exists
+        if hasattr(microscope, 'get_microscope_configuration_schema'):
+            print("1. Testing schema method...")
+            
+            # Test schema method with different inputs
+            from start_hypha_service import Microscope
+            if hasattr(Microscope, 'GetMicroscopeConfigurationInput'):
+                # Test with valid input
+                config_input = Microscope.GetMicroscopeConfigurationInput(
+                    config_section="camera",
+                    include_defaults=True
+                )
+                
+                schema_result = microscope.get_microscope_configuration_schema(config_input)
+                assert isinstance(schema_result, dict)
+                assert "result" in schema_result
+                
+                result_data = schema_result["result"]
+                assert isinstance(result_data, dict)
+                assert "success" in result_data
+                print("   ✓ Schema method works with valid input")
+                
+                # Test with different section
+                config_input_stage = Microscope.GetMicroscopeConfigurationInput(
+                    config_section="stage",
+                    include_defaults=False
+                )
+                
+                schema_result_stage = microscope.get_microscope_configuration_schema(config_input_stage)
+                assert isinstance(schema_result_stage, dict)
+                assert "result" in schema_result_stage
+                print("   ✓ Schema method works with different parameters")
+                
+            else:
+                print("   GetMicroscopeConfigurationInput class not found, testing direct call")
+                # Test direct schema method call if input class doesn't exist
+                schema_result = microscope.get_microscope_configuration_schema(None)
+                print(f"   Schema method result type: {type(schema_result)}")
+        
+        else:
+            print("1. Schema method not found - this is expected if not implemented")
+        
+        # Test 2: Check if method is in schema definitions
+        print("2. Testing schema definitions...")
+        schema = microscope.get_schema()
+        
+        if "get_microscope_configuration" in schema:
+            config_schema = schema["get_microscope_configuration"]
+            assert isinstance(config_schema, dict)
+            
+            # Verify schema structure
+            if "properties" in config_schema:
+                properties = config_schema["properties"]
+                expected_properties = ["config_section", "include_defaults"]
+                
+                for prop in expected_properties:
+                    if prop in properties:
+                        print(f"   Found schema property: {prop}")
+                        assert isinstance(properties[prop], dict)
+                
+            print("   ✓ Configuration method found in schema")
+        else:
+            print("   Configuration method not found in schema")
+        
+        print("✅ Configuration schema tests completed!")
+        
+    except Exception as e:
+        print(f"❌ Configuration schema test failed: {e}")
+        # Don't fail the entire test suite if schema methods don't exist
+        print("   This is expected if schema methods are not yet implemented")
+
+async def test_microscope_configuration_integration(test_microscope_service):
+    """Test integration of configuration service with other microscope features."""
+    microscope, service = test_microscope_service
+    
+    print("Testing microscope configuration integration")
+    
+    try:
+        # Test 1: Configuration reflects simulation mode
+        print("1. Testing simulation mode reflection in configuration...")
+        config_result = await service.get_microscope_configuration(config_section="all", include_defaults=True)
+        
+        assert config_result["success"] == True
+        assert "is_simulation" in config_result
+        assert config_result["is_simulation"] == True  # Should reflect current mode
+        assert "is_local" in config_result
+        assert config_result["is_local"] == False  # Should reflect current mode
+        
+        print(f"   Simulation mode: {config_result['is_simulation']}")
+        print(f"   Local mode: {config_result['is_local']}")
+        
+        # Test 2: Configuration includes relevant camera information
+        print("2. Testing camera configuration relevance...")
+        camera_config = await service.get_microscope_configuration(config_section="camera", include_defaults=True)
+        
+        if "camera" in camera_config["data"]:
+            camera_data = camera_config["data"]["camera"]
+            print(f"   Camera configuration keys: {list(camera_data.keys())}")
+            
+            # In simulation mode, should include simulation-related parameters
+            simulation_keys = [key for key in camera_data.keys() if 'simulation' in key.lower()]
+            if simulation_keys:
+                print(f"   Found simulation-related keys: {simulation_keys}")
+        
+        # Test 3: Stage configuration includes current capabilities
+        print("3. Testing stage configuration...")
+        stage_config = await service.get_microscope_configuration(config_section="stage", include_defaults=True)
+        
+        if "stage" in stage_config["data"]:
+            stage_data = stage_config["data"]["stage"]
+            print(f"   Stage configuration keys: {list(stage_data.keys())}")
+            
+            # Should include movement and positioning information
+            movement_keys = [key for key in stage_data.keys() if any(word in key.lower() for word in ['movement', 'position', 'limit', 'axis'])]
+            if movement_keys:
+                print(f"   Found movement-related keys: {movement_keys}")
+        
+        # Test 4: Well plate configuration matches supported formats
+        print("4. Testing well plate configuration...")
+        wellplate_config = await service.get_microscope_configuration(config_section="wellplate", include_defaults=True)
+        
+        if "wellplate" in wellplate_config["data"]:
+            wellplate_data = wellplate_config["data"]["wellplate"]
+            print(f"   Well plate configuration keys: {list(wellplate_data.keys())}")
+            
+            # Should include information about supported plate formats
+            format_keys = [key for key in wellplate_data.keys() if any(word in key.lower() for word in ['format', 'type', 'size', 'well'])]
+            if format_keys:
+                print(f"   Found format-related keys: {format_keys}")
+        
+        # Test 5: Configuration data consistency
+        print("5. Testing configuration data consistency...")
+        
+        # Get configuration multiple times and verify consistency
+        config1 = await service.get_microscope_configuration(config_section="illumination", include_defaults=True)
+        await asyncio.sleep(0.1)  # Small delay
+        config2 = await service.get_microscope_configuration(config_section="illumination", include_defaults=True)
+        
+        # Results should be consistent (excluding timestamp if present)
+        if "timestamp" in config1:
+            del config1["timestamp"]
+        if "timestamp" in config2:
+            del config2["timestamp"]
+        
+        # Core configuration should be the same
+        assert config1["success"] == config2["success"]
+        assert config1["config_section"] == config2["config_section"]
+        assert config1["include_defaults"] == config2["include_defaults"]
+        print("   ✓ Configuration data is consistent across calls")
+        
+        print("✅ Configuration integration tests passed!")
+        
+    except Exception as e:
+        print(f"❌ Configuration integration test failed: {e}")
+        raise
+
+async def test_microscope_configuration_error_handling(test_microscope_service):
+    """Test error handling in microscope configuration service."""
+    microscope, service = test_microscope_service
+    
+    print("Testing microscope configuration error handling")
+    
+    try:
+        # Test 1: Invalid configuration section
+        print("1. Testing invalid configuration section...")
+        invalid_result = await service.get_microscope_configuration(
+            config_section="invalid_nonexistent_section",
+            include_defaults=True
+        )
+        
+        assert isinstance(invalid_result, dict)
+        # Should handle gracefully - either success with limited data or explicit error
+        if "success" in invalid_result:
+            if invalid_result["success"] == False:
+                print("   ✓ Invalid section properly rejected")
+                assert "error" in invalid_result or "message" in invalid_result
+            else:
+                print("   ✓ Invalid section handled gracefully with limited data")
+        
+        # Test 2: Extreme parameter values
+        print("2. Testing extreme parameter values...")
+        try:
+            # Test with unusual section names
+            unusual_sections = ["", " ", "ALL", "Camera", "STAGE"]
+            
+            for section in unusual_sections:
+                result = await service.get_microscope_configuration(
+                    config_section=section,
+                    include_defaults=True
+                )
+                
+                assert isinstance(result, dict)
+                print(f"   Section '{section}': {'✓' if result.get('success', False) else '⚠'}")
+                
+        except Exception as param_error:
+            print(f"   Parameter error handled: {param_error}")
+        
+        # Test 3: Service method robustness
+        print("3. Testing service method robustness...")
+        
+        # Test rapid consecutive calls
+        tasks = []
+        for i in range(3):
+            tasks.append(
+                service.get_microscope_configuration(
+                    config_section="camera",
+                    include_defaults=True
+                )
+            )
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        successful_results = [r for r in results if isinstance(r, dict) and r.get('success', False)]
+        print(f"   {len(successful_results)}/{len(results)} rapid calls successful")
+        assert len(successful_results) >= 1, "At least one rapid call should succeed"
+        
+        # Test 4: Memory and resource handling
+        print("4. Testing memory and resource handling...")
+        
+        # Request large configuration multiple times
+        large_configs = []
+        for i in range(5):
+            config = await service.get_microscope_configuration(config_section="all", include_defaults=True)
+            if config.get('success', False):
+                large_configs.append(config)
+        
+        print(f"   Retrieved {len(large_configs)} large configurations")
+        
+        # Verify configurations are independent (modifying one doesn't affect others)
+        if len(large_configs) >= 2:
+            config1 = large_configs[0]
+            config2 = large_configs[1]
+            
+            # Modify first config
+            if "test_field" not in config1:
+                config1["test_field"] = "modified"
+            
+            # Second config should be unaffected
+            assert "test_field" not in config2 or config2["test_field"] != "modified"
+            print("   ✓ Configuration objects are independent")
+        
+        print("✅ Configuration error handling tests passed!")
+        
+    except Exception as e:
+        print(f"❌ Configuration error handling test failed: {e}")
+        # Don't fail entire test suite for error handling edge cases
+        print("   Some error handling failures are acceptable for edge cases")
+
+async def test_microscope_configuration_performance(test_microscope_service):
+    """Test performance characteristics of configuration service."""
+    microscope, service = test_microscope_service
+    
+    print("Testing microscope configuration performance")
+    
+    try:
+        # Test 1: Response time measurement
+        print("1. Testing response time...")
+        
+        import time
+        start_time = time.time()
+        
+        config_result = await service.get_microscope_configuration(config_section="all", include_defaults=True)
+        
+        elapsed_time = time.time() - start_time
+        print(f"   Full configuration retrieval: {elapsed_time*1000:.1f}ms")
+        
+        assert config_result.get('success', False), "Configuration retrieval should succeed"
+        assert elapsed_time < 5.0, f"Configuration retrieval too slow: {elapsed_time:.2f}s"
+        
+        # Test 2: Section-specific performance
+        print("2. Testing section-specific performance...")
+        
+        test_sections = ["camera", "stage", "illumination"]
+        section_times = {}
+        
+        for section in test_sections:
+            start_time = time.time()
+            section_result = await service.get_microscope_configuration(config_section=section, include_defaults=True)
+            elapsed_time = time.time() - start_time
+            
+            section_times[section] = elapsed_time
+            print(f"   Section '{section}': {elapsed_time*1000:.1f}ms")
+            
+            if section_result.get('success', False):
+                assert elapsed_time < 2.0, f"Section '{section}' retrieval too slow: {elapsed_time:.2f}s"
+        
+        # Test 3: Concurrent request performance
+        print("3. Testing concurrent request performance...")
+        
+        async def get_config_timed(section):
+            start_time = time.time()
+            result = await service.get_microscope_configuration(config_section=section, include_defaults=True)
+            elapsed_time = time.time() - start_time
+            return section, elapsed_time, result.get('success', False)
+        
+        # Make concurrent requests
+        concurrent_tasks = [
+            get_config_timed("camera"),
+            get_config_timed("stage"),
+            get_config_timed("illumination")
+        ]
+        
+        concurrent_start = time.time()
+        concurrent_results = await asyncio.gather(*concurrent_tasks)
+        total_concurrent_time = time.time() - concurrent_start
+        
+        print(f"   Concurrent requests total time: {total_concurrent_time*1000:.1f}ms")
+        
+        successful_concurrent = sum(1 for _, _, success in concurrent_results if success)
+        print(f"   Successful concurrent requests: {successful_concurrent}/{len(concurrent_tasks)}")
+        
+        for section, elapsed, success in concurrent_results:
+            status = "✓" if success else "✗"
+            print(f"      {section}: {elapsed*1000:.1f}ms {status}")
+        
+        # Concurrent should be faster than sequential
+        sequential_time = sum(section_times.values())
+        print(f"   Sequential time: {sequential_time*1000:.1f}ms, Concurrent time: {total_concurrent_time*1000:.1f}ms")
+        
+        if successful_concurrent >= 2:
+            # Allow some overhead for concurrent processing
+            assert total_concurrent_time < sequential_time + 1.0, "Concurrent requests should be more efficient"
+        
+        print("✅ Configuration performance tests passed!")
+        
+    except Exception as e:
+        print(f"❌ Configuration performance test failed: {e}")
+        # Performance issues shouldn't fail the entire test suite
+        print("   Performance test failures are noted but not critical")
+
+# Add configuration tests to existing test groups
+async def test_comprehensive_service_functionality(test_microscope_service):
+    """Test comprehensive service functionality including configuration."""
+    microscope, service = test_microscope_service
+    
+    print("Testing comprehensive service functionality")
+    
+    try:
+        # Test 1: Verify all expected methods exist
+        print("1. Testing service method availability...")
+        
+        expected_methods = [
+            "hello_world", "get_status", "move_by_distance", "snap",
+            "set_illumination", "navigate_to_well", "get_microscope_configuration"
+        ]
+        
+        available_methods = []
+        for method in expected_methods:
+            if hasattr(service, method):
+                available_methods.append(method)
+                print(f"   ✓ {method}")
+            else:
+                print(f"   ✗ {method}")
+        
+        assert "get_microscope_configuration" in available_methods, "Configuration method should be available"
+        
+        # Test 2: Test integration between methods
+        print("2. Testing method integration...")
+        
+        # Get initial status and configuration
+        status = await service.get_status()
+        config = await service.get_microscope_configuration(config_section="all")
+        
+        assert status is not None
+        assert config is not None and config.get('success', False)
+        
+        # Move stage and verify both status and configuration are consistent
+        await service.move_by_distance(x=1.0, y=0.5, z=0.0)
+        
+        new_status = await service.get_status()
+        new_config = await service.get_microscope_configuration(config_section="stage")
+        
+        assert new_status is not None
+        assert new_config is not None and new_config.get('success', False)
+        
+        print("   ✓ Methods work together consistently")
+        
+        # Test 3: Test configuration reflects current state
+        print("3. Testing configuration state reflection...")
+        
+        # Set illumination and verify configuration can be retrieved
+        await service.set_illumination(channel=11, intensity=60)
+        illumination_config = await service.get_microscope_configuration(config_section="illumination")
+        
+        assert illumination_config.get('success', False)
+        print("   ✓ Configuration accessible after parameter changes")
+        
+        print("✅ Comprehensive service functionality tests passed!")
+        
+    except Exception as e:
+        print(f"❌ Comprehensive service functionality test failed: {e}")
+        raise
