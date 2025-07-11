@@ -1920,7 +1920,6 @@ class Microscope:
             "get_stitched_region": self.get_stitched_region,
             "reset_stitching_canvas": self.reset_stitching_canvas,
             "upload_zarr_dataset": self.upload_zarr_dataset,
-            "list_microscope_datasets": self.list_microscope_datasets,
             # Zarr fileset management functions
             "create_zarr_fileset": self.create_zarr_fileset,
             "list_zarr_filesets": self.list_zarr_filesets,
