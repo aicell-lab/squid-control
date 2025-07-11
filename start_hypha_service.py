@@ -1919,7 +1919,6 @@ class Microscope:
             "quick_scan_with_stitching": self.quick_scan_with_stitching,
             "get_stitched_region": self.get_stitched_region,
             "reset_stitching_canvas": self.reset_stitching_canvas,
-            "get_zarr_upload_info": self.get_zarr_upload_info,
             "check_zarr_dataset_name": self.check_zarr_dataset_name,
             "upload_zarr_dataset": self.upload_zarr_dataset,
             "list_microscope_datasets": self.list_microscope_datasets,
