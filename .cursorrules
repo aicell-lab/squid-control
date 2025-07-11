@@ -378,8 +378,8 @@ This serial communication system provides the foundation for precise, reliable, 
 ### API Design
 - Use Pydantic models for input validation (see BaseModel classes)
 - Include detailed Field descriptions for all parameters
+- Implement permission checks using `check_permission()`
 - Add schema validation with `@schema_function` decorator
-- If exception occurs, use raise.
 
 ### Configuration Management
 - Use INI files for hardware configuration
@@ -542,7 +542,6 @@ This serial communication system provides the foundation for precise, reliable, 
 - Log hardware operations at INFO level
 - Log errors with full stack traces
 - Include timing information for performance monitoring
-- Log zarr operations at DEBUG level to avoid log spam
 
 ## Security Considerations
 - Implement user authentication for API access
@@ -556,5 +555,4 @@ When working on this codebase:
 3. Add comprehensive error handling and logging
 4. Test thoroughly with both mock and real hardware
 5. Follow the established patterns for new features
-6. Update relevant documentation and tests
-7. **For Zarr operations**: Always validate bounds and prevent zero-size writes 
+6. Update relevant documentation and tests 

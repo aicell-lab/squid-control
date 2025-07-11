@@ -361,6 +361,10 @@ class Microscope:
         # Scanning control attributes
         self.scanning_in_progress = False  # Flag to prevent video buffering during scans
 
+        # Server related attributes
+        self.chatbot_server = None
+        self.server = None
+        
         # Add task status tracking
         self.task_status = {
             "move_by_distance": "not_started",
@@ -415,10 +419,14 @@ class Microscope:
             return True
         else:
             return False
+        
+    async def ping(self, context=None):
+        return "pong"
     
     async def is_service_healthy(self, context=None):
         """Check if all services are healthy"""
         try:
+            
             microscope_svc = await self.server.get_service(self.service_id)
             if microscope_svc is None:
                 raise RuntimeError("Microscope service not found")
@@ -434,23 +442,18 @@ class Microscope:
             
             chatbot_id = f"squid-chatbot-{'simu' if self.is_simulation else 'real'}-{self.service_id}"
             
-            chatbot_server_url = "https://chat.bioimage.io"
-            try:
-                chatbot_token = os.environ.get("WORKSPACE_TOKEN_CHATBOT")
-                if not chatbot_token:
-                    logger.warning("Chatbot token not found, skipping chatbot health check")
-                else:
-                    chatbot_server = await connect_to_server({
-                        "client_id": f"squid-chatbot-{self.service_id}-{uuid.uuid4()}",
-                        "server_url": chatbot_server_url, 
-                        "token": chatbot_token,
-                        "ping_interval": None
-                    })
-                    chatbot_svc = await asyncio.wait_for(chatbot_server.get_service(chatbot_id), 10)
-                    if chatbot_svc is None:
-                        raise RuntimeError("Chatbot service not found")
-            except Exception as chatbot_error:
-                raise RuntimeError(f"Chatbot service health check failed: {str(chatbot_error)}")
+            # Check if chatbot_server is initialized before trying to use it
+            if self.chatbot_server is None:
+                return {"status": "ok", "message": "Chatbot server not yet initialized - service may still be starting up"}
+            else:
+                chatbot_server_url = "https://chat.bioimage.io"
+                chatbot_service = await self.chatbot_server.get_service(chatbot_id)
+                if chatbot_service is None:
+                    raise RuntimeError("Chatbot service not found")
+            
+                ping_result = await chatbot_service.ping()
+                if ping_result != "pong":
+                    raise RuntimeError("Chatbot service not responding correctly")
             
             try:
                 if self.similarity_search_svc is None:
@@ -521,7 +524,12 @@ class Microscope:
             else:
                 result = f'The stage cannot move ({x},{y},{z})mm through x,y,z axis, from ({x_pos},{y_pos},{z_pos})mm to ({x_des},{y_des},{z_des})mm because out of the range.'
                 self.task_status[task_name] = "failed"
-                raise Exception(result)
+                return {
+                    "success": False,
+                    "message": result,
+                    "initial_position": {"x": x_pos, "y": y_pos, "z": z_pos},
+                    "attempted_position": {"x": x_des, "y": y_des, "z": z_des}
+                }
         except Exception as e:
             self.task_status[task_name] = "failed"
             logger.error(f"Failed to move by distance: {e}")
@@ -545,19 +553,34 @@ class Microscope:
                 is_success, x_pos, y_pos, z_pos, x_des = self.squidController.move_x_to_limited(x)
                 if not is_success:
                     self.task_status[task_name] = "failed"
-                    raise Exception(f'The stage cannot move to position ({x},{y},{z})mm from ({initial_x},{initial_y},{initial_z})mm because out of the limit of X axis.')
+                    return {
+                        "success": False,
+                        "message": f'The stage cannot move to position ({x},{y},{z})mm from ({initial_x},{initial_y},{initial_z})mm because out of the limit of X axis.',
+                        "initial_position": {"x": initial_x, "y": initial_y, "z": initial_z},
+                        "final_position": {"x": x_pos, "y": y_pos, "z": z_pos}
+                    }
 
             if y != 0:
                 is_success, x_pos, y_pos, z_pos, y_des = self.squidController.move_y_to_limited(y)
                 if not is_success:
                     self.task_status[task_name] = "failed"
-                    raise Exception(f'X axis moved successfully, the stage is now at ({x_pos},{y_pos},{z_pos})mm. But aimed position is out of the limit of Y axis and the stage cannot move to position ({x},{y},{z})mm.')
+                    return {
+                        "success": False,
+                        "message": f'X axis moved successfully, the stage is now at ({x_pos},{y_pos},{z_pos})mm. But aimed position is out of the limit of Y axis and the stage cannot move to position ({x},{y},{z})mm.',
+                        "initial_position": {"x": initial_x, "y": initial_y, "z": initial_z},
+                        "final_position": {"x": x_pos, "y": y_pos, "z": z_pos}
+                    }
 
             if z != 0:
                 is_success, x_pos, y_pos, z_pos, z_des = self.squidController.move_z_to_limited(z)
                 if not is_success:
                     self.task_status[task_name] = "failed"
-                    raise Exception(f'X and Y axis moved successfully, the stage is now at ({x_pos},{y_pos},{z_pos})mm. But aimed position is out of the limit of Z axis and the stage cannot move to position ({x},{y},{z})mm.')
+                    return {
+                        "success": False,
+                        "message": f'X and Y axis moved successfully, the stage is now at ({x_pos},{y_pos},{z_pos})mm. But aimed position is out of the limit of Z axis and the stage cannot move to position ({x},{y},{z})mm.',
+                        "initial_position": {"x": initial_x, "y": initial_y, "z": initial_z},
+                        "final_position": {"x": x_pos, "y": y_pos, "z": z_pos}
+                    }
 
             self.task_status[task_name] = "finished"
             return {
@@ -878,7 +901,10 @@ class Microscope:
             }
         except Exception as e:
             logger.error(f"Failed to configure video buffer: {e}")
-            raise e
+            return {
+                "success": False,
+                "message": f"Failed to configure video buffer: {str(e)}"
+            }
 
     @schema_function(skip_self=True)
     def get_video_buffer_status(self, context=None):
@@ -904,7 +930,10 @@ class Microscope:
             }
         except Exception as e:
             logger.error(f"Failed to get video buffer status: {e}")
-            raise e
+            return {
+                "success": False,
+                "message": f"Failed to get video buffer status: {str(e)}"
+            }
 
     @schema_function(skip_self=True)
     async def start_video_buffering(self, context=None):
@@ -928,7 +957,10 @@ class Microscope:
             }
         except Exception as e:
             logger.error(f"Failed to start video buffering: {e}")
-            raise e
+            return {
+                "success": False,
+                "message": f"Failed to start video buffering: {str(e)}"
+            }
 
     @schema_function(skip_self=True)
     async def stop_video_buffering(self, context=None):
@@ -980,7 +1012,10 @@ class Microscope:
             }
         except Exception as e:
             logger.error(f"Failed to configure video idle timeout: {e}")
-            raise e
+            return {
+                "success": False,
+                "message": f"Failed to configure video idle timeout: {str(e)}"
+            }
 
     @schema_function(skip_self=True)
     async def set_video_fps(self, fps: int = Field(5, description="Target frames per second for video acquisition (1-30 FPS)"), context=None):
@@ -995,7 +1030,11 @@ class Microscope:
         try:
             # Validate FPS range
             if not isinstance(fps, int) or fps < 1 or fps > 30:
-                raise ValueError(f"Invalid FPS value: {fps}. Must be an integer between 1 and 30.")
+                return {
+                    "success": False,
+                    "message": f"Invalid FPS value: {fps}. Must be an integer between 1 and 30.",
+                    "current_fps": self.buffer_fps
+                }
             
             # Store old FPS for comparison
             old_fps = self.buffer_fps
@@ -1029,7 +1068,11 @@ class Microscope:
             
         except Exception as e:
             logger.error(f"Failed to set video FPS: {e}")
-            raise e
+            return {
+                "success": False,
+                "message": f"Failed to set video FPS: {str(e)}",
+                "current_fps": getattr(self, 'buffer_fps', 5)
+            }
 
 
 
@@ -1100,7 +1143,10 @@ class Microscope:
         except Exception as e:
             self.task_status[task_name] = "failed"
             logger.error(f"Failed to stop video buffering: {e}")
-            raise e
+            return {
+                "success": False,
+                "message": f"Failed to stop video buffering: {str(e)}"
+            }
 
     @schema_function(skip_self=True)
     def get_video_buffering_status(self, context=None):
@@ -1143,7 +1189,7 @@ class Microscope:
         except Exception as e:
             self.task_status[task_name] = "failed"
             logger.error(f"Failed to adjust video frame: {e}")
-            raise e
+            return {"success": False, "message": f"Failed to adjust video frame: {str(e)}"}
 
     @schema_function(skip_self=True)
     async def snap(self, exposure_time: int=Field(100, description="Exposure time, in milliseconds"), channel: int=Field(0, description="Light source (0 for Bright Field, Fluorescence channels: 11 for 405 nm, 12 for 488 nm, 13 for 638nm, 14 for 561 nm, 15 for 730 nm)"), intensity: int=Field(50, description="Intensity of the illumination source"), context=None):
@@ -1261,22 +1307,7 @@ class Microscope:
             self.scanning_in_progress = True
             
             logger.info("Start scanning well plate with custom illumination settings")
-            
-            # Run the blocking plate_scan operation in a separate thread executor
-            # This prevents the asyncio event loop from being blocked during long scans
-            await asyncio.get_event_loop().run_in_executor(
-                None,  # Use default ThreadPoolExecutor
-                self.squidController.plate_scan,
-                well_plate_type,
-                illumination_settings,
-                do_contrast_autofocus,
-                do_reflection_af,
-                scanning_zone,
-                Nx,
-                Ny,
-                action_ID
-            )
-            
+            self.squidController.plate_scan(well_plate_type, illumination_settings, do_contrast_autofocus, do_reflection_af, scanning_zone, Nx, Ny, action_ID)
             logger.info("Well plate scanning completed")
             self.task_status[task_name] = "finished"
             return "Well plate scanning completed"
@@ -1396,7 +1427,7 @@ class Microscope:
             raise e
 
     @schema_function(skip_self=True)
-    async def home_stage(self, context=None):
+    def home_stage(self, context=None):
         """
         Move the stage to home/zero position
         Returns: A string message
@@ -1404,12 +1435,7 @@ class Microscope:
         task_name = "home_stage"
         self.task_status[task_name] = "started"
         try:
-            # Run the blocking home_stage operation in a separate thread executor
-            # This prevents the asyncio event loop from being blocked during homing
-            await asyncio.get_event_loop().run_in_executor(
-                None,  # Use default ThreadPoolExecutor
-                self.squidController.home_stage
-            )
+            self.squidController.home_stage()
             logger.info('The stage moved to home position in z, y, and x axis')
             self.task_status[task_name] = "finished"
             return 'The stage moved to home position in z, y, and x axis'
@@ -1419,7 +1445,7 @@ class Microscope:
             raise e
     
     @schema_function(skip_self=True)
-    async def return_stage(self, context=None):
+    def return_stage(self,context=None):
         """
         Move the stage to the initial position for imaging.
         Returns: A string message
@@ -1427,12 +1453,7 @@ class Microscope:
         task_name = "return_stage"
         self.task_status[task_name] = "started"
         try:
-            # Run the blocking return_stage operation in a separate thread executor
-            # This prevents the asyncio event loop from being blocked during stage movement
-            await asyncio.get_event_loop().run_in_executor(
-                None,  # Use default ThreadPoolExecutor
-                self.squidController.return_stage
-            )
+            self.squidController.return_stage()
             logger.info('The stage moved to the initial position')
             self.task_status[task_name] = "finished"
             return 'The stage moved to the initial position'
@@ -1442,7 +1463,7 @@ class Microscope:
             raise e
     
     @schema_function(skip_self=True)
-    async def move_to_loading_position(self, context=None):
+    def move_to_loading_position(self, context=None):
         """
         Move the stage to the loading position.
         Returns: A  string message
@@ -1450,12 +1471,7 @@ class Microscope:
         task_name = "move_to_loading_position"
         self.task_status[task_name] = "started"
         try:
-            # Run the blocking move_to_slide_loading_position operation in a separate thread executor
-            # This prevents the asyncio event loop from being blocked during stage movement
-            await asyncio.get_event_loop().run_in_executor(
-                None,  # Use default ThreadPoolExecutor
-                self.squidController.slidePositionController.move_to_slide_loading_position
-            )
+            self.squidController.slidePositionController.move_to_slide_loading_position()
             logger.info('The stage moved to loading position')
             self.task_status[task_name] = "finished"
             return 'The stage moved to loading position'
@@ -1501,7 +1517,7 @@ class Microscope:
             raise e
         
     @schema_function(skip_self=True)
-    async def set_laser_reference(self, context=None):
+    def set_laser_reference(self, context=None):
         """
         Set the reference of the laser
         Returns: A string message
@@ -1512,12 +1528,7 @@ class Microscope:
             if self.is_simulation:
                 pass
             else:
-                # Run the potentially blocking set_reference operation in a separate thread executor
-                # This prevents the asyncio event loop from being blocked during laser reference setting
-                await asyncio.get_event_loop().run_in_executor(
-                    None,  # Use default ThreadPoolExecutor
-                    self.squidController.laserAutofocusController.set_reference
-                )
+                self.squidController.laserAutofocusController.set_reference()
             logger.info('The laser reference is set')
             self.task_status[task_name] = "finished"
             return 'The laser reference is set'
@@ -1527,7 +1538,7 @@ class Microscope:
             raise e
         
     @schema_function(skip_self=True)
-    async def navigate_to_well(self, row: str=Field('A', description="Row number of the well position (e.g., 'A')"), col: int=Field(1, description="Column number of the well position"), wellplate_type: str=Field('96', description="Type of the well plate (e.g., '6', '12', '24', '96', '384')"), context=None):
+    def navigate_to_well(self, row: str=Field('A', description="Row number of the well position (e.g., 'A')"), col: int=Field(1, description="Column number of the well position"), wellplate_type: str=Field('96', description="Type of the well plate (e.g., '6', '12', '24', '96', '384')"), context=None):
         """
         Navigate to the specified well position in the well plate.
         Returns: A string message
@@ -1537,15 +1548,7 @@ class Microscope:
         try:
             if wellplate_type is None:
                 wellplate_type = '96'
-            # Run the blocking move_to_well operation in a separate thread executor
-            # This prevents the asyncio event loop from being blocked during stage movement
-            await asyncio.get_event_loop().run_in_executor(
-                None,  # Use default ThreadPoolExecutor
-                self.squidController.move_to_well,
-                row,
-                col,
-                wellplate_type
-            )
+            self.squidController.move_to_well(row, col, wellplate_type)
             logger.info(f'The stage moved to well position ({row},{col})')
             self.task_status[task_name] = "finished"
             return f'The stage moved to well position ({row},{col})'
@@ -1781,20 +1784,20 @@ class Microscope:
         image_url = await self.snap(config.exposure, config.channel, config.intensity, context)
         return f"![Image]({image_url})"
 
-    async def navigate_to_well_schema(self, config: NavigateToWellInput, context=None):
-        await self.navigate_to_well(config.row, config.col, config.wellplate_type, context)
+    def navigate_to_well_schema(self, config: NavigateToWellInput, context=None):
+        self.navigate_to_well(config.row, config.col, config.wellplate_type, context)
         return f'The stage moved to well position ({config.row},{config.col})'
 
     async def inspect_tool_schema(self, config: InspectToolInput, context=None):
         response = await self.inspect_tool(config.images, config.query, config.context_description)
         return {"result": response}
 
-    async def home_stage_schema(self, context=None):
-        response = await self.home_stage(context)
+    def home_stage_schema(self, context=None):
+        response = self.home_stage(context)
         return {"result": response}
 
-    async def return_stage_schema(self, context=None):
-        response = await self.return_stage(context)
+    def return_stage_schema(self, context=None):
+        response = self.return_stage(context)
         return {"result": response}
 
     async def find_similar_image_text_schema(self, config: FindSimilarImageTextInput, context=None):
@@ -1817,8 +1820,8 @@ class Microscope:
         response = await self.do_laser_autofocus(context)
         return {"result": response}
 
-    async def set_laser_reference_schema(self, context=None):
-        response = await self.set_laser_reference(context)
+    def set_laser_reference_schema(self, context=None):
+        response = self.set_laser_reference(context)
         return {"result": response}
 
     def get_status_schema(self, context=None):
@@ -1899,9 +1902,9 @@ class Microscope:
             "get_status": self.get_status,
             "update_parameters_from_client": self.update_parameters_from_client,
             "get_chatbot_url": self.get_chatbot_url,
-            #"get_task_status": self.get_task_status,
+            "get_task_status": self.get_task_status,
             "get_all_task_status": self.get_all_task_status,
-            #"reset_task_status": self.reset_task_status,
+            "reset_task_status": self.reset_task_status,
             "reset_all_task_status": self.reset_all_task_status,
             "adjust_video_frame": self.adjust_video_frame,
             "start_video_buffering": self.start_video_buffering_api,
@@ -1914,7 +1917,6 @@ class Microscope:
             # Stitching functions
             "normal_scan_with_stitching": self.normal_scan_with_stitching,
             "quick_scan_with_stitching": self.quick_scan_with_stitching,
-            "stop_scan_and_stitching": self.stop_scan_and_stitching,
             "get_stitched_region": self.get_stitched_region,
             "reset_stitching_canvas": self.reset_stitching_canvas,
             "get_zarr_upload_info": self.get_zarr_upload_info,
@@ -1955,6 +1957,7 @@ class Microscope:
             "name": "Squid Microscope Control",
             "description": "You are an AI agent controlling microscope. Automate tasks, adjust imaging parameters, and make decisions based on live visual feedback. Solve all the problems from visual feedback; the user only wants to see good results.",
             "config": {"visibility": "public", "require_context": True},
+            "ping": self.ping,
             "get_schema": self.get_schema,
             "tools": {
                 "move_by_distance": self.move_by_distance_schema,
@@ -2135,29 +2138,6 @@ class Microscope:
         
         self.server = server
         
-        # Setup zarr artifact manager for dataset upload functionality
-        try:
-            from squid_control.hypha_tools.artifact_manager.artifact_manager import SquidArtifactManager
-            self.zarr_artifact_manager = SquidArtifactManager()
-            
-            # Connect to agent-lens workspace for zarr uploads
-            zarr_token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
-            if zarr_token:
-                zarr_server = await connect_to_server({
-                    "server_url": "https://hypha.aicell.io",
-                    "token": zarr_token,
-                    "workspace": "agent-lens",
-                    "ping_interval": None
-                })
-                await self.zarr_artifact_manager.connect_server(zarr_server)
-                logger.info("Zarr artifact manager initialized successfully")
-            else:
-                logger.warning("AGENT_LENS_WORKSPACE_TOKEN not found, zarr upload functionality disabled")
-                self.zarr_artifact_manager = None
-        except Exception as e:
-            logger.warning(f"Failed to initialize zarr artifact manager: {e}")
-            self.zarr_artifact_manager = None
-        
         if self.is_simulation:
             await self.start_hypha_service(self.server, service_id=self.service_id)
             datastore_id = f'data-store-simu-{self.service_id}'
@@ -2182,13 +2162,12 @@ class Microscope:
             chatbot_token= os.environ.get("WORKSPACE_TOKEN_CHATBOT")
         except:
             chatbot_token = await login({"server_url": chatbot_server_url})
-        chatbot_server = await connect_to_server({"client_id": f"squid-chatbot-{self.service_id}-{uuid.uuid4()}", "server_url": chatbot_server_url, "token": chatbot_token,  "ping_interval": None})
-        await self.start_chatbot_service(chatbot_server, chatbot_id)
+        self.chatbot_server = await connect_to_server({"client_id": f"squid-chatbot-{self.service_id}-{uuid.uuid4()}", "server_url": chatbot_server_url, "token": chatbot_token,  "ping_interval": None})
+        await self.start_chatbot_service(self.chatbot_server, chatbot_id)
         webrtc_id = f"video-track-{self.service_id}"
         if not self.is_local: # only start webrtc service in remote mode
             await self.start_webrtc_service(self.server, webrtc_id)
-
-
+        
     async def initialize_zarr_manager(self, camera):
         from squid_control.hypha_tools.artifact_manager.artifact_manager import ZarrImageManager
         
@@ -2774,7 +2753,10 @@ class Microscope:
             }
         except Exception as e:
             logger.error(f"Failed to configure video buffer frame size: {e}")
-            raise e
+            return {
+                "success": False,
+                "message": f"Failed to configure video buffer frame size: {str(e)}"
+            }
 
     @schema_function(skip_self=True)
     def get_microscope_configuration(self, config_section: str = Field("all", description="Configuration section to retrieve ('all', 'camera', 'stage', 'illumination', 'acquisition', 'limits', 'hardware', 'wellplate', 'optics', 'autofocus')"), include_defaults: bool = Field(True, description="Whether to include default values from config.py"), context=None):
@@ -2801,7 +2783,11 @@ class Microscope:
             
         except Exception as e:
             logger.error(f"Failed to get microscope configuration: {e}")
-            raise e
+            return {
+                "success": False,
+                "error": str(e),
+                "section": config_section
+            }
 
     @schema_function(skip_self=True)
     async def get_canvas_chunk(self, x_mm: float = Field(..., description="X coordinate of the stage location in millimeters"), y_mm: float = Field(..., description="Y coordinate of the stage location in millimeters"), scale_level: int = Field(1, description="Scale level for the chunk (0-2, where 0 is highest resolution)"), context=None):
@@ -2809,10 +2795,16 @@ class Microscope:
         
         # Check if this function is available in current mode
         if self.is_local:
-            raise Exception("get_canvas_chunk is not available in local mode")
+            return {
+                "success": False,
+                "error": "get_canvas_chunk is not available in local mode"
+            }
         
         if not self.is_simulation:
-            raise Exception("get_canvas_chunk is only available in simulation mode")
+            return {
+                "success": False,
+                "error": "get_canvas_chunk is only available in simulation mode"
+            }
         
         try:
             logger.info(f"Getting canvas chunk at position: x={x_mm}mm, y={y_mm}mm, scale_level={scale_level}")
@@ -2861,7 +2853,10 @@ class Microscope:
             )
             
             if region_data is None:
-                raise Exception("Failed to retrieve chunk data from Zarr storage")
+                return {
+                    "success": False,
+                    "error": "Failed to retrieve chunk data from Zarr storage"
+                }
             
             # Convert numpy array to base64 encoded PNG for transmission
             try:
@@ -2893,13 +2888,19 @@ class Microscope:
                 
             except Exception as e:
                 logger.error(f"Error converting chunk data to base64: {e}")
-                raise e
+                return {
+                    "success": False,
+                    "error": f"Failed to convert chunk data: {str(e)}"
+                }
                 
         except Exception as e:
             logger.error(f"Error in get_canvas_chunk: {e}")
             import traceback
             traceback.print_exc()
-            raise e
+            return {
+                "success": False,
+                "error": f"Failed to get canvas chunk: {str(e)}"
+            }
 
     @schema_function(skip_self=True)
     def set_stage_velocity(self, velocity_x_mm_per_s: Optional[float] = Field(None, description="Maximum velocity for X axis in mm/s (default: uses configuration value)"), velocity_y_mm_per_s: Optional[float] = Field(None, description="Maximum velocity for Y axis in mm/s (default: uses configuration value)"), context=None):
@@ -2916,83 +2917,14 @@ class Microscope:
             
         Returns:
             dict: Status and current velocity settings
-        """        
+        """
+        logger.info(f"Setting stage velocity - X: {velocity_x_mm_per_s} mm/s, Y: {velocity_y_mm_per_s} mm/s")
+        
         try:
-            return self.squidController.set_stage_velocity(
+            # Call the SquidController method
+            result = self.squidController.set_stage_velocity(
                 velocity_x_mm_per_s=velocity_x_mm_per_s,
                 velocity_y_mm_per_s=velocity_y_mm_per_s
-            )
-        except Exception as e:
-            logger.error(f"Error setting stage velocity: {e}")
-            raise e
-
-    @schema_function(skip_self=True)
-    async def get_zarr_upload_info(self, context=None):
-        """
-        Get information about the current zarr canvas for upload planning.
-        
-        Returns:
-            dict: Information about canvas size, export feasibility, and gallery status
-        """
-        
-        try:
-            # Check if zarr canvas exists
-            if not hasattr(self.squidController, 'zarr_canvas') or self.squidController.zarr_canvas is None:
-                raise Exception("No zarr canvas available. Start a scanning operation first to create data.")
-            
-            # Get export info from zarr canvas
-            export_info = self.squidController.zarr_canvas.get_export_info()
-            
-            # Check if zarr artifact manager is available
-            if self.zarr_artifact_manager is None:
-                raise Exception("Zarr artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
-            
-            # Check gallery status
-            try:
-                gallery = await self.zarr_artifact_manager.create_or_get_microscope_gallery(self.service_id)
-                gallery_info = {
-                    "gallery_exists": True,
-                    "gallery_id": gallery.get("id"),
-                    "gallery_name": gallery.get("manifest", {}).get("name")
-                }
-            except Exception as e:
-                logger.error(f"Error getting gallery info: {e}")
-                gallery_info = {
-                    "gallery_exists": False,
-                    "gallery_error": str(e)
-                }
-            
-            return {
-                "success": True,
-                "export_info": export_info,
-                "gallery_info": gallery_info,
-                "microscope_service_id": self.service_id
-            }
-            
-        except Exception as e:
-            logger.error(f"Error getting zarr upload info: {e}")
-            raise e
-    
-    @schema_function(skip_self=True)
-    async def check_zarr_dataset_name(self, dataset_name: str = Field(..., description="Proposed dataset name"), context=None):
-        """
-        Check if a dataset name is available for upload.
-        
-        Args:
-            dataset_name: The proposed dataset name
-            
-        Returns:
-            dict: Information about name availability and suggestions
-        """
-        
-        try:
-            # Check if zarr artifact manager is available
-            if self.zarr_artifact_manager is None:
-               raise Exception("Zarr artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
-            
-            # Check name availability
-            name_check = await self.zarr_artifact_manager.check_dataset_name_availability(
-                self.service_id, dataset_name
             )
             
             return {
@@ -3076,50 +3008,20 @@ class Microscope:
                 description=description
             )
             
+        except ValueError as e:
+            logger.error(f"Invalid velocity parameters: {e}")
             return {
                 "success": True,
                 "upload_result": upload_result,
                 "export_info": export_info,
                 "export_method": export_method_used
             }
-            
         except Exception as e:
-            logger.error(f"Error uploading zarr dataset: {e}")
-            raise e
-    
-    @schema_function(skip_self=True)
-    async def list_microscope_datasets(self, context=None):
-        """
-        List all datasets uploaded by this microscope.
-        
-        Returns:
-            list: List of datasets in the microscope's gallery
-        """
-        
-        try:
-            # Check if zarr artifact manager is available
-            if self.zarr_artifact_manager is None:
-                raise Exception("Zarr artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
-            
-            # Get gallery
-            gallery = await self.zarr_artifact_manager.create_or_get_microscope_gallery(self.service_id)
-            
-            # List datasets in gallery
-            datasets = await self.zarr_artifact_manager._svc.list(gallery["id"])
-            
+            logger.error(f"Error setting stage velocity: {e}")
             return {
-                "success": True,
-                "datasets": datasets,
-                "gallery_info": {
-                    "id": gallery["id"], 
-                    "name": gallery.get("manifest", {}).get("name"),
-                    "microscope_service_id": self.service_id
-                }
+                "status": "error", 
+                "message": f"Failed to set stage velocity: {str(e)}"
             }
-            
-        except Exception as e:
-            logger.error(f"Error listing microscope datasets: {e}")
-            raise e
 
     @schema_function(skip_self=True)
     def create_zarr_fileset(self, fileset_name: str = Field(..., description="Name for the new zarr fileset"), context=None):
@@ -3198,7 +3100,6 @@ class Microscope:
         return self.get_microscope_configuration(config.config_section, config.include_defaults, context)
 
     def set_stage_velocity_schema(self, config: SetStageVelocityInput, context=None):
-        """Set the maximum velocity for X and Y stage axes with schema validation."""
         return self.set_stage_velocity(config.velocity_x_mm_per_s, config.velocity_y_mm_per_s, context)
 
     @schema_function(skip_self=True)
@@ -3284,7 +3185,10 @@ class Microscope:
             }
         except Exception as e:
             logger.error(f"Failed to perform normal scan with stitching: {e}")
-            raise e
+            return {
+                "success": False,
+                "message": f"Failed to perform normal scan: {str(e)}"
+            }
         finally:
             # Always reset the scanning flag, regardless of success or failure
             self.scanning_in_progress = False
@@ -3297,7 +3201,6 @@ class Microscope:
                            height_mm: float = Field(5.0, description="Height of region in millimeters"),
                            scale_level: int = Field(0, description="Scale level (0=full resolution, 1=1/4, 2=1/16, etc)"),
                            channel_name: str = Field('BF LED matrix full', description="Name of channel to retrieve"),
-                           timepoint: int = Field(0, description="Timepoint index to retrieve (default 0)"),
                            output_format: str = Field('base64', description="Output format: 'base64' or 'array'"),
                            context=None):
         """
@@ -3316,35 +3219,22 @@ class Microscope:
             output_format: Format for the output ('base64' for compressed image, 'array' for numpy array)
             
         Returns:
-            dict: Retrieved image data with metadata, or None if zarr canvas is not initialized
+            dict: Retrieved image data with metadata
         """
         try:
-            # Check if zarr canvas is initialized before attempting to get region
-            if not hasattr(self.squidController, 'zarr_canvas') or self.squidController.zarr_canvas is None:
-                logger.warning("Zarr canvas not initialized, returning None")
-                return None
-            
             # Calculate center coordinates for the underlying function
             center_x_mm = start_x_mm + width_mm / 2
             center_y_mm = start_y_mm + height_mm / 2
             
             # Get the region from the zarr canvas
-            try:
-                region = self.squidController.get_stitched_region(
-                    center_x_mm=center_x_mm,
-                    center_y_mm=center_y_mm,
-                    width_mm=width_mm,
-                    height_mm=height_mm,
-                    scale_level=scale_level,
-                    channel_name=channel_name,
-                    timepoint=timepoint
-                )
-            except RuntimeError as e:
-                if "Zarr canvas not initialized" in str(e):
-                    logger.warning("Zarr canvas not initialized, returning None")
-                    return None
-                else:
-                    raise e
+            region = self.squidController.get_stitched_region(
+                center_x_mm=center_x_mm,
+                center_y_mm=center_y_mm,
+                width_mm=width_mm,
+                height_mm=height_mm,
+                scale_level=scale_level,
+                channel_name=channel_name
+            )
             
             if output_format == 'base64':
                 # Convert to base64 encoded PNG
@@ -3397,7 +3287,10 @@ class Microscope:
                 
         except Exception as e:
             logger.error(f"Failed to get stitched region: {e}")
-            raise e
+            return {
+                "success": False,
+                "message": f"Failed to retrieve stitched region: {str(e)}"
+            }
     
     @schema_function(skip_self=True)
     def reset_stitching_canvas(self, context=None):
@@ -3421,9 +3314,6 @@ class Microscope:
                 
                 # Clear the reference
                 self.squidController.zarr_canvas = None
-
-                # initialize the zarr canvas again
-                self.squidController._initialize_empty_canvas()
                 
                 logger.info("Stitching canvas reset successfully")
                 return {
@@ -3437,13 +3327,22 @@ class Microscope:
                 }
         except Exception as e:
             logger.error(f"Failed to reset stitching canvas: {e}")
-            raise e
+            return {
+                "success": False,
+                "message": f"Failed to reset canvas: {str(e)}"
+            }
 
     @schema_function(skip_self=True)
-    async def quick_scan_with_stitching(self, scan_parameters: dict = Field(..., description="Dictionary containing all scan parameters"), context=None):
+    async def quick_scan_with_stitching(self, wellplate_type: str = Field('96', description="Well plate type ('6', '12', '24', '96', '384')"),
+                                      exposure_time: float = Field(5, description="Camera exposure time in milliseconds (max 30ms)"),
+                                      intensity: float = Field(70, description="Brightfield LED intensity (0-100)"),
+                                      velocity_mm_per_s: float = Field(10, description="Stage velocity in mm/s for scanning"),
+                                      fps_target: int = Field(20, description="Target frame rate for acquisition"),
+                                      action_ID: str = Field('quick_scan_stitching', description="Identifier for this scan"),
+                                      context=None):
         """
         Perform a quick scan with live stitching to OME-Zarr canvas - brightfield only.
-        Uses 4-stripe × 4 mm scanning pattern with serpentine motion per well.
+        Uses continuous movement with high-speed frame acquisition for rapid well plate scanning.
         Only supports brightfield channel with exposure time ≤ 30ms.
         
         Args:
@@ -3501,9 +3400,12 @@ class Microscope:
             
             # Validate exposure time early
             if exposure_time > 30:
-                raise ValueError(f"Quick scan exposure time must not exceed 30ms (got {exposure_time}ms)")
+                return {
+                    "success": False,
+                    "message": f"Quick scan exposure time must not exceed 30ms (got {exposure_time}ms)"
+                }
             
-            logger.info(f"Starting quick scan with stitching: {wellplate_type} well plate, {n_stripes} stripes × {stripe_width_mm}mm, dy={dy_mm}mm, scan_velocity={velocity_scan_mm_per_s}mm/s, fps={fps_target}")
+            logger.info(f"Starting quick scan with stitching: {wellplate_type} well plate, velocity={velocity_mm_per_s}mm/s, fps={fps_target}")
             
             # Check if video buffering is active and stop it during scanning
             video_buffering_was_active = self.frame_acquisition_running
@@ -3525,6 +3427,7 @@ class Microscope:
                 wellplate_type=wellplate_type,
                 exposure_time=exposure_time,
                 intensity=intensity,
+                velocity_mm_per_s=velocity_mm_per_s,
                 fps_target=fps_target,
                 action_ID=action_ID,
                 n_stripes=n_stripes,
@@ -3549,32 +3452,23 @@ class Microscope:
                 '384': {'rows': 16, 'cols': 24}
             }
             
-            # Convert wellplate_type to string to avoid ObjectProxy issues
-            wellplate_type_str = str(wellplate_type)
-            config = wellplate_configs.get(wellplate_type_str, wellplate_configs['96'])
-            total_wells = config['rows'] * config['cols']
-            total_stripes = total_wells * n_stripes
+            config = wellplate_configs.get(wellplate_type, wellplate_configs['96'])
             
             return {
                 "success": True,
                 "message": f"Quick scan with stitching completed successfully",
                 "scan_parameters": {
-                    "wellplate_type": wellplate_type_str,
-                    "wells_scanned": total_wells,
-                    "stripes_per_well": n_stripes,
-                    "stripe_width_mm": stripe_width_mm,
-                    "dy_mm": dy_mm,
-                    "total_stripes": total_stripes,
+                    "wellplate_type": wellplate_type,
+                    "rows_scanned": config['rows'],
+                    "columns_per_row": config['cols'],
                     "exposure_time_ms": exposure_time,
                     "intensity": intensity,
-                    "scan_velocity_mm_per_s": velocity_scan_mm_per_s,
-                    "target_fps": fps_target,
-                    "inter_well_velocity_mm_per_s": 30.0
+                    "velocity_mm_per_s": velocity_mm_per_s,
+                    "target_fps": fps_target
                 },
                 "performance_metrics": {
                     "total_scan_time_seconds": round(scan_duration, 2),
-                    "scan_time_per_well_seconds": round(scan_duration / total_wells, 2),
-                    "scan_time_per_stripe_seconds": round(scan_duration / total_stripes, 2),
+                    "scan_time_per_row_seconds": round(scan_duration / config['rows'], 2),
                     "estimated_frames_acquired": int(scan_duration * fps_target)
                 },
                 "stitching_info": {
@@ -3588,44 +3482,20 @@ class Microscope:
             
         except ValueError as e:
             logger.error(f"Validation error in quick scan: {e}")
-            raise e
+            return {
+                "success": False,
+                "message": str(e)
+            }
         except Exception as e:
             logger.error(f"Failed to perform quick scan with stitching: {e}")
-            raise e
+            return {
+                "success": False,
+                "message": f"Failed to perform quick scan: {str(e)}"
+            }
         finally:
             # Always reset the scanning flag, regardless of success or failure
             self.scanning_in_progress = False
             logger.info("Quick scanning completed, video buffering auto-start is now re-enabled")
-
-    @schema_function(skip_self=True)
-    def stop_scan_and_stitching(self, context=None):
-        """
-        Stop any ongoing scanning and stitching processes.
-        This will interrupt normal_scan_with_stitching and quick_scan_with_stitching if they are running.
-        
-        Returns:
-            dict: Status of the stop request
-        """
-        try:
-            logger.info("Stop scan and stitching requested")
-            
-            # Call the controller's stop method
-            result = self.squidController.stop_scan_and_stitching()
-            
-            # Also reset the scanning flag at service level
-            if hasattr(self, 'scanning_in_progress'):
-                self.scanning_in_progress = False
-                logger.info("Service scanning flag reset")
-            
-            return {
-                "success": True,
-                "message": "Scan stop requested - ongoing scans will be interrupted",
-                "controller_response": result
-            }
-            
-        except Exception as e:
-            logger.error(f"Failed to stop scan and stitching: {e}")
-            raise e
 
 # Define a signal handler for graceful shutdown
 def signal_handler(sig, frame):
