@@ -272,22 +272,19 @@ async def upload_zip_with_retry(put_url: str, zip_path: Path, size_mb: int, max_
         try:
             print(f"Upload attempt {attempt + 1}/{max_retries} for {size_mb:.1f}MB ZIP file (timeout: {timeout_seconds}s)")
             
-            # Read file content
-            with open(zip_path, 'rb') as f:
-                zip_content = f.read()
-            
-            # Upload with httpx (async) and proper timeout
+            # Use a context manager to ensure the file is closed
             upload_start = time.time()
             async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds)) as client:
-                response = await client.put(
-                    put_url, 
-                    content=zip_content,
-                    headers={
-                        'Content-Type': 'application/zip',
-                        'Content-Length': str(len(zip_content))
-                    }
-                )
-                response.raise_for_status()
+                with open(zip_path, 'rb') as f:
+                    response = await client.put(
+                        put_url, 
+                        content=f,
+                        headers={
+                            'Content-Type': 'application/zip',
+                            'Content-Length': str(zip_path.stat().st_size)
+                        }
+                    )
+                    response.raise_for_status()
             
             upload_time = time.time() - upload_start
             print(f"Upload successful on attempt {attempt + 1}")
@@ -553,6 +550,10 @@ async def test_create_datasets_and_test_endpoints(test_gallery, artifact_manager
                 # Continue with next test
                 continue
         
+        # Manually trigger garbage collection to free up memory
+        import gc
+        gc.collect()
+
         # Print summary
         print(f"\n📊 Test Summary:")
         print(f"{'Size':<10} {'Upload':<8} {'Speed':<12} {'Endpoint':<10} {'Status'}")
@@ -650,6 +651,10 @@ async def test_quick_zip_endpoint(test_gallery, artifact_manager):
                 raise Exception(f"Invalid JSON response: {response.text[:200]}")
         else:
             raise Exception(f"HTTP {response.status_code}: {response.text[:200]}")
+    
+    # Manually trigger garbage collection
+    import gc
+    gc.collect()
 
 if __name__ == "__main__":
     # Allow running this test directly
