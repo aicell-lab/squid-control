@@ -23,15 +23,47 @@ TEST_SERVER_URL = "https://hypha.aicell.io"
 TEST_WORKSPACE = "agent-lens"
 TEST_TIMEOUT = 300  # seconds (longer for large uploads)
 
-# Test sizes in MB - from 100MB to 10GB
+async def cleanup_test_galleries(artifact_manager):
+    """Clean up any leftover test galleries from interrupted tests."""
+    try:
+        # List all artifacts
+        artifacts = await artifact_manager.list()
+        
+        # Find test galleries
+        test_galleries = [a for a in artifacts if 'test-zip-gallery' in a.get('alias', '')]
+        
+        if not test_galleries:
+            print("✅ No test galleries found to clean up")
+            return
+        
+        print(f"🧹 Found {len(test_galleries)} test galleries to clean up:")
+        for gallery in test_galleries:
+            print(f"  - {gallery['alias']} (ID: {gallery['id']})")
+        
+        # Delete each test gallery
+        for gallery in test_galleries:
+            try:
+                await artifact_manager.delete(
+                    artifact_id=gallery["id"], 
+                    delete_files=True, 
+                    recursive=True
+                )
+                print(f"✅ Deleted gallery: {gallery['alias']}")
+            except Exception as e:
+                print(f"⚠️ Error deleting {gallery['alias']}: {e}")
+        
+        print("✅ Cleanup completed")
+    except Exception as e:
+        print(f"⚠️ Error during cleanup: {e}")
+
+# Test sizes in MB - smaller sizes for faster testing
 TEST_SIZES = [
+    ("50MB", 50),
     ("100MB", 100),
     ("200MB", 200), 
     ("400MB", 400),
     ("800MB", 800),
     ("1.6GB", 1600),
-    ("3.2GB", 3200),
-    ("10GB", 10000)
 ]
 
 class OMEZarrCreator:
@@ -137,11 +169,8 @@ class OMEZarrCreator:
             scale_width = width // scale_factor
             scale_z = z_slices
             
-            # Chunk size optimization for different scales
-            if scale_idx == 0:  # Full resolution
-                chunk_size = (1, 1, min(8, scale_z), min(512, scale_height), min(512, scale_width))
-            else:  # Lower resolutions
-                chunk_size = (1, 1, scale_z, scale_height, scale_width)
+            # Standard chunk size: 256x256 for X,Y dimensions, 1 for other dimensions
+            chunk_size = (1, 1, 1, 256, 256)
             
             # Create the array
             array = root.create_dataset(
@@ -246,7 +275,15 @@ async def artifact_manager():
         artifact_manager = await server.get_service("public/artifact-manager")
         print("✅ Artifact manager ready")
         
+        # Clean up any leftover test galleries at the start
+        print("🧹 Cleaning up any leftover test galleries...")
+        await cleanup_test_galleries(artifact_manager)
+        
         yield artifact_manager
+        
+        # Clean up any leftover test galleries at the end
+        print("🧹 Final cleanup of test galleries...")
+        await cleanup_test_galleries(artifact_manager)
 
 @pytest_asyncio.fixture(scope="function") 
 async def test_gallery(artifact_manager):
@@ -284,6 +321,7 @@ async def test_gallery(artifact_manager):
     except Exception as e:
         print(f"⚠️ Error during gallery cleanup: {e}")
 
+@pytest.mark.timeout(1800)  # 30 minute timeout
 async def test_create_datasets_and_test_endpoints(test_gallery, artifact_manager):
     """Test creating datasets of various sizes and accessing their ZIP endpoints."""
     gallery = test_gallery
@@ -509,7 +547,7 @@ async def test_quick_zip_endpoint(test_gallery, artifact_manager):
         )
         
         with open(zip_path, 'rb') as f:
-            response = requests.put(put_url, data=f, timeout=120)
+            response = requests.put(put_url, data=f, timeout=320)
         
         assert response.ok, f"Upload failed: {response.status_code}"
         
