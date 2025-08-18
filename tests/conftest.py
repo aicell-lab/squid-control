@@ -2,34 +2,40 @@ import pytest
 import asyncio
 import warnings
 import functools
+import os
 from concurrent.futures import ThreadPoolExecutor
 
-# Configure matplotlib to use non-interactive backend for testing
-import matplotlib
-matplotlib.use('Agg')  # Use non-interactive backend
-
-# Prevent matplotlib type registration conflicts
-import os
+# Configure matplotlib environment BEFORE any matplotlib import
 os.environ['MPLBACKEND'] = 'Agg'
+os.environ['MPLCONFIGDIR'] = '/tmp/matplotlib'
 
-# Additional matplotlib configuration to prevent type registration issues
+# Configure matplotlib to use non-interactive backend for testing
 try:
-    # Force matplotlib to use a clean backend
-    matplotlib.use('Agg', force=True)
-    # Disable matplotlib's interactive mode
+    # Import matplotlib with explicit backend configuration
+    import matplotlib
+    matplotlib.use('Agg', force=True)  # Use non-interactive backend
     matplotlib.interactive(False)
+    
+    # Additional configuration to prevent type registration issues
+    matplotlib.rcParams['backend'] = 'Agg'
+    matplotlib.rcParams['interactive'] = False
+    
+    # Clear any existing type registrations that might cause conflicts
+    try:
+        import matplotlib.colors
+        # Force re-registration of types to prevent conflicts
+        matplotlib.colors._colors_full_map.clear()
+    except Exception:
+        pass
+    
 except Exception as e:
     print(f"Warning: Could not configure matplotlib backend: {e}")
+    # If matplotlib fails to import, we'll continue without it for testing
 
 def pytest_collection_modifyitems(config, items):
     """Modify test collection to ensure matplotlib is configured."""
-    # Ensure matplotlib is configured before any tests are collected
-    try:
-        import matplotlib
-        matplotlib.use('Agg', force=True)
-        matplotlib.interactive(False)
-    except Exception as e:
-        print(f"Warning: Could not configure matplotlib in collection: {e}")
+    # No need to reconfigure matplotlib here since it's already done above
+    pass
 
 # Configure asyncio policy for better event loop management
 def pytest_configure(config):
@@ -45,13 +51,7 @@ def pytest_configure(config):
     warnings.filterwarnings("ignore", message=".*matplotlib.*")
     warnings.filterwarnings("ignore", message=".*_InterpolationType.*")
     
-    # Ensure matplotlib is properly configured for testing
-    try:
-        import matplotlib
-        matplotlib.use('Agg', force=True)
-        matplotlib.interactive(False)
-    except Exception as e:
-        print(f"Warning: Could not configure matplotlib in pytest_configure: {e}")
+    # Matplotlib is already configured at module level, no need to reconfigure here
     
     # Set asyncio policy for consistent event loop handling
     if hasattr(asyncio, 'WindowsSelectorEventLoopPolicy'):
