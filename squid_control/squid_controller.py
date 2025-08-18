@@ -10,7 +10,6 @@ from squid_control.control.config import ChannelMapper
 import cv2
 import logging
 import logging.handlers
-import matplotlib.path as mpath
 # Import serial_peripherals conditionally based on simulation mode
 import sys
 import numpy as np
