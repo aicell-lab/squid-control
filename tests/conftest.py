@@ -4,6 +4,33 @@ import warnings
 import functools
 from concurrent.futures import ThreadPoolExecutor
 
+# Configure matplotlib to use non-interactive backend for testing
+import matplotlib
+matplotlib.use('Agg')  # Use non-interactive backend
+
+# Prevent matplotlib type registration conflicts
+import os
+os.environ['MPLBACKEND'] = 'Agg'
+
+# Additional matplotlib configuration to prevent type registration issues
+try:
+    # Force matplotlib to use a clean backend
+    matplotlib.use('Agg', force=True)
+    # Disable matplotlib's interactive mode
+    matplotlib.interactive(False)
+except Exception as e:
+    print(f"Warning: Could not configure matplotlib backend: {e}")
+
+def pytest_collection_modifyitems(config, items):
+    """Modify test collection to ensure matplotlib is configured."""
+    # Ensure matplotlib is configured before any tests are collected
+    try:
+        import matplotlib
+        matplotlib.use('Agg', force=True)
+        matplotlib.interactive(False)
+    except Exception as e:
+        print(f"Warning: Could not configure matplotlib in collection: {e}")
+
 # Configure asyncio policy for better event loop management
 def pytest_configure(config):
     """Configure pytest with asyncio settings."""
@@ -13,6 +40,18 @@ def pytest_configure(config):
     
     # Suppress deprecation warnings from websockets and other libraries
     warnings.filterwarnings("ignore", category=DeprecationWarning)
+    
+    # Suppress matplotlib warnings that commonly occur in CI
+    warnings.filterwarnings("ignore", message=".*matplotlib.*")
+    warnings.filterwarnings("ignore", message=".*_InterpolationType.*")
+    
+    # Ensure matplotlib is properly configured for testing
+    try:
+        import matplotlib
+        matplotlib.use('Agg', force=True)
+        matplotlib.interactive(False)
+    except Exception as e:
+        print(f"Warning: Could not configure matplotlib in pytest_configure: {e}")
     
     # Set asyncio policy for consistent event loop handling
     if hasattr(asyncio, 'WindowsSelectorEventLoopPolicy'):
