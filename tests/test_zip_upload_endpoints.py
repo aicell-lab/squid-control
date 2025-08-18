@@ -1530,7 +1530,7 @@ async def test_scanning_with_background_upload_integration(test_gallery, artifac
             "microscope_service_id": microscope_service_id,
             "experiment_id": experiment_id,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
-            "acquisition_settings": scanning_settings,
+            "acquisition_settings": "None",
             "file_format": "ome-zarr",
             "upload_method": "squid-control-api-background",
             "scanned_wells": wells_to_scan,
