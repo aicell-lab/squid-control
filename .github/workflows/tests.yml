@@ -21,7 +21,8 @@ jobs:
           libgl1 \
           libglib2.0-0 \
           git \
-          gpg
+          gpg \
+          libglu1-mesa
 
     - name: Install Python dependencies
       run: |
@@ -89,7 +90,8 @@ jobs:
           libgl1 \
           libglib2.0-0 \
           git \
-          gpg
+          gpg \
+          libglu1-mesa
 
     - name: Install Python dependencies
       run: |
