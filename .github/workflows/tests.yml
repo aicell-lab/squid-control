@@ -18,10 +18,11 @@ jobs:
       run: |
         apt-get update
         apt-get install -y \
-          libgl1-mesa-glx \
+          libgl1 \
           libglib2.0-0 \
           git \
-          gpg
+          gpg \
+          libglu1-mesa
 
     - name: Install Python dependencies
       run: |
@@ -86,10 +87,11 @@ jobs:
       run: |
         apt-get update
         apt-get install -y \
-          libgl1-mesa-glx \
+          libgl1 \
           libglib2.0-0 \
           git \
-          gpg
+          gpg \
+          libglu1-mesa
 
     - name: Install Python dependencies
       run: |

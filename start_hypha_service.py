@@ -433,7 +433,9 @@ class Microscope:
             if datastore_svc is None:
                 raise RuntimeError("Datastore service not found")
             
-            chatbot_id = f"squid-chatbot-{'simu' if self.is_simulation else 'real'}-{self.service_id}"
+            # Shorten chatbot service ID to avoid OpenAI API limits
+            short_service_id = self.service_id[:20] if len(self.service_id) > 20 else self.service_id
+            chatbot_id = f"sq-cb-{'simu' if self.is_simulation else 'real'}-{short_service_id}"
             
             chatbot_server_url = "https://chat.bioimage.io"
             try:
@@ -2153,6 +2155,10 @@ class Microscope:
                 })
                 await self.zarr_artifact_manager.connect_server(zarr_server)
                 logger.info("Zarr artifact manager initialized successfully")
+                
+                # Pass the zarr artifact manager to the squid controller
+                self.squidController.zarr_artifact_manager = self.zarr_artifact_manager
+                logger.info("Zarr artifact manager passed to squid controller")
             else:
                 logger.warning("AGENT_LENS_WORKSPACE_TOKEN not found, zarr upload functionality disabled")
                 self.zarr_artifact_manager = None
@@ -2163,11 +2169,15 @@ class Microscope:
         if self.is_simulation:
             await self.start_hypha_service(self.server, service_id=self.service_id)
             datastore_id = f'data-store-simu-{self.service_id}'
-            chatbot_id = f"squid-chatbot-simu-{self.service_id}"
+            # Shorten chatbot service ID to avoid OpenAI API limits
+            short_service_id = self.service_id[:20] if len(self.service_id) > 20 else self.service_id
+            chatbot_id = f"sq-cb-simu-{short_service_id}"
         else:
             await self.start_hypha_service(self.server, service_id=self.service_id)
             datastore_id = f'data-store-real-{self.service_id}'
-            chatbot_id = f"squid-chatbot-real-{self.service_id}"
+            # Shorten chatbot service ID to avoid OpenAI API limits
+            short_service_id = self.service_id[:20] if len(self.service_id) > 20 else self.service_id
+            chatbot_id = f"sq-cb-real-{short_service_id}"
         
         self.datastore = HyphaDataStore()
         try:
@@ -3238,6 +3248,7 @@ class Microscope:
                                        wells_to_scan: List[str] = Field(default_factory=lambda: ['A1'], description="List of wells to scan (e.g., ['A1', 'B2', 'C3'])"),
                                        wellplate_type: str = Field('96', description="Well plate type ('6', '12', '24', '96', '384')"),
                                        well_padding_mm: float = Field(1.0, description="Padding around well in mm"),
+                                       uploading: bool = Field(False, description="Enable upload after scanning is complete"),
                                        context=None):
         """
         Perform a normal scan with live stitching to OME-Zarr canvas using well-based approach.
@@ -3259,6 +3270,7 @@ class Microscope:
             wells_to_scan: List of wells to scan (e.g., ['A1', 'B2', 'C3'])
             wellplate_type: Well plate type ('6', '12', '24', '96', '384')
             well_padding_mm: Padding around well in mm
+            uploading: Enable upload after scanning is complete
             
         Returns:
             dict: Status of the scan
@@ -3282,7 +3294,7 @@ class Microscope:
             # Set scanning flag to prevent automatic video buffering restart during scan
             self.scanning_in_progress = True
             
-            # Ensure the squid controller has the new method
+            # Perform the normal scan
             await self.squidController.normal_scan_with_stitching(
                 start_x_mm=start_x_mm,
                 start_y_mm=start_y_mm,
@@ -3301,6 +3313,21 @@ class Microscope:
                 well_padding_mm=well_padding_mm
             )
             
+            # Upload the experiment if uploading is enabled
+            upload_result = None
+            if uploading:
+                try:
+                    logger.info("Uploading experiment after normal scan completion")
+                    upload_result = await self.upload_zarr_dataset(
+                        experiment_name=experiment_name or self.squidController.experiment_manager.current_experiment_name,
+                        description=f"Normal scan with stitching - {action_ID}",
+                        include_acquisition_settings=True
+                    )
+                    logger.info("Successfully uploaded experiment after normal scan")
+                except Exception as e:
+                    logger.error(f"Failed to upload experiment after normal scan: {e}")
+                    # Don't raise the exception - continue with response
+            
             return {
                 "success": True,
                 "message": f"Normal scan with stitching completed successfully",
@@ -3311,7 +3338,8 @@ class Microscope:
                     "total_area_mm2": (Nx * dx_mm) * (Ny * dy_mm),
                     "experiment_name": self.squidController.experiment_manager.current_experiment_name,  # Include the actual experiment used
                     "wells_scanned": wells_to_scan
-                }
+                },
+                "upload_result": upload_result
             }
         except Exception as e:
             logger.error(f"Failed to perform normal scan with stitching: {e}")
@@ -3319,7 +3347,7 @@ class Microscope:
         finally:
             # Always reset the scanning flag, regardless of success or failure
             self.scanning_in_progress = False
-            logger.info("Scanning completed, video buffering auto-start is now re-enabled")
+            logger.info("Normal scanning completed, video buffering auto-start is now re-enabled")
     
     
     @schema_function(skip_self=True)
@@ -3373,6 +3401,7 @@ class Microscope:
                                       do_reflection_af: bool = Field(False, description="Whether to perform reflection-based autofocus"),
                                       experiment_name: Optional[str] = Field(None, description="Name of the experiment to use. If None, uses active experiment or 'default' as fallback"),
                                       well_padding_mm: float = Field(1.0, description="Padding around each well in mm"),
+                                      uploading: bool = Field(False, description="Enable upload after scanning is complete"),
                                       context=None):
         """
         Perform a quick scan with live stitching to OME-Zarr canvas - brightfield only.
@@ -3394,6 +3423,7 @@ class Microscope:
             do_reflection_af: Whether to perform reflection-based autofocus at each well
             experiment_name: Name of the experiment to use. If None, uses active experiment or 'default' as fallback
             well_padding_mm: Padding around each well in mm
+            uploading: Enable upload after scanning is complete
             
         Returns:
             dict: Status of the scan with performance metrics
@@ -3456,6 +3486,21 @@ class Microscope:
             total_wells = config['rows'] * config['cols']
             total_stripes = total_wells * n_stripes
             
+            # Upload the experiment if uploading is enabled
+            upload_result = None
+            if uploading:
+                try:
+                    logger.info("Uploading experiment after quick scan completion")
+                    upload_result = await self.upload_zarr_dataset(
+                        experiment_name=experiment_name or self.squidController.experiment_manager.current_experiment_name,
+                        description=f"Quick scan with stitching - {action_ID}",
+                        include_acquisition_settings=True
+                    )
+                    logger.info("Successfully uploaded experiment after quick scan")
+                except Exception as e:
+                    logger.error(f"Failed to upload experiment after quick scan: {e}")
+                    # Don't raise the exception - continue with response
+            
             return {
                 "success": True,
                 "message": f"Quick scan with stitching completed successfully",
@@ -3484,7 +3529,8 @@ class Microscope:
                     "action_id": action_ID,
                     "pattern": f"{n_stripes}-stripe × {stripe_width_mm}mm serpentine per well",
                     "experiment_name": self.squidController.experiment_manager.current_experiment_name
-                }
+                },
+                "upload_result": upload_result
             }
             
         except ValueError as e:

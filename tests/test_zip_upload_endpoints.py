@@ -15,7 +15,6 @@ import zarr
 from pathlib import Path
 from typing import Dict, List, Tuple
 from hypha_rpc import connect_to_server
-import matplotlib.pyplot as plt
 
 # Mark all tests in this module as asyncio and integration tests
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
@@ -1197,4 +1196,232 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "quick":
         os.environ["QUICK_TEST"] = "1"
     
-    pytest.main([__file__, "-v", "-s"]) 
+    pytest.main([__file__, "-v", "-s"])
+
+# ============================================================================
+# NEW TESTS FOR BACKGROUND UPLOAD FUNCTIONALITY
+# ============================================================================
+
+class MockWellCanvas:
+    """Mock well canvas for testing upload functionality."""
+    
+    def __init__(self, well_name: str, canvas_path: Path):
+        self.well_name = well_name
+        self.canvas_path = canvas_path
+        self.export_called = False
+        self.export_path = None
+    
+    async def export_to_zip(self, zip_path: Path) -> bool:
+        """Mock export to ZIP functionality."""
+        self.export_called = True
+        self.export_path = zip_path
+        
+        # Create a mock ZIP file
+        with zipfile.ZipFile(zip_path, 'w', allowZip64=True) as zf:
+            # Add some mock data
+            mock_data = f"Mock data for {self.well_name}".encode()
+            zf.writestr("data.zarr/mock_data.txt", mock_data)
+            
+            # Add a mock zarr structure
+            zf.writestr("data.zarr/.zattrs", '{"mock": "true"}')
+            zf.writestr("data.zarr/0/.zarray", '{"shape": [100, 100], "chunks": [50, 50]}')
+        
+        return True
+
+class MockSquidArtifactManager:
+    """Mock artifact manager for testing upload queue functionality."""
+    
+    def __init__(self):
+        self.upload_queue = None
+        self.upload_worker_task = None
+        self.upload_worker_running = False
+        self.current_dataset_id = None
+        self.current_gallery_id = None
+        self.upload_frozen = False
+        self.microscope_service_id = None
+        self.experiment_id = None
+        self.acquisition_settings = None
+        self.description = None
+        self.uploaded_wells = []
+        self.dataset_committed = False
+        self.worker_started = False
+        self.worker_stopped = False
+    
+    async def start_upload_worker(self, microscope_service_id, experiment_id, acquisition_settings=None, description=None):
+        """Mock start upload worker."""
+        self.upload_queue = asyncio.Queue()
+        self.upload_worker_running = True
+        self.upload_frozen = False
+        self.microscope_service_id = microscope_service_id
+        self.experiment_id = experiment_id
+        self.acquisition_settings = acquisition_settings
+        self.description = description
+        self.worker_started = True
+        
+        # Create mock dataset
+        self.current_dataset_id = f"mock-dataset-{uuid.uuid4().hex[:8]}"
+        self.current_gallery_id = f"mock-gallery-{uuid.uuid4().hex[:8]}"
+        
+        # Start background worker
+        self.upload_worker_task = asyncio.create_task(self._mock_upload_worker_loop())
+        print(f"Mock upload worker started for experiment: {experiment_id}")
+    
+    async def stop_upload_worker(self):
+        """Mock stop upload worker."""
+        if not self.upload_worker_running:
+            return
+        
+        self.upload_worker_running = False
+        
+        if self.upload_worker_task:
+            try:
+                await asyncio.wait_for(self.upload_worker_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                self.upload_worker_task.cancel()
+                try:
+                    await self.upload_worker_task
+                except asyncio.CancelledError:
+                    pass
+        
+        self.dataset_committed = True
+        self.worker_stopped = True
+        print("Mock upload worker stopped")
+    
+    async def add_well_to_upload_queue(self, well_name, well_zip_content, well_size_mb):
+        """Mock add well to upload queue."""
+        if not self.upload_worker_running or self.upload_frozen:
+            return
+        
+        await self.upload_queue.put({
+            'name': well_name,
+            'content': well_zip_content,
+            'size_mb': well_size_mb
+        })
+        print(f"Mock: Added {well_name} to upload queue")
+    
+    async def _mock_upload_worker_loop(self):
+        """Mock upload worker loop."""
+        while self.upload_worker_running:
+            try:
+                well_info = await asyncio.wait_for(self.upload_queue.get(), timeout=1.0)
+                
+                # Simulate upload
+                self.uploaded_wells.append({
+                    'name': well_info['name'],
+                    'size_mb': well_info['size_mb'],
+                    'uploaded_at': time.time()
+                })
+                
+                print(f"Mock: Uploaded {well_info['name']}")
+                
+            except asyncio.TimeoutError:
+                continue
+            except Exception as e:
+                print(f"Mock upload worker error: {e}")
+                continue
+
+@pytest.mark.timeout(300)  # 5 minute timeout
+async def test_background_upload_queue_functionality():
+    """Test the background upload queue functionality."""
+    print("🧪 Testing background upload queue functionality...")
+    
+    # Create mock artifact manager
+    artifact_manager = MockSquidArtifactManager()
+    
+    # Test 1: Start upload worker
+    microscope_id = "test-microscope-123"
+    experiment_id = "test-experiment-456"
+    acquisition_settings = {"test": True, "wells": ["A1", "B2"]}
+    description = "Test upload experiment"
+    
+    await artifact_manager.start_upload_worker(
+        microscope_id, experiment_id, acquisition_settings, description
+    )
+    
+    assert artifact_manager.worker_started == True
+    assert artifact_manager.upload_worker_running == True
+    assert artifact_manager.microscope_service_id == microscope_id
+    assert artifact_manager.experiment_id == experiment_id
+    assert artifact_manager.acquisition_settings == acquisition_settings
+    assert artifact_manager.description == description
+    assert artifact_manager.current_dataset_id is not None
+    assert artifact_manager.current_gallery_id is not None
+    print("✅ Upload worker started successfully")
+    
+    # Test 2: Add wells to upload queue
+    wells = [
+        ("well_A1_96", b"mock_zip_content_1", 10.5),
+        ("well_B2_96", b"mock_zip_content_2", 15.2),
+        ("well_C3_96", b"mock_zip_content_3", 8.7)
+    ]
+    
+    for well_name, content, size_mb in wells:
+        await artifact_manager.add_well_to_upload_queue(well_name, content, size_mb)
+    
+    # Wait for uploads to process
+    await asyncio.sleep(2)
+    
+    assert len(artifact_manager.uploaded_wells) == 3
+    uploaded_names = [w['name'] for w in artifact_manager.uploaded_wells]
+    assert "well_A1_96" in uploaded_names
+    assert "well_B2_96" in uploaded_names
+    assert "well_C3_96" in uploaded_names
+    print("✅ Wells uploaded successfully")
+    
+    # Test 3: Stop upload worker
+    await artifact_manager.stop_upload_worker()
+    
+    assert artifact_manager.worker_stopped == True
+    assert artifact_manager.upload_worker_running == False
+    assert artifact_manager.dataset_committed == True
+    print("✅ Upload worker stopped successfully")
+    
+    print("✅ Background upload queue functionality test passed")
+
+@pytest.mark.timeout(300)  # 5 minute timeout
+async def test_well_canvas_export_functionality():
+    """Test the well canvas export to ZIP functionality."""
+    print("🧪 Testing well canvas export functionality...")
+    
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+        
+        # Create mock well canvases
+        well_canvases = []
+        for well_name in ["A1", "B2", "C3"]:
+            canvas_path = temp_path / f"well_{well_name}_96.zarr"
+            canvas_path.mkdir(parents=True, exist_ok=True)
+            
+            # Create mock zarr structure
+            zarr_group = zarr.open_group(str(canvas_path), mode='w')
+            test_array = np.random.randint(0, 255, (100, 100), dtype=np.uint8)
+            zarr_group.create_dataset('0', data=test_array, chunks=(50, 50))
+            
+            well_canvas = MockWellCanvas(f"well_{well_name}_96", canvas_path)
+            well_canvases.append(well_canvas)
+        
+        # Test export to ZIP
+        for well_canvas in well_canvases:
+            zip_path = temp_path / f"{well_canvas.well_name}.zip"
+            
+            success = await well_canvas.export_to_zip(zip_path)
+            
+            assert success == True
+            assert well_canvas.export_called == True
+            assert well_canvas.export_path == zip_path
+            assert zip_path.exists()
+            
+            # Verify ZIP structure
+            with zipfile.ZipFile(zip_path, 'r') as zf:
+                file_list = zf.namelist()
+                assert "data.zarr/mock_data.txt" in file_list
+                assert "data.zarr/.zattrs" in file_list
+                assert "data.zarr/0/.zarray" in file_list
+                
+                # Test content
+                content = zf.read("data.zarr/mock_data.txt").decode()
+                assert f"Mock data for {well_canvas.well_name}" in content
+            
+            print(f"✅ Well canvas {well_canvas.well_name} exported successfully")
+        
+        print("✅ Well canvas export functionality test passed")

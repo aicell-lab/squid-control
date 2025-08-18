@@ -12,6 +12,9 @@ import json
 from PIL import Image
 from datetime import datetime
 import cv2
+import tempfile
+import shutil
+import zipfile
 
 # Get the logger for this module
 logger = logging.getLogger(__name__)
@@ -545,9 +548,19 @@ class WellZarrCanvasBase:
         x_offset_mm = -self.stage_limits['x_negative']
         y_offset_mm = -self.stage_limits['y_negative']
         
-        # Convert to pixels at scale 0
-        x_px = int((x_mm + x_offset_mm) * 1000 / self.pixel_size_xy_um)
-        y_px = int((y_mm + y_offset_mm) * 1000 / self.pixel_size_xy_um)
+        # Convert to pixels at scale 0 (without padding)
+        x_px_no_padding = (x_mm + x_offset_mm) * 1000 / self.pixel_size_xy_um
+        y_px_no_padding = (y_mm + y_offset_mm) * 1000 / self.pixel_size_xy_um
+        
+        # Account for 10% padding by centering in the padded canvas
+        # The canvas is 1.1x larger, so we need to add 5% margin on each side
+        padding_factor = 1.1
+        x_padding_px = (self.canvas_width_px - (self.stage_width_mm * 1000 / self.pixel_size_xy_um)) / 2
+        y_padding_px = (self.canvas_height_px - (self.stage_height_mm * 1000 / self.pixel_size_xy_um)) / 2
+        
+        # Add padding offset to center the image in the padded canvas
+        x_px = int(x_px_no_padding + x_padding_px)
+        y_px = int(y_px_no_padding + y_padding_px)
         
         # Apply scale factor
         scale_factor = 4 ** scale
@@ -1188,8 +1201,48 @@ class WellZarrCanvasBase:
         return self.get_canvas_region(x_mm, y_mm, width_mm, height_mm, scale, channel_idx, timepoint)
     
     def close(self):
-        """Clean up resources."""
-        self.executor.shutdown(wait=True)
+        """Close the canvas and clean up resources."""
+        if hasattr(self, 'zarr_array') and self.zarr_array is not None:
+            self.zarr_array = None
+        logger.info(f"Closed well canvas: {self.fileset_name}")
+    
+    def export_to_zip(self, zip_path):
+        """
+        Export the well canvas to a ZIP file.
+        
+        Args:
+            zip_path (str): Path to the output ZIP file
+        """
+        
+        try:
+            # Create a temporary directory for the zarr data
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_zarr_path = os.path.join(temp_dir, "data.zarr")
+                
+                # Copy the zarr data to the temporary location
+                if self.zarr_path.exists():
+                    shutil.copytree(self.zarr_path, temp_zarr_path)
+                else:
+                    logger.warning(f"Zarr path does not exist: {self.zarr_path}")
+                    return
+                
+                # Create the ZIP file
+                with zipfile.ZipFile(zip_path, 'w', allowZip64=True, compression=zipfile.ZIP_DEFLATED) as zf:
+                    # Walk through the temporary zarr directory and add all files
+                    for root, dirs, files in os.walk(temp_zarr_path):
+                        for file in files:
+                            file_path = os.path.join(root, file)
+                            # Calculate relative path for the ZIP
+                            relative_path = os.path.relpath(file_path, temp_dir)
+                            # Use forward slashes for ZIP paths
+                            arcname = relative_path.replace(os.sep, '/')
+                            zf.write(file_path, arcname)
+                
+                logger.info(f"Exported well canvas to ZIP: {zip_path}")
+                
+        except Exception as e:
+            logger.error(f"Failed to export well canvas to ZIP: {e}")
+            raise
     
     def save_preview(self, action_ID: str = "canvas_preview"):
         """Save a preview image of the canvas at different scales."""
