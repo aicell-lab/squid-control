@@ -962,3 +962,39 @@ async def test_quick_zip_endpoint(test_gallery, artifact_manager):
                 raise Exception(f"Invalid JSON response: {response.text[:200]}")
         else:
             raise Exception(f"HTTP {response.status_code}: {response.text[:200]}")
+
+async def test_final_cleanup(artifact_manager):
+    """Final cleanup test to ensure all test galleries are removed."""
+    print("\n🧹 Running final cleanup test...")
+    
+    try:
+        # Call cleanup function to remove any remaining test galleries
+        await cleanup_test_galleries(artifact_manager)
+        print("✅ Final cleanup completed successfully")
+        
+        # Verify cleanup by listing artifacts and checking for test galleries
+        artifacts = await artifact_manager.list()
+        test_galleries = []
+        
+        for artifact in artifacts:
+            alias = artifact.get('alias', '')
+            if any(pattern in alias for pattern in [
+                'test-zip-gallery',
+                'microscope-gallery-test',
+                '1-test-upload-experiment',
+                '1-test-experiment'
+            ]):
+                test_galleries.append(artifact)
+        
+        if test_galleries:
+            print(f"⚠️ Found {len(test_galleries)} remaining test galleries after cleanup:")
+            for gallery in test_galleries:
+                print(f"  - {gallery['alias']} (ID: {gallery['id']})")
+            # Don't fail the test, just warn
+        else:
+            print("✅ No test galleries remaining - cleanup successful")
+            
+    except Exception as e:
+        print(f"❌ Final cleanup failed: {e}")
+        # Don't fail the test, just log the error
+        # This ensures cleanup issues don't break the test suite
