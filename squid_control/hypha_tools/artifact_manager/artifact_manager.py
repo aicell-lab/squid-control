@@ -22,6 +22,7 @@ import zarr
 import time
 import json
 import uuid
+import math
 
 dotenv.load_dotenv()  
 ENV_FILE = dotenv.find_dotenv()  
@@ -462,7 +463,7 @@ class SquidArtifactManager:
                 print(f"Uploading file {i+1}/{len(zarr_files_info)}: {file_name} ({file_size_mb:.2f} MB)")
                 
                 # Upload zarr zip file with retry logic
-                await self._upload_large_zip_with_retry(
+                await self._upload_large_zip_multipart(
                     dataset["id"], 
                     file_content, 
                     max_retries=3,
@@ -696,7 +697,7 @@ class SquidArtifactManager:
         """
         for attempt in range(3):
             try:
-                await self._upload_large_zip_with_retry(
+                await self._upload_large_zip_multipart(
                     self.current_dataset_id,
                     well_info['content'],
                     max_retries=1,  # Single attempt per retry cycle
@@ -852,7 +853,7 @@ class SquidArtifactManager:
         
         try:
             # Upload zarr zip file with retry logic
-            await self._upload_large_zip_with_retry(dataset["id"], zarr_zip_content, max_retries=3)
+            await self._upload_large_zip_multipart(dataset["id"], zarr_zip_content, max_retries=3)
             
             # Commit the dataset
             await self._svc.commit(dataset["id"])
@@ -921,9 +922,55 @@ class SquidArtifactManager:
         except Exception as e:
             raise ValueError(f"ZIP file validation failed: {e}")
 
-    async def _upload_large_zip_with_retry(self, dataset_id: str, zarr_zip_content: bytes, max_retries: int = 3, file_path: str = "zarr_dataset.zip") -> None:
+    def _calculate_optimal_part_size(self, file_size_bytes: int) -> tuple[int, int]:
         """
-        Upload large ZIP file with retry logic and appropriate timeouts.
+        Calculate optimal part size and count for multipart upload.
+        
+        Args:
+            file_size_bytes (int): Size of the file in bytes
+            
+        Returns:
+            tuple[int, int]: (part_size_bytes, part_count)
+        """
+        # Target part size: 100MB for optimal performance
+        target_part_size = 100 * 1024 * 1024  # 100MB
+        
+        # Minimum part size required by S3: 5MB
+        min_part_size = 5 * 1024 * 1024  # 5MB
+        
+        # Maximum part count allowed: 10,000
+        max_parts = 10000
+        
+        if file_size_bytes <= target_part_size:
+            # Small file: use single part
+            return file_size_bytes, 1
+        
+        # Calculate part count based on target size
+        part_count = math.ceil(file_size_bytes / target_part_size)
+        
+        # Ensure we don't exceed maximum parts
+        if part_count > max_parts:
+            # Recalculate with larger part size
+            part_size = math.ceil(file_size_bytes / max_parts)
+            # Ensure minimum part size
+            if part_size < min_part_size:
+                raise ValueError(f"File too large for multipart upload: {file_size_bytes / (1024*1024):.1f} MB")
+            return part_size, max_parts
+        
+        # Ensure minimum part size
+        actual_part_size = math.ceil(file_size_bytes / part_count)
+        if actual_part_size < min_part_size:
+            # Recalculate with minimum part size
+            part_count = math.ceil(file_size_bytes / min_part_size)
+            if part_count > max_parts:
+                raise ValueError(f"File too large for multipart upload: {file_size_bytes / (1024*1024):.1f} MB")
+            return min_part_size, part_count
+        
+        return target_part_size, part_count
+
+    async def _upload_large_zip_multipart(self, dataset_id: str, zarr_zip_content: bytes, max_retries: int = 3, file_path: str = "zarr_dataset.zip") -> None:
+        """
+        Upload large ZIP file using multipart upload with retry logic and appropriate timeouts.
         
         Args:
             dataset_id (str): The dataset ID
@@ -936,34 +983,113 @@ class SquidArtifactManager:
         """
         zip_size_mb = len(zarr_zip_content) / (1024 * 1024)
         
+        # Calculate optimal part size and count
+        try:
+            part_size_bytes, part_count = self._calculate_optimal_part_size(len(zarr_zip_content))
+        except ValueError as e:
+            raise Exception(f"Cannot upload file: {e}")
+        
         # Calculate timeout based on file size (minimum 5 minutes, add 1 minute per 50MB)
         timeout_seconds = max(300, int(zip_size_mb / 50) * 60 + 300)
         
         for attempt in range(max_retries):
             try:
-                print(f"Upload attempt {attempt + 1}/{max_retries} for {zip_size_mb:.2f} MB ZIP file to {file_path} (timeout: {timeout_seconds}s)")
+                print(f"Multipart upload attempt {attempt + 1}/{max_retries} for {zip_size_mb:.2f} MB ZIP file to {file_path}")
+                print(f"  Using {part_count} parts, {part_size_bytes / (1024*1024):.1f} MB per part, timeout: {timeout_seconds}s")
                 
-                # Get upload URL
-                put_url = await self._svc.put_file(
-                    dataset_id, 
-                    file_path=file_path, 
-                    download_weight=1.0
+                # Step 1: Start multipart upload
+                multipart_info = await self._svc.put_file_start_multipart(
+                    artifact_id=dataset_id,
+                    file_path=file_path,
+                    part_count=part_count,
+                    expires_in=3600  # 1 hour expiration
                 )
                 
-                # Upload with appropriate timeout and chunked transfer
-                async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds)) as client:
-                    response = await client.put(
-                        put_url, 
-                        content=zarr_zip_content,
-                        headers={
-                            'Content-Type': 'application/zip',
-                            'Content-Length': str(len(zarr_zip_content))
-                        }
-                    )
-                    response.raise_for_status()
+                upload_id = multipart_info["upload_id"]
+                part_urls = multipart_info["parts"]
                 
-                print(f"Upload successful on attempt {attempt + 1}")
-                return
+                print(f"  Started multipart upload with ID: {upload_id}")
+                
+                # Step 2: Upload all parts concurrently
+                async def upload_part(part_info):
+                    part_number = part_info["part_number"]
+                    url = part_info["url"]
+                    
+                    # Calculate start and end positions for this part
+                    start_pos = (part_number - 1) * part_size_bytes
+                    end_pos = min(start_pos + part_size_bytes, len(zarr_zip_content))
+                    
+                    # Extract the specific part from the ZIP content
+                    part_data = zarr_zip_content[start_pos:end_pos]
+                    
+                    # Upload the part with appropriate timeout
+                    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds)) as client:
+                        response = await client.put(
+                            url, 
+                            content=part_data,
+                            headers={
+                                'Content-Type': 'application/octet-stream',
+                                'Content-Length': str(len(part_data))
+                            }
+                        )
+                        response.raise_for_status()
+                        
+                        return {
+                            "part_number": part_number,
+                            "etag": response.headers["ETag"].strip('"')
+                        }
+                
+                # Upload parts with controlled concurrency (max 5 concurrent uploads)
+                semaphore = asyncio.Semaphore(5)
+                
+                async def upload_with_semaphore(part_info):
+                    async with semaphore:
+                        return await upload_part(part_info)
+                
+                print(f"  Uploading {len(part_urls)} parts with controlled concurrency...")
+                uploaded_parts = await asyncio.gather(*[
+                    upload_with_semaphore(part) for part in part_urls
+                ])
+                
+                print(f"  All parts uploaded successfully")
+                
+                # Step 3: Complete multipart upload
+                try:
+                    # Validate that we have all parts before completing
+                    if len(uploaded_parts) != part_count:
+                        raise Exception(f"Expected {part_count} parts but got {len(uploaded_parts)}")
+                    
+                    # Sort parts by part number to ensure correct order
+                    uploaded_parts.sort(key=lambda x: x["part_number"])
+                    
+                    # Verify part numbers are sequential
+                    for i, part in enumerate(uploaded_parts):
+                        if part["part_number"] != i + 1:
+                            raise Exception(f"Missing or out-of-order part: expected {i + 1}, got {part['part_number']}")
+                    
+                    result = await self._svc.put_file_complete_multipart(
+                        artifact_id=dataset_id,
+                        upload_id=upload_id,
+                        parts=uploaded_parts
+                    )
+                    
+                    if result["success"]:
+                        print(f"Multipart upload completed successfully on attempt {attempt + 1}")
+                        return
+                    else:
+                        raise Exception(f"Multipart upload completion failed: {result['message']}")
+                        
+                except Exception as completion_error:
+                    print(f"Error completing multipart upload: {completion_error}")
+                    # Try to abort the multipart upload to clean up
+                    try:
+                        # Note: The current API doesn't have abort_multipart, but we could add it later
+                        print(f"Multipart upload {upload_id} failed, parts may need manual cleanup")
+                    except Exception as abort_error:
+                        print(f"Could not abort multipart upload: {abort_error}")
+                    
+                    # Re-raise the completion error to trigger retry
+                    raise completion_error
                 
             except httpx.TimeoutException as e:
                 print(f"Upload timeout on attempt {attempt + 1}: {e}")
