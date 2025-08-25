@@ -3581,17 +3581,18 @@ class Microscope:
                            height_mm: float = Field(5.0, description="Height of region in mm"),
                            wellplate_type: str = Field('96', description="Well plate type ('6', '12', '24', '96', '384')"),
                            scale_level: int = Field(0, description="Scale level (0=full resolution, 1=1/4, 2=1/16, etc)"),
-                           channel_name: str = Field('BF LED matrix full', description="Name of channel to retrieve"),
+                           channel_name: str = Field('BF LED matrix full', description="Channel names to retrieve and merge (comma-separated string or single channel name, e.g., 'BF LED matrix full' or 'BF LED matrix full,Fluorescence 488 nm Ex')"),
                            timepoint: int = Field(0, description="Timepoint index to retrieve (default 0)"),
                            well_padding_mm: float = Field(1.0, description="Padding around wells in mm"),
                            output_format: str = Field('base64', description="Output format: 'base64' or 'array'"),
                            context=None):
         """
         Get a stitched region that may span multiple wells by determining which wells 
-        are needed and combining their data.
+        are needed and combining their data. Supports merging multiple channels with proper colors.
         
         This function automatically determines which wells intersect with the requested region
-        and stitches together the data from multiple wells if necessary.
+        and stitches together the data from multiple wells if necessary. When multiple channels
+        are specified, they are merged into a single RGB image using the channel color scheme.
         
         Args:
             center_x_mm: Center X position in absolute stage coordinates (mm)
@@ -3600,7 +3601,7 @@ class Microscope:
             height_mm: Height of region in mm
             wellplate_type: Well plate type ('6', '12', '24', '96', '384')
             scale_level: Scale level (0=full resolution, 1=1/4, 2=1/16, etc)
-            channel_name: Name of channel to retrieve
+            channel_name: Channel names to retrieve and merge (comma-separated string or single channel name)
             timepoint: Timepoint index to retrieve (default 0)
             well_padding_mm: Padding around wells in mm
             output_format: Output format ('base64' for compressed image, 'array' for numpy array)
@@ -3609,23 +3610,21 @@ class Microscope:
             dict: Retrieved stitched image data with metadata and region information
         """
         try:
-            # Call the new get_stitched_region method from squidController
-            region = self.squidController.get_stitched_region(
-                center_x_mm=center_x_mm,
-                center_y_mm=center_y_mm,
-                width_mm=width_mm,
-                height_mm=height_mm,
-                wellplate_type=wellplate_type,
-                scale_level=scale_level,
-                channel_name=channel_name,
-                timepoint=timepoint,
-                well_padding_mm=well_padding_mm
-            )
+            # Parse channel_name string into a list
+            if isinstance(channel_name, str):
+                # Split by comma and strip whitespace, filter out empty strings
+                channel_list = [ch.strip() for ch in channel_name.split(',') if ch.strip()]
+                logger.info(f"Parsed channel names: '{channel_name}' -> {channel_list}")
+            else:
+                # If it's already a list, use it as is
+                channel_list = list(channel_name)
+                logger.info(f"Using channel list: {channel_list}")
             
-            if region is None:
+            # Validate channel names
+            if not channel_list:
                 return {
                     "success": False,
-                    "message": f"No data available for region at ({center_x_mm:.2f}, {center_y_mm:.2f}) with size ({width_mm:.2f}x{height_mm:.2f})",
+                    "message": "At least one channel name must be specified",
                     "region": {
                         "center_x_mm": center_x_mm,
                         "center_y_mm": center_y_mm,
@@ -3633,7 +3632,72 @@ class Microscope:
                         "height_mm": height_mm,
                         "wellplate_type": wellplate_type,
                         "scale_level": scale_level,
-                        "channel": channel_name,
+                        "channels": channel_list,
+                        "timepoint": timepoint,
+                        "well_padding_mm": well_padding_mm
+                    }
+                }
+            
+            # Get regions for each channel
+            channel_regions = []
+            for ch_name in channel_list:
+                region = self.squidController.get_stitched_region(
+                    center_x_mm=center_x_mm,
+                    center_y_mm=center_y_mm,
+                    width_mm=width_mm,
+                    height_mm=height_mm,
+                    wellplate_type=wellplate_type,
+                    scale_level=scale_level,
+                    channel_name=ch_name,
+                    timepoint=timepoint,
+                    well_padding_mm=well_padding_mm
+                )
+                
+                if region is None:
+                    logger.warning(f"No data available for channel '{ch_name}' at ({center_x_mm:.2f}, {center_y_mm:.2f})")
+                    continue
+                    
+                channel_regions.append((ch_name, region))
+            
+            if not channel_regions:
+                return {
+                    "success": False,
+                    "message": f"No data available for any channels at ({center_x_mm:.2f}, {center_y_mm:.2f}) with size ({width_mm:.2f}x{height_mm:.2f})",
+                    "region": {
+                        "center_x_mm": center_x_mm,
+                        "center_y_mm": center_y_mm,
+                        "width_mm": width_mm,
+                        "height_mm": height_mm,
+                        "wellplate_type": wellplate_type,
+                        "scale_level": scale_level,
+                        "channels": channel_list,
+                        "timepoint": timepoint,
+                        "well_padding_mm": well_padding_mm
+                    }
+                }
+            
+            # Merge channels if multiple channels are specified
+            if len(channel_regions) == 1:
+                # Single channel - return as grayscale
+                merged_region = channel_regions[0][1]
+                is_rgb = False
+            else:
+                # Multiple channels - merge into RGB
+                merged_region = self._merge_channels_to_rgb(channel_regions)
+                is_rgb = True
+            
+            if merged_region is None:
+                return {
+                    "success": False,
+                    "message": "Failed to merge channels",
+                    "region": {
+                        "center_x_mm": center_x_mm,
+                        "center_y_mm": center_y_mm,
+                        "width_mm": width_mm,
+                        "height_mm": height_mm,
+                        "wellplate_type": wellplate_type,
+                        "scale_level": scale_level,
+                        "channels": channel_list,
                         "timepoint": timepoint,
                         "well_padding_mm": well_padding_mm
                     }
@@ -3646,10 +3710,24 @@ class Microscope:
                 from PIL import Image
                 import io
                 
-                if region.dtype != np.uint8:
-                    region = (region / region.max() * 255).astype(np.uint8) if region.max() > 0 else region.astype(np.uint8)
+                if merged_region.dtype != np.uint8:
+                    if is_rgb:
+                        # RGB image - normalize each channel independently
+                        normalized = np.zeros_like(merged_region, dtype=np.uint8)
+                        for c in range(merged_region.shape[2]):
+                            channel_data = merged_region[:, :, c]
+                            if channel_data.max() > 0:
+                                normalized[:, :, c] = (channel_data / channel_data.max() * 255).astype(np.uint8)
+                        merged_region = normalized
+                    else:
+                        # Grayscale image
+                        merged_region = (merged_region / merged_region.max() * 255).astype(np.uint8) if merged_region.max() > 0 else merged_region.astype(np.uint8)
                 
-                img = Image.fromarray(region)
+                if is_rgb:
+                    img = Image.fromarray(merged_region, 'RGB')
+                else:
+                    img = Image.fromarray(merged_region, 'L')
+                
                 buffer = io.BytesIO()
                 img.save(buffer, format='PNG')
                 img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
@@ -3658,8 +3736,10 @@ class Microscope:
                     "success": True,
                     "data": img_base64,
                     "format": "png_base64",
-                    "shape": region.shape,
-                    "dtype": str(region.dtype),
+                    "shape": merged_region.shape,
+                    "dtype": str(merged_region.dtype),
+                    "is_rgb": is_rgb,
+                    "channels_used": [ch for ch, _ in channel_regions],
                     "region": {
                         "center_x_mm": center_x_mm,
                         "center_y_mm": center_y_mm,
@@ -3667,7 +3747,7 @@ class Microscope:
                         "height_mm": height_mm,
                         "wellplate_type": wellplate_type,
                         "scale_level": scale_level,
-                        "channel": channel_name,
+                        "channels": channel_list,
                         "timepoint": timepoint,
                         "well_padding_mm": well_padding_mm
                     }
@@ -3675,10 +3755,12 @@ class Microscope:
             else:
                 return {
                     "success": True,
-                    "data": region.tolist(),
+                    "data": merged_region.tolist(),
                     "format": "array",
-                    "shape": region.shape,
-                    "dtype": str(region.dtype),
+                    "shape": merged_region.shape,
+                    "dtype": str(merged_region.dtype),
+                    "is_rgb": is_rgb,
+                    "channels_used": [ch for ch, _ in channel_regions],
                     "region": {
                         "center_x_mm": center_x_mm,
                         "center_y_mm": center_y_mm,
@@ -3686,7 +3768,7 @@ class Microscope:
                         "height_mm": height_mm,
                         "wellplate_type": wellplate_type,
                         "scale_level": scale_level,
-                        "channel": channel_name,
+                        "channels": channel_list,
                         "timepoint": timepoint,
                         "well_padding_mm": well_padding_mm
                     }
@@ -3695,6 +3777,67 @@ class Microscope:
         except Exception as e:
             logger.error(f"Failed to get stitched region: {e}")
             raise e
+    
+    def _merge_channels_to_rgb(self, channel_regions):
+        """
+        Merge multiple channel regions into a single RGB image using the channel color scheme.
+        
+        Args:
+            channel_regions: List of tuples (channel_name, region_data)
+            
+        Returns:
+            np.ndarray: RGB image with shape (height, width, 3)
+        """
+        try:
+            if not channel_regions:
+                return None
+            
+            # Get the first region to determine dimensions
+            first_region = channel_regions[0][1]
+            height, width = first_region.shape
+            
+            # Create RGB output image
+            rgb_image = np.zeros((height, width, 3), dtype=np.float32)
+            
+            # Channel color mapping based on initialize_canvas
+            channel_colors = {
+                'BF LED matrix full': [1.0, 1.0, 1.0],      # White
+                'Fluorescence 405 nm Ex': [0.5, 0.0, 1.0],   # Blue-violet
+                'Fluorescence 488 nm Ex': [0.0, 1.0, 0.0],   # Green
+                'Fluorescence 638 nm Ex': [1.0, 0.0, 0.0],   # Red
+                'Fluorescence 561 nm Ex': [1.0, 1.0, 0.0],   # Yellow
+                'Fluorescence 730 nm Ex': [1.0, 0.0, 1.0],   # Magenta
+            }
+            
+            # Process each channel
+            for ch_name, region_data in channel_regions:
+                # Normalize region data to 0-1 range
+                if region_data.max() > 0:
+                    normalized_region = region_data.astype(np.float32) / region_data.max()
+                else:
+                    normalized_region = region_data.astype(np.float32)
+                
+                # Get color for this channel
+                if ch_name in channel_colors:
+                    color = channel_colors[ch_name]
+                else:
+                    # Default to white for unknown channels
+                    color = [1.0, 1.0, 1.0]
+                
+                # Add weighted contribution to RGB image
+                for c in range(3):
+                    rgb_image[:, :, c] += normalized_region * color[c]
+            
+            # Clip to 0-1 range and convert to uint8
+            rgb_image = np.clip(rgb_image, 0, 1)
+            rgb_image = (rgb_image * 255).astype(np.uint8)
+            
+            logger.info(f"Successfully merged {len(channel_regions)} channels into RGB image")
+            return rgb_image
+            
+        except Exception as e:
+            logger.error(f"Error merging channels to RGB: {e}")
+            return None
 
     @schema_function(skip_self=True)
     async def create_experiment(self, experiment_name: str = Field(..., description="Name for the new experiment"), context=None):

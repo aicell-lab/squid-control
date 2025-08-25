@@ -371,6 +371,29 @@ class WellZarrCanvasBase:
                 root.attrs['squid_canvas']['available_timepoints'] = sorted(self.available_timepoints)
                 root.attrs['squid_canvas']['num_timepoints'] = len(self.available_timepoints)
     
+    def _update_channel_activation(self, channel_idx: int, active: bool = True):
+        """
+        Update the activation status of a channel in the OME-Zarr metadata.
+        
+        Args:
+            channel_idx: Local zarr channel index (0, 1, 2, etc.)
+            active: Whether the channel should be marked as active
+        """
+        if not hasattr(self, 'zarr_root'):
+            return
+            
+        try:
+            root = self.zarr_root
+            if 'omero' in root.attrs and 'channels' in root.attrs['omero']:
+                channels = root.attrs['omero']['channels']
+                if 0 <= channel_idx < len(channels):
+                    channels[channel_idx]['active'] = active
+                    logger.debug(f"Updated channel {channel_idx} activation status to {active}")
+                else:
+                    logger.warning(f"Channel index {channel_idx} out of bounds for metadata update")
+        except Exception as e:
+            logger.warning(f"Failed to update channel activation status: {e}")
+    
     def initialize_canvas(self):
         """Initialize the OME-Zarr structure with proper metadata."""
         logger.info(f"Initializing OME-Zarr canvas at {self.zarr_path}")
@@ -394,6 +417,7 @@ class WellZarrCanvasBase:
             from squid_control.control.config import ChannelMapper
             
             # Create enhanced channel metadata with proper colors and info
+            # Initially all channels are inactive until data is written
             omero_channels = []
             for ch in self.channels:
                 try:
@@ -417,7 +441,7 @@ class WellZarrCanvasBase:
                     omero_channels.append({
                         "label": ch,
                         "color": color,
-                        "active": True,
+                        "active": False,  # Start as inactive until data is written
                         "window": {"start": 0, "end": 255},
                         "family": "linear",
                         "coefficient": 1.0
@@ -427,7 +451,7 @@ class WellZarrCanvasBase:
                     omero_channels.append({
                         "label": ch,
                         "color": "FFFFFF",
-                        "active": True,
+                        "active": False,  # Start as inactive until data is written
                         "window": {"start": 0, "end": 255},
                         "family": "linear",
                         "coefficient": 1.0
@@ -728,6 +752,10 @@ class WellZarrCanvasBase:
                             
                             zarr_array[timepoint, channel_idx, z_idx, y_start:y_end, x_start:x_end] = image_to_write
                             logger.info(f"ZARR_WRITE: Successfully wrote image to zarr at scale {scale}, channel {channel_idx}, timepoint {timepoint}")
+                            
+                            # Update channel activation status when data is written
+                            if scale == 0:  # Only update on full resolution (scale 0) to avoid multiple updates
+                                self._update_channel_activation(channel_idx, active=True)
                         except IndexError as e:
                             logger.error(f"ZARR_WRITE: IndexError writing to zarr array at scale {scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
                             logger.error(f"ZARR_WRITE: Zarr array shape: {zarr_array.shape}, trying to access timepoint {timepoint}")
@@ -873,6 +901,10 @@ class WellZarrCanvasBase:
                             
                             zarr_array[timepoint, channel_idx, z_idx, y_start:y_end, x_start:x_end] = image_to_write
                             logger.info(f"QUICK_SYNC: Successfully wrote image to zarr at scale {scale}, channel {channel_idx}, timepoint {timepoint} (quick scan)")
+                            
+                            # Update channel activation status when data is written
+                            if scale == 1:  # Only update on scale 1 for quick scan to avoid multiple updates
+                                self._update_channel_activation(channel_idx, active=True)
                         except IndexError as e:
                             logger.error(f"QUICK_SYNC: IndexError writing to zarr array at scale {scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
                             logger.error(f"QUICK_SYNC: Zarr array shape: {zarr_array.shape}, trying to access timepoint {timepoint}")
@@ -2100,6 +2132,14 @@ class ExperimentManager:
                 import shutil
                 shutil.rmtree(item)
                 removed_count += 1
+        
+        # If this is the active experiment, also deactivate all channels in active canvases
+        if experiment_name == self.current_experiment:
+            for canvas in self.well_canvases.values():
+                try:
+                    canvas.deactivate_all_channels()
+                except Exception as e:
+                    logger.warning(f"Failed to deactivate channels in canvas: {e}")
         
         logger.info(f"Reset experiment '{experiment_name}', removed {removed_count} well canvases")
         
