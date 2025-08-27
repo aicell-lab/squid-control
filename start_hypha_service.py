@@ -281,7 +281,6 @@ class MicroscopeVideoTrack(MediaStreamTrack):
 
 class Microscope:
     def __init__(self, is_simulation, is_local):
-        self.login_required = True
         self.current_x = 0
         self.current_y = 0
         self.current_z = 0
@@ -320,7 +319,7 @@ class Microscope:
             'F638_intensity_exposure': self.F638_intensity_exposure,
             'F730_intensity_exposure': self.F730_intensity_exposure,
         }
-        self.authorized_emails = self.load_authorized_emails(self.login_required)
+        self.authorized_emails = self.load_authorized_emails()
         logger.info(f"Authorized emails: {self.authorized_emails}")
         self.datastore = None
         self.server_url = "http://192.168.2.1:9527" if is_local else "https://hypha.aicell.io/"
@@ -391,23 +390,55 @@ class Microscope:
             "get_current_well_location": "not_started",
         }
 
-    def load_authorized_emails(self, login_required=True):
-        if login_required:
-            authorized_users_path = os.environ.get("BIOIMAGEIO_AUTHORIZED_USERS_PATH")
-            if authorized_users_path:
-                assert os.path.exists(
-                    authorized_users_path
-                ), f"The authorized users file is not found at {authorized_users_path}"
-                with open(authorized_users_path, "r") as f:
-                    authorized_users = json.load(f)["users"]
-                authorized_emails = [
-                    user["email"] for user in authorized_users if "email" in user
-                ]
+    def load_authorized_emails(self):
+        """Load authorized user emails from environment variable.
+        
+        Returns:
+            list: List of authorized email addresses, or None if no restrictions
+        """
+        authorized_users = os.environ.get("AUTHORIZED_USERS")
+        
+        if not authorized_users:
+            logger.info("No AUTHORIZED_USERS environment variable set - allowing all authenticated users")
+            return None
+            
+        try:
+            # Parse the AUTHORIZED_USERS environment variable as a list of emails
+            if isinstance(authorized_users, str):
+                # If it's a string, try to parse it as JSON or comma-separated
+                try:
+                    # First try JSON parsing
+                    authorized_emails = json.loads(authorized_users)
+                except json.JSONDecodeError:
+                    # Fallback to comma-separated string
+                    authorized_emails = [email.strip() for email in authorized_users.split(',') if email.strip()]
             else:
-                authorized_emails = None
-        else:
-            authorized_emails = None
-        return authorized_emails
+                # If it's already a list, use it directly
+                authorized_emails = authorized_users
+            
+            # Validate that we have a list of strings
+            if not isinstance(authorized_emails, list):
+                logger.warning("AUTHORIZED_USERS must be a list of emails - allowing all authenticated users")
+                return None
+                
+            # Filter out empty strings and validate email format
+            valid_emails = []
+            for email in authorized_emails:
+                if isinstance(email, str) and email.strip() and '@' in email:
+                    valid_emails.append(email.strip())
+                else:
+                    logger.warning(f"Skipping invalid email format: {email}")
+            
+            if valid_emails:
+                logger.info(f"Loaded {len(valid_emails)} authorized emails from AUTHORIZED_USERS")
+                return valid_emails
+            else:
+                logger.warning("No valid emails found in AUTHORIZED_USERS - allowing all authenticated users")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error parsing AUTHORIZED_USERS environment variable: {e} - allowing all authenticated users")
+            return None
 
     def check_permission(self, user):
         if user['is_anonymous']:
@@ -420,6 +451,10 @@ class Microscope:
     async def is_service_healthy(self, context=None):
         """Check if all services are healthy"""
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             microscope_svc = await self.server.get_service(self.service_id)
             if microscope_svc is None:
                 raise RuntimeError("Microscope service not found")
@@ -480,7 +515,7 @@ class Microscope:
         return self.task_status.get(task_name, "unknown")
     
     @schema_function(skip_self=True)
-    def get_all_task_status(self):
+    def get_all_task_status(self, context=None):
         """Get the status of all tasks"""
         logger.info(f"Task status: {self.task_status}")
         return self.task_status
@@ -490,8 +525,12 @@ class Microscope:
         if task_name in self.task_status:
             self.task_status[task_name] = "not_started"
     
-    def reset_all_task_status(self):
+    def reset_all_task_status(self, context=None):
         """Reset the status of all tasks"""
+        # Check authentication
+        if context and not self.check_permission(context.get("user", {})):
+            raise Exception("User not authorized to access this service")
+        
         for task_name in self.task_status:
             self.task_status[task_name] = "not_started"
     @schema_function(skip_self=True)
@@ -511,6 +550,10 @@ class Microscope:
         task_name = "move_by_distance"
         self.task_status[task_name] = "started"
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             is_success, x_pos, y_pos, z_pos, x_des, y_des, z_des = self.squidController.move_by_distance_limited(x, y, z)
             if is_success:
                 result = f'The stage moved ({x},{y},{z})mm through x,y,z axis, from ({x_pos},{y_pos},{z_pos})mm to ({x_des},{y_des},{z_des})mm'
@@ -539,6 +582,10 @@ class Microscope:
         task_name = "move_to_position"
         self.task_status[task_name] = "started"
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             self.get_status()
             initial_x = self.parameters['current_x']
             initial_y = self.parameters['current_y']
@@ -583,6 +630,10 @@ class Microscope:
         task_name = "get_status"
         self.task_status[task_name] = "started"
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             current_x, current_y, current_z, current_theta = self.squidController.navigationController.update_pos(microcontroller=self.squidController.microcontroller)
             is_illumination_on = self.squidController.liveController.illumination_on
             scan_channel = self.squidController.multipointController.selected_configurations
@@ -628,6 +679,10 @@ class Microscope:
         task_name = "update_parameters_from_client"
         self.task_status[task_name] = "started"
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             if self.parameters is None:
                 self.parameters = {}
 
@@ -675,6 +730,10 @@ class Microscope:
         """
         task_name = "one_new_frame"
         self.task_status[task_name] = "started"
+        
+        # Check authentication
+        if context and not self.check_permission(context.get("user", {})):
+            raise Exception("User not authorized to access this service")
         
         # Stop video buffering to prevent camera overload
         if self.frame_acquisition_running:
@@ -742,6 +801,10 @@ class Microscope:
         Returns: Compressed frame data (JPEG bytes) with associated metadata including stage position and timestamp
         """
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             # If scanning is in progress, return a scanning placeholder immediately
             if self.scanning_in_progress:
                 logger.debug("Scanning in progress, returning scanning placeholder frame")
@@ -996,6 +1059,10 @@ class Microscope:
         self.task_status[task_name] = "started"
         
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             # Validate FPS range
             if not isinstance(fps, int) or fps < 1 or fps > 30:
                 raise ValueError(f"Invalid FPS value: {fps}. Must be an integer between 1 and 30.")
@@ -1070,6 +1137,10 @@ class Microscope:
         task_name = "start_video_buffering"
         self.task_status[task_name] = "started"
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             await self.start_video_buffering()
             self.task_status[task_name] = "finished"
             return {"success": True, "message": "Video buffering started successfully"}
@@ -1084,6 +1155,10 @@ class Microscope:
         task_name = "stop_video_buffering"
         self.task_status[task_name] = "started"
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             if not self.frame_acquisition_running:
                 self.task_status[task_name] = "finished"
                 return {
@@ -1109,6 +1184,10 @@ class Microscope:
     def get_video_buffering_status(self, context=None):
         """Get the current video buffering status"""
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             buffer_size = len(self.video_buffer.buffer) if self.video_buffer else 0
             frame_age = self.video_buffer.get_frame_age() if self.video_buffer else float('inf')
             
@@ -1138,6 +1217,10 @@ class Microscope:
         task_name = "adjust_video_frame"
         self.task_status[task_name] = "started"
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             self.video_contrast_min = min_val
             self.video_contrast_max = max_val
             logger.info(f"Video contrast adjusted: min={min_val}, max={max_val}")
@@ -1156,6 +1239,10 @@ class Microscope:
         """
         task_name = "snap"
         self.task_status[task_name] = "started"
+        
+        # Check authentication
+        if context and not self.check_permission(context.get("user", {})):
+            raise Exception("User not authorized to access this service")
         
         # Stop video buffering to prevent camera overload
         if self.frame_acquisition_running:
@@ -1204,6 +1291,10 @@ class Microscope:
         task_name = "open_illumination"
         self.task_status[task_name] = "started"
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             self.squidController.liveController.turn_on_illumination()
             logger.info('Bright field illumination turned on.')
             self.task_status[task_name] = "finished"
@@ -1222,6 +1313,10 @@ class Microscope:
         task_name = "close_illumination"
         self.task_status[task_name] = "started"
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             self.squidController.liveController.turn_off_illumination()
             logger.info('Illumination turned off.')
             self.task_status[task_name] = "finished"
@@ -1240,6 +1335,10 @@ class Microscope:
         task_name = "scan_well_plate"
         self.task_status[task_name] = "started"
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             if illumination_settings is None:
                 logger.warning("No illumination settings provided, using default settings")
                 illumination_settings = [
@@ -1301,6 +1400,10 @@ class Microscope:
         task_name = "scan_well_plate_simulated"
         self.task_status[task_name] = "started"
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             time.sleep(600)
             self.task_status[task_name] = "finished"
             return "Well plate scanning completed"
@@ -1319,6 +1422,10 @@ class Microscope:
         task_name = "set_illumination"
         self.task_status[task_name] = "started"
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             # if light is on, turn it off first
             if self.squidController.liveController.illumination_on:
                 self.squidController.liveController.turn_off_illumination()
@@ -1358,6 +1465,10 @@ class Microscope:
         task_name = "set_camera_exposure"
         self.task_status[task_name] = "started"
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             self.squidController.camera.set_exposure_time(exposure_time)
             
             param_name = self.channel_param_map.get(channel)
@@ -1388,6 +1499,10 @@ class Microscope:
         task_name = "stop_scan"
         self.task_status[task_name] = "started"
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             self.squidController.liveController.stop_live()
             self.multipointController.abort_acqusition_requested=True
             logger.info("Stop scanning well plate")
@@ -1407,6 +1522,10 @@ class Microscope:
         task_name = "home_stage"
         self.task_status[task_name] = "started"
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             # Run the blocking home_stage operation in a separate thread executor
             # This prevents the asyncio event loop from being blocked during homing
             await asyncio.get_event_loop().run_in_executor(
@@ -1430,6 +1549,10 @@ class Microscope:
         task_name = "return_stage"
         self.task_status[task_name] = "started"
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             # Run the blocking return_stage operation in a separate thread executor
             # This prevents the asyncio event loop from being blocked during stage movement
             await asyncio.get_event_loop().run_in_executor(
@@ -1453,6 +1576,10 @@ class Microscope:
         task_name = "move_to_loading_position"
         self.task_status[task_name] = "started"
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             # Run the blocking move_to_slide_loading_position operation in a separate thread executor
             # This prevents the asyncio event loop from being blocked during stage movement
             await asyncio.get_event_loop().run_in_executor(
@@ -1476,6 +1603,10 @@ class Microscope:
         task_name = "auto_focus"
         self.task_status[task_name] = "started"
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             await self.squidController.do_autofocus()
             logger.info('The camera is auto-focused')
             self.task_status[task_name] = "finished"
@@ -1494,6 +1625,10 @@ class Microscope:
         task_name = "do_laser_autofocus"
         self.task_status[task_name] = "started"
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             await self.squidController.do_laser_autofocus()
             logger.info('The camera is auto-focused')
             self.task_status[task_name] = "finished"
@@ -1512,6 +1647,10 @@ class Microscope:
         task_name = "set_laser_reference"
         self.task_status[task_name] = "started"
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             if self.is_simulation:
                 pass
             else:
@@ -1538,6 +1677,10 @@ class Microscope:
         task_name = "navigate_to_well"
         self.task_status[task_name] = "started"
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             if wellplate_type is None:
                 wellplate_type = '96'
             # Run the blocking move_to_well operation in a separate thread executor
@@ -1566,6 +1709,10 @@ class Microscope:
         task_name = "get_chatbot_url"
         self.task_status[task_name] = "started"
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             logger.info(f"chatbot_service_url: {self.chatbot_service_url}")
             self.task_status[task_name] = "finished"
             return self.chatbot_service_url
@@ -1605,6 +1752,10 @@ class Microscope:
         Returns: A list of image information.
         """
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             results = await self.similarity_search_svc.find_similar_images(query_input, top_k)
             return self._format_similarity_results(results)
         except Exception as e:
@@ -1618,6 +1769,10 @@ class Microscope:
         Returns: A list of image information.
         """
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             # download the image from query_input url
             async with aiohttp.ClientSession() as session:
                 async with session.get(query_input) as resp:
@@ -1873,6 +2028,7 @@ class Microscope:
             "id": service_id,
             "config": {
                 "visibility": "public",
+                "require_context": True,  # Enable user context for authentication
                 "run_in_executor": run_in_executor
             },
             "type": "echo",
@@ -2736,6 +2892,10 @@ class Microscope:
             self.task_status[task_name] = "not_started"
         self.task_status[task_name] = "started"
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             well_info = self.squidController.get_well_from_position(wellplate_type)
             logger.info(f'Current well location: {well_info["well_id"]} ({well_info["position_status"]})')
             self.task_status[task_name] = "finished"
@@ -2749,6 +2909,10 @@ class Microscope:
     def configure_video_buffer_frame_size(self, frame_width: int = Field(750, description="Width of the video buffer frames"), frame_height: int = Field(750, description="Height of the video buffer frames"), context=None):
         """Configure video buffer frame size for optimal streaming performance."""
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             # Validate frame size parameters
             frame_width = max(64, min(4096, frame_width))  # Clamp between 64-4096 pixels
             frame_height = max(64, min(4096, frame_height))  # Clamp between 64-4096 pixels
@@ -2796,6 +2960,10 @@ class Microscope:
         Returns: Configuration data as a JSON object
         """
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             from squid_control.control.config import get_microscope_configuration_data
             
             # Call the configuration function from config.py
@@ -2827,6 +2995,10 @@ class Microscope:
             raise Exception("get_canvas_chunk is only available in simulation mode")
         
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             logger.info(f"Getting canvas chunk at position: x={x_mm}mm, y={y_mm}mm, scale_level={scale_level}")
             
             # Initialize ZarrImageManager if not already initialized
@@ -2930,6 +3102,10 @@ class Microscope:
             dict: Status and current velocity settings
         """        
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             return self.squidController.set_stage_velocity(
                 velocity_x_mm_per_s=velocity_x_mm_per_s,
                 velocity_y_mm_per_s=velocity_y_mm_per_s
@@ -2961,6 +3137,10 @@ class Microscope:
         """
         
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             # Check if experiment manager is initialized
             if not hasattr(self.squidController, 'experiment_manager') or self.squidController.experiment_manager is None:
                 raise Exception("Experiment manager not initialized. Start a scanning operation first to create data.")
@@ -3150,6 +3330,10 @@ class Microscope:
         Returns a list of gallery info dicts.
         """
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             if self.zarr_artifact_manager is None:
                 raise Exception("Zarr artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
 
@@ -3197,6 +3381,10 @@ class Microscope:
         Returns a list of datasets in the gallery.
         """
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             if self.zarr_artifact_manager is None:
                 raise Exception("Zarr artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
 
@@ -3276,6 +3464,10 @@ class Microscope:
             dict: Status of the scan
         """
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             # Set default illumination settings if not provided
             if illumination_settings is None:
                 illumination_settings = [{'channel': 'BF LED matrix full', 'intensity': 50, 'exposure_time': 100}]
@@ -3429,6 +3621,9 @@ class Microscope:
             dict: Status of the scan with performance metrics
         """
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
            
             # Validate exposure time early
             if exposure_time > 30:
@@ -3554,6 +3749,10 @@ class Microscope:
             dict: Status of the stop request
         """
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             logger.info("Stop scan and stitching requested")
             
             # Call the controller's stop method
@@ -3610,6 +3809,10 @@ class Microscope:
             dict: Retrieved stitched image data with metadata and region information
         """
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             # Parse channel_name string into a list
             if isinstance(channel_name, str):
                 # Split by comma and strip whitespace, filter out empty strings
@@ -3851,6 +4054,10 @@ class Microscope:
             dict: Information about the created experiment
         """
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             result = self.squidController.create_experiment(experiment_name)
             logger.info(f"Created experiment: {experiment_name}")
             return result
@@ -3867,6 +4074,10 @@ class Microscope:
             dict: List of experiments and their status
         """
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             result = self.squidController.list_experiments()
             logger.info(f"Listed experiments: {result['total_count']} found")
             return result
@@ -3886,6 +4097,10 @@ class Microscope:
             dict: Information about the activated experiment
         """
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             result = self.squidController.set_active_experiment(experiment_name)
             logger.info(f"Set active experiment: {experiment_name}")
             return result
@@ -3905,6 +4120,10 @@ class Microscope:
             dict: Information about the removed experiment
         """
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             result = self.squidController.remove_experiment(experiment_name)
             logger.info(f"Removed experiment: {experiment_name}")
             return result
@@ -3924,6 +4143,10 @@ class Microscope:
             dict: Information about the reset experiment
         """
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             result = self.squidController.reset_experiment(experiment_name)
             logger.info(f"Reset experiment: {experiment_name}")
             return result
@@ -3943,6 +4166,10 @@ class Microscope:
             dict: Information about the experiment
         """
         try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
             result = self.squidController.get_experiment_info(experiment_name)
             logger.info(f"Retrieved experiment info: {experiment_name}")
             return result
