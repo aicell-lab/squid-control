@@ -405,13 +405,12 @@ class Microscope:
         try:
             # Parse the AUTHORIZED_USERS environment variable as a list of emails
             if isinstance(authorized_users, str):
-                # If it's a string, try to parse it as JSON or comma-separated
-                try:
-                    # First try JSON parsing
-                    authorized_emails = json.loads(authorized_users)
-                except json.JSONDecodeError:
-                    # Fallback to comma-separated string
+                # Handle comma-separated string format (primary format)
+                if ',' in authorized_users:
                     authorized_emails = [email.strip() for email in authorized_users.split(',') if email.strip()]
+                else:
+                    # Single email without comma
+                    authorized_emails = [authorized_users.strip()] if authorized_users.strip() else []
             else:
                 # If it's already a list, use it directly
                 authorized_emails = authorized_users
@@ -534,7 +533,7 @@ class Microscope:
         for task_name in self.task_status:
             self.task_status[task_name] = "not_started"
     @schema_function(skip_self=True)
-    def hello_world(self):
+    def hello_world(self, context=None):
         """Hello world"""
         task_name = "hello_world"
         self.task_status[task_name] = "started"
@@ -708,7 +707,7 @@ class Microscope:
             raise e
 
     @schema_function(skip_self=True)
-    def set_simulated_sample_data_alias(self, sample_data_alias: str=Field("agent-lens/20250506-scan-time-lapse-2025-05-06_17-56-38", description="The alias of the sample data")):
+    def set_simulated_sample_data_alias(self, sample_data_alias: str=Field("agent-lens/20250506-scan-time-lapse-2025-05-06_17-56-38", description="The alias of the sample data"), context=None):
         """
         Set the alias of simulated sample
         """
@@ -716,7 +715,7 @@ class Microscope:
         return f"The alias of simulated sample is set to {sample_data_alias}"
     
     @schema_function(skip_self=True)
-    def get_simulated_sample_data_alias(self):
+    def get_simulated_sample_data_alias(self, context=None):
         """
         Get the alias of simulated sample
         """

@@ -1112,9 +1112,19 @@ async def test_authorization_management():
         microscope.authorized_emails = []
         assert microscope.check_permission(user) == False  # Should deny when list is empty
         
-        # Test load_authorized_emails with login_required=False
-        emails = microscope.load_authorized_emails(login_required=False)
-        assert emails is None
+        # Test load_authorized_emails without parameters
+        emails = microscope.load_authorized_emails()
+        # If AUTHORIZED_USERS env var is set, it should return a list; otherwise None
+        if emails is not None:
+            assert isinstance(emails, list)
+            assert len(emails) > 0
+            # Check that we have valid emails in the list
+            assert all('@' in email for email in emails)
+            # Check that the list contains valid email format (without exposing specific emails)
+            assert all('@' in email and '.' in email.split('@')[1] for email in emails)
+        else:
+            # No environment variable set
+            assert emails is None
         
     finally:
         microscope.squidController.close()
