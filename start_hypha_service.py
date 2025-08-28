@@ -360,35 +360,6 @@ class Microscope:
         # Scanning control attributes
         self.scanning_in_progress = False  # Flag to prevent video buffering during scans
 
-        # Add task status tracking
-        self.task_status = {
-            "move_by_distance": "not_started",
-            "move_to_position": "not_started",
-            "get_status": "not_started",
-            "update_parameters_from_client": "not_started",
-            "one_new_frame": "not_started",
-            "snap": "not_started",
-            "open_illumination": "not_started",
-            "close_illumination": "not_started",
-            "scan_well_plate": "not_started",
-            "scan_well_plate_simulated": "not_started",
-            "set_illumination": "not_started",
-            "set_camera_exposure": "not_started",
-            "stop_scan": "not_started",
-            "home_stage": "not_started",
-            "return_stage": "not_started",
-            "move_to_loading_position": "not_started",
-            "auto_focus": "not_started",
-            "do_laser_autofocus": "not_started",
-            "set_laser_reference": "not_started",
-            "navigate_to_well": "not_started",
-            "get_chatbot_url": "not_started",
-            "adjust_video_frame": "not_started",
-            "start_video_buffering": "not_started",
-            "stop_video_buffering": "not_started",
-            "get_current_well_location": "not_started",
-        }
-
     def load_authorized_emails(self):
         """Load authorized user emails from environment variable.
         
@@ -498,29 +469,6 @@ class Microscope:
             logger.error(traceback.format_exc())
             raise RuntimeError(f"Service health check failed: {str(e)}")
     
-    def get_task_status(self, task_name):
-        """Get the status of a specific task"""
-        return self.task_status.get(task_name, "unknown")
-    
-    @schema_function(skip_self=True)
-    def get_all_task_status(self, context=None):
-        """Get the status of all tasks"""
-        logger.info(f"Task status: {self.task_status}")
-        return self.task_status
-
-    def reset_task_status(self, task_name):
-        """Reset the status of a specific task"""
-        if task_name in self.task_status:
-            self.task_status[task_name] = "not_started"
-    
-    def reset_all_task_status(self, context=None):
-        """Reset the status of all tasks"""
-        # Check authentication
-        if context and not self.check_permission(context.get("user", {})):
-            raise Exception("User not authorized to access this service")
-        
-        for task_name in self.task_status:
-            self.task_status[task_name] = "not_started"
     @schema_function(skip_self=True)
     def ping(self, context=None):
         """Ping the service"""
@@ -532,8 +480,6 @@ class Microscope:
         Move the stage by a distances in x, y, z axis
         Returns: Result information
         """
-        task_name = "move_by_distance"
-        self.task_status[task_name] = "started"
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -542,7 +488,6 @@ class Microscope:
             is_success, x_pos, y_pos, z_pos, x_des, y_des, z_des = self.squidController.move_by_distance_limited(x, y, z)
             if is_success:
                 result = f'The stage moved ({x},{y},{z})mm through x,y,z axis, from ({x_pos},{y_pos},{z_pos})mm to ({x_des},{y_des},{z_des})mm'
-                self.task_status[task_name] = "finished"
                 return {
                     "success": True,
                     "message": result,
@@ -551,10 +496,8 @@ class Microscope:
                 }
             else:
                 result = f'The stage cannot move ({x},{y},{z})mm through x,y,z axis, from ({x_pos},{y_pos},{z_pos})mm to ({x_des},{y_des},{z_des})mm because out of the range.'
-                self.task_status[task_name] = "failed"
                 raise Exception(result)
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to move by distance: {e}")
             raise e
 
@@ -564,8 +507,6 @@ class Microscope:
         Move the stage to a position in x, y, z axis
         Returns: The result of the movement
         """
-        task_name = "move_to_position"
-        self.task_status[task_name] = "started"
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -579,22 +520,18 @@ class Microscope:
             if x != 0:
                 is_success, x_pos, y_pos, z_pos, x_des = self.squidController.move_x_to_limited(x)
                 if not is_success:
-                    self.task_status[task_name] = "failed"
                     raise Exception(f'The stage cannot move to position ({x},{y},{z})mm from ({initial_x},{initial_y},{initial_z})mm because out of the limit of X axis.')
 
             if y != 0:
                 is_success, x_pos, y_pos, z_pos, y_des = self.squidController.move_y_to_limited(y)
                 if not is_success:
-                    self.task_status[task_name] = "failed"
                     raise Exception(f'X axis moved successfully, the stage is now at ({x_pos},{y_pos},{z_pos})mm. But aimed position is out of the limit of Y axis and the stage cannot move to position ({x},{y},{z})mm.')
 
             if z != 0:
                 is_success, x_pos, y_pos, z_pos, z_des = self.squidController.move_z_to_limited(z)
                 if not is_success:
-                    self.task_status[task_name] = "failed"
                     raise Exception(f'X and Y axis moved successfully, the stage is now at ({x_pos},{y_pos},{z_pos})mm. But aimed position is out of the limit of Z axis and the stage cannot move to position ({x},{y},{z})mm.')
 
-            self.task_status[task_name] = "finished"
             return {
                 "success": True,
                 "message": f'The stage moved to position ({x},{y},{z})mm from ({initial_x},{initial_y},{initial_z})mm successfully.',
@@ -602,7 +539,6 @@ class Microscope:
                 "final_position": {"x": x_pos, "y": y_pos, "z": z_pos}
             }
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to move to position: {e}")
             raise e
 
@@ -612,8 +548,6 @@ class Microscope:
         Get the current status of the microscope
         Returns: Status of the microscope
         """
-        task_name = "get_status"
-        self.task_status[task_name] = "started"
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -648,10 +582,8 @@ class Microscope:
                 'video_buffering_active': self.frame_acquisition_running,
                 'current_well_location': well_info,  # Add well location information
             }
-            self.task_status[task_name] = "finished"
             return self.parameters
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to get status: {e}")
             raise e
 
@@ -661,8 +593,6 @@ class Microscope:
         Update the parameters from the client side
         Returns: Updated parameters in the microscope
         """
-        task_name = "update_parameters_from_client"
-        self.task_status[task_name] = "started"
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -685,10 +615,8 @@ class Microscope:
                 else:
                     logger.error(f"Key {key} not found in parameters, skipping update.")
 
-            self.task_status[task_name] = "finished"
             return {"success": True, "message": "Parameters updated successfully.", "updated_parameters": new_parameters}
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to update parameters: {e}")
             raise e
 
@@ -713,9 +641,6 @@ class Microscope:
         Get an image from the microscope
         Returns: A numpy array with preserved bit depth
         """
-        task_name = "one_new_frame"
-        self.task_status[task_name] = "started"
-        
         # Check authentication
         if context and not self.check_permission(context.get("user", {})):
             raise Exception("User not authorized to access this service")
@@ -769,13 +694,11 @@ class Microscope:
             cropped_img = raw_img[start_y:end_y, start_x:end_x]
             
             self.get_status()
-            self.task_status[task_name] = "finished"
             
             # Return the numpy array directly with preserved bit depth
             return cropped_img
             
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to get new frame: {e}")
             raise e
 
@@ -1040,8 +963,6 @@ class Microscope:
         This controls how fast the microscope acquires frames for video streaming.
         Higher FPS provides smoother video but uses more resources.
         """
-        task_name = "set_video_fps"
-        self.task_status[task_name] = "started"
         
         try:
             # Check authentication
@@ -1119,33 +1040,26 @@ class Microscope:
     @schema_function(skip_self=True)
     async def start_video_buffering_api(self, context=None):
         """Start video buffering for smooth video streaming"""
-        task_name = "start_video_buffering"
-        self.task_status[task_name] = "started"
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
             
             await self.start_video_buffering()
-            self.task_status[task_name] = "finished"
             return {"success": True, "message": "Video buffering started successfully"}
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to start video buffering: {e}")
             raise e
 
     @schema_function(skip_self=True)
     async def stop_video_buffering_api(self, context=None):
         """Manually stop video buffering to save resources."""
-        task_name = "stop_video_buffering"
-        self.task_status[task_name] = "started"
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
             
             if not self.frame_acquisition_running:
-                self.task_status[task_name] = "finished"
                 return {
                     "success": True,
                     "message": "Video buffering is already stopped",
@@ -1155,13 +1069,11 @@ class Microscope:
             await self.stop_video_buffering()
             logger.info("Video buffering stopped manually")
             
-            self.task_status[task_name] = "finished"
             return {
                 "success": True,
                 "message": "Video buffering stopped successfully"
             }
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to stop video buffering: {e}")
             raise e
 
@@ -1199,8 +1111,6 @@ class Microscope:
     @schema_function(skip_self=True)
     def adjust_video_frame(self, min_val: int = Field(0, description="Minimum intensity value for contrast stretching"), max_val: Optional[int] = Field(None, description="Maximum intensity value for contrast stretching"), context=None):
         """Adjust the contrast of the video stream by setting min and max intensity values."""
-        task_name = "adjust_video_frame"
-        self.task_status[task_name] = "started"
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -1209,10 +1119,8 @@ class Microscope:
             self.video_contrast_min = min_val
             self.video_contrast_max = max_val
             logger.info(f"Video contrast adjusted: min={min_val}, max={max_val}")
-            self.task_status[task_name] = "finished"
             return {"success": True, "message": f"Video contrast adjusted to min={min_val}, max={max_val}."}
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to adjust video frame: {e}")
             raise e
 
@@ -1222,8 +1130,6 @@ class Microscope:
         Get an image from microscope
         Returns: the URL of the image
         """
-        task_name = "snap"
-        self.task_status[task_name] = "started"
         
         # Check authentication
         if context and not self.check_permission(context.get("user", {})):
@@ -1260,10 +1166,8 @@ class Microscope:
                 logger.warning(f"Unknown channel {channel} in snap, parameters not updated for intensity/exposure attributes.")
             
             self.get_status()
-            self.task_status[task_name] = "finished"
             return data_url
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to snap image: {e}")
             raise e
 
@@ -1273,8 +1177,6 @@ class Microscope:
         Turn on the illumination
         Returns: The message of the action
         """
-        task_name = "open_illumination"
-        self.task_status[task_name] = "started"
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -1282,10 +1184,8 @@ class Microscope:
             
             self.squidController.liveController.turn_on_illumination()
             logger.info('Bright field illumination turned on.')
-            self.task_status[task_name] = "finished"
             return 'Bright field illumination turned on.'
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to open illumination: {e}")
             raise e
 
@@ -1295,8 +1195,6 @@ class Microscope:
         Turn off the illumination
         Returns: The message of the action
         """
-        task_name = "close_illumination"
-        self.task_status[task_name] = "started"
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -1304,10 +1202,8 @@ class Microscope:
             
             self.squidController.liveController.turn_off_illumination()
             logger.info('Illumination turned off.')
-            self.task_status[task_name] = "finished"
             return 'Illumination turned off.'
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to close illumination: {e}")
             raise e
 
@@ -1317,8 +1213,6 @@ class Microscope:
         Scan the well plate according to the pre-defined position list with custom illumination settings
         Returns: The message of the action
         """
-        task_name = "scan_well_plate"
-        self.task_status[task_name] = "started"
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -1365,10 +1259,8 @@ class Microscope:
             )
             
             logger.info("Well plate scanning completed")
-            self.task_status[task_name] = "finished"
             return "Well plate scanning completed"
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to scan well plate: {e}")
             raise e
         finally:
@@ -1382,18 +1274,14 @@ class Microscope:
         Scan the well plate according to the pre-defined position list
         Returns: The message of the action
         """
-        task_name = "scan_well_plate_simulated"
-        self.task_status[task_name] = "started"
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
             
             time.sleep(600)
-            self.task_status[task_name] = "finished"
             return "Well plate scanning completed"
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to scan well plate: {e}")
             raise e
 
@@ -1404,8 +1292,6 @@ class Microscope:
         Set the intensity of light source
         Returns:A string message
         """
-        task_name = "set_illumination"
-        self.task_status[task_name] = "started"
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -1434,10 +1320,8 @@ class Microscope:
                 logger.warning(f"Unknown channel {channel} in set_illumination, parameters not updated for intensity attributes.")
                 
             logger.info(f'The intensity of the channel {channel} illumination is set to {intensity}.')
-            self.task_status[task_name] = "finished"
             return f'The intensity of the channel {channel} illumination is set to {intensity}.'
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to set illumination: {e}")
             raise e
     
@@ -1447,8 +1331,6 @@ class Microscope:
         Set the exposure time of the camera
         Returns: A string message
         """
-        task_name = "set_camera_exposure"
-        self.task_status[task_name] = "started"
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -1468,10 +1350,8 @@ class Microscope:
                 logger.warning(f"Unknown channel {channel} in set_camera_exposure, parameters not updated for exposure attributes.")
 
             logger.info(f'The exposure time of the camera is set to {exposure_time}.')
-            self.task_status[task_name] = "finished"
             return f'The exposure time of the camera is set to {exposure_time}.'
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to set camera exposure: {e}")
             raise e
 
@@ -1481,8 +1361,6 @@ class Microscope:
         Stop the scanning of the well plate.
         Returns: A string message
         """
-        task_name = "stop_scan"
-        self.task_status[task_name] = "started"
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -1491,10 +1369,8 @@ class Microscope:
             self.squidController.liveController.stop_live()
             self.multipointController.abort_acqusition_requested=True
             logger.info("Stop scanning well plate")
-            self.task_status[task_name] = "finished"
             return "Stop scanning well plate"
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to stop scan: {e}")
             raise e
 
@@ -1504,8 +1380,6 @@ class Microscope:
         Move the stage to home/zero position
         Returns: A string message
         """
-        task_name = "home_stage"
-        self.task_status[task_name] = "started"
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -1518,10 +1392,8 @@ class Microscope:
                 self.squidController.home_stage
             )
             logger.info('The stage moved to home position in z, y, and x axis')
-            self.task_status[task_name] = "finished"
             return 'The stage moved to home position in z, y, and x axis'
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to home stage: {e}")
             raise e
     
@@ -1531,8 +1403,7 @@ class Microscope:
         Move the stage to the initial position for imaging.
         Returns: A string message
         """
-        task_name = "return_stage"
-        self.task_status[task_name] = "started"
+
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -1545,10 +1416,8 @@ class Microscope:
                 self.squidController.return_stage
             )
             logger.info('The stage moved to the initial position')
-            self.task_status[task_name] = "finished"
             return 'The stage moved to the initial position'
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to return stage: {e}")
             raise e
     
@@ -1558,8 +1427,7 @@ class Microscope:
         Move the stage to the loading position.
         Returns: A  string message
         """
-        task_name = "move_to_loading_position"
-        self.task_status[task_name] = "started"
+
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -1572,10 +1440,8 @@ class Microscope:
                 self.squidController.slidePositionController.move_to_slide_loading_position
             )
             logger.info('The stage moved to loading position')
-            self.task_status[task_name] = "finished"
             return 'The stage moved to loading position'
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to move to loading position: {e}")
             raise e
 
@@ -1585,8 +1451,7 @@ class Microscope:
         Do contrast-based autofocus
         Returns: A string message
         """
-        task_name = "auto_focus"
-        self.task_status[task_name] = "started"
+
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -1594,10 +1459,8 @@ class Microscope:
             
             await self.squidController.do_autofocus()
             logger.info('The camera is auto-focused')
-            self.task_status[task_name] = "finished"
             return 'The camera is auto-focused'
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to auto focus: {e}")
             raise e
     
@@ -1607,8 +1470,7 @@ class Microscope:
         Do reflection-based autofocus
         Returns: A string message
         """
-        task_name = "do_laser_autofocus"
-        self.task_status[task_name] = "started"
+
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -1616,10 +1478,8 @@ class Microscope:
             
             await self.squidController.do_laser_autofocus()
             logger.info('The camera is auto-focused')
-            self.task_status[task_name] = "finished"
             return 'The camera is auto-focused'
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to do laser autofocus: {e}")
             raise e
         
@@ -1629,8 +1489,7 @@ class Microscope:
         Set the reference of the laser
         Returns: A string message
         """
-        task_name = "set_laser_reference"
-        self.task_status[task_name] = "started"
+
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -1646,10 +1505,8 @@ class Microscope:
                     self.squidController.laserAutofocusController.set_reference
                 )
             logger.info('The laser reference is set')
-            self.task_status[task_name] = "finished"
             return 'The laser reference is set'
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to set laser reference: {e}")
             raise e
         
@@ -1659,8 +1516,7 @@ class Microscope:
         Navigate to the specified well position in the well plate.
         Returns: A string message
         """
-        task_name = "navigate_to_well"
-        self.task_status[task_name] = "started"
+
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -1678,10 +1534,8 @@ class Microscope:
                 wellplate_type
             )
             logger.info(f'The stage moved to well position ({row},{col})')
-            self.task_status[task_name] = "finished"
             return f'The stage moved to well position ({row},{col})'
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to navigate to well: {e}")
             raise e
 
@@ -1691,18 +1545,15 @@ class Microscope:
         Get the URL of the chatbot service.
         Returns: A URL string
         """
-        task_name = "get_chatbot_url"
-        self.task_status[task_name] = "started"
+
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
             
             logger.info(f"chatbot_service_url: {self.chatbot_service_url}")
-            self.task_status[task_name] = "finished"
             return self.chatbot_service_url
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to get chatbot URL: {e}")
             raise e
 
@@ -1954,10 +1805,6 @@ class Microscope:
             "get_status": self.get_status,
             "update_parameters_from_client": self.update_parameters_from_client,
             "get_chatbot_url": self.get_chatbot_url,
-            #"get_task_status": self.get_task_status,
-            "get_all_task_status": self.get_all_task_status,
-            #"reset_task_status": self.reset_task_status,
-            "reset_all_task_status": self.reset_all_task_status,
             "adjust_video_frame": self.adjust_video_frame,
             "start_video_buffering": self.start_video_buffering_api,
             "stop_video_buffering": self.stop_video_buffering_api,
@@ -2765,10 +2612,6 @@ class Microscope:
         Get the current well location based on the stage position.
         Returns: Dictionary with well location information including row, column, well_id, and position status
         """
-        task_name = "get_current_well_location"
-        if task_name not in self.task_status:
-            self.task_status[task_name] = "not_started"
-        self.task_status[task_name] = "started"
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -2776,10 +2619,8 @@ class Microscope:
             
             well_info = self.squidController.get_well_from_position(wellplate_type)
             logger.info(f'Current well location: {well_info["well_id"]} ({well_info["position_status"]})')
-            self.task_status[task_name] = "finished"
             return well_info
         except Exception as e:
-            self.task_status[task_name] = "failed"
             logger.error(f"Failed to get current well location: {e}")
             raise e
 
