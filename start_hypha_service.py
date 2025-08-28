@@ -1774,7 +1774,7 @@ class Microscope:
             "name": "Microscope Control Service",
             "id": service_id,
             "config": {
-                "visibility": "public",
+                "visibility": "protected",
                 "require_context": True,  # Enable user context for authentication
                 "run_in_executor": run_in_executor
             },
