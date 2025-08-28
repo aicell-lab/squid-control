@@ -1116,8 +1116,8 @@ async def webrtc_test_services():
             # Verify services are accessible
             print("🔍 Verifying services...")
             microscope_svc = await server.get_service(test_id)
-            hello_result = await microscope_svc.hello_world()
-            assert hello_result == "Hello world"
+            ping_result = await microscope_svc.ping()
+            assert ping_result == "pong"
             print("✅ Services verified and ready")
             
             try:
