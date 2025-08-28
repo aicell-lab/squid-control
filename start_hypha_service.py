@@ -331,7 +331,6 @@ class Microscope:
         self.video_track = None
         self.webrtc_service_id = None
         self.is_streaming = False
-        self.similarity_search_svc = None
         self.video_contrast_min = 0
         self.video_contrast_max = None
         self.metadata_data_channel = None  # WebRTC data channel for metadata
@@ -489,17 +488,7 @@ class Microscope:
             except Exception as chatbot_error:
                 raise RuntimeError(f"Chatbot service health check failed: {str(chatbot_error)}")
             
-            try:
-                if self.similarity_search_svc is None:
-                    raise RuntimeError("Similarity search service not found")
-                
-                result = await self.similarity_search_svc.hello_world()
-                if result != "Hello world":
-                    raise RuntimeError(f"Similarity search service returned unexpected response: {result}")
-                logger.info("Similarity search service is healthy")
-            except Exception as similarity_error:
-                logger.error(f"Similarity search service health check failed: {str(similarity_error)}")
-                raise RuntimeError(f"Similarity search service health check failed: {str(similarity_error)}")
+
 
             logger.info("All services are healthy")
             return {"status": "ok", "message": "All services are healthy"}
@@ -1716,75 +1705,6 @@ class Microscope:
             self.task_status[task_name] = "failed"
             logger.error(f"Failed to get chatbot URL: {e}")
             raise e
-    
-    def _format_similarity_results(self, results):
-        if not results:
-            return "No similar images found."
-
-        response_parts = ["Found similar images:"]
-        for res in results:
-            img_str = res.get('image_base64')
-            if not img_str:
-                continue
-            
-            image_bytes = base64.b64decode(img_str)
-            file_path = res.get('file_path', '')
-            file_name = os.path.basename(file_path) if file_path else "similar_image.png"
-            description = res.get('text_description', 'No description available.')
-
-            file_id = self.datastore.put('file', image_bytes, file_name, f"Similar image found: {description}")
-            img_url = self.datastore.get_url(file_id)
-
-            similarity = res.get('similarity', 0.0)
-            
-            response_parts.append(f"![Found image]({img_url})\nDescription: {description}\nSimilarity: {similarity:.4f}")
-
-        return "\n\n".join(response_parts)
-
-    @schema_function(skip_self=True)
-    async def find_similar_image_text(self, query_input: str, top_k: int, context=None):
-        """
-        Find similar image with text query.
-        Returns: A list of image information.
-        """
-        try:
-            # Check authentication
-            if context and not self.check_permission(context.get("user", {})):
-                raise Exception("User not authorized to access this service")
-            
-            results = await self.similarity_search_svc.find_similar_images(query_input, top_k)
-            return self._format_similarity_results(results)
-        except Exception as e:
-            logger.error(f"Failed to find similar images by text: {e}")
-            return f"An error occurred while searching for similar images: {e}"
-
-    @schema_function(skip_self=True)
-    async def find_similar_image_image(self, query_input: str, top_k: int, context=None):
-        """
-        Find similar image with image's URL query.
-        Returns: A list of image information.
-        """
-        try:
-            # Check authentication
-            if context and not self.check_permission(context.get("user", {})):
-                raise Exception("User not authorized to access this service")
-            
-            # download the image from query_input url
-            async with aiohttp.ClientSession() as session:
-                async with session.get(query_input) as resp:
-                    if resp.status != 200:
-                        return f"Failed to download image from {query_input}"
-                    image_bytes = await resp.read()
-        except Exception as e:
-            logger.error(f"Failed to download image from {query_input}: {e}")
-            return f"Failed to download image from {query_input}: {e}"
-        
-        try:
-            results = await self.similarity_search_svc.find_similar_images(image_bytes, top_k)
-            return self._format_similarity_results(results)
-        except Exception as e:
-            logger.error(f"Failed to find similar images by image: {e}")
-            return f"An error occurred while searching for similar images: {e}"
 
     async def fetch_ice_servers(self):
         """Fetch ICE servers from the coturn service"""
@@ -1873,16 +1793,6 @@ class Microscope:
         """Image information."""
         url: str = Field(..., description="The URL of the image.")
         title: Optional[str] = Field(None, description="The title of the image.")
-    
-    class FindSimilarImageTextInput(BaseModel):
-        """Find similar image with text query."""
-        query_input: str = Field(..., description="The text of the query input for the similarity search.")
-        top_k: int = Field(..., description="The number of similar images to return.")
-
-    class FindSimilarImageImageInput(BaseModel):
-        """Find similar image with image's URL query."""
-        query_input: str = Field(..., description="The URL of the image of the query input for the similarity search.")
-        top_k: int = Field(..., description="The number of similar images to return.")
 
     class GetCurrentWellLocationInput(BaseModel):
         """Get the current well location based on the stage position."""
@@ -1951,14 +1861,6 @@ class Microscope:
         response = await self.return_stage(context)
         return {"result": response}
 
-    async def find_similar_image_text_schema(self, config: FindSimilarImageTextInput, context=None):
-        response = await self.find_similar_image_text(config.query_input, config.top_k, context)
-        return {"result": response}
-
-    async def find_similar_image_image_schema(self, config: FindSimilarImageImageInput, context=None):
-        response = await self.find_similar_image_image(config.query_input, config.top_k, context)
-        return {"result": response}
-
     def set_illumination_schema(self, config: SetIlluminationInput, context=None):
         response = self.set_illumination(config.channel, config.intensity, context)
         return {"result": response}
@@ -2003,8 +1905,6 @@ class Microscope:
             "do_laser_autofocus": self.DoLaserAutofocusInput.model_json_schema(),
             "set_laser_reference": self.SetLaserReferenceInput.model_json_schema(),
             "get_status": self.GetStatusInput.model_json_schema(),
-            "find_similar_image_text": self.FindSimilarImageTextInput.model_json_schema(),
-            "find_similar_image_image": self.FindSimilarImageImageInput.model_json_schema(),
             "get_current_well_location": self.GetCurrentWellLocationInput.model_json_schema(),
             "get_microscope_configuration": self.GetMicroscopeConfigurationInput.model_json_schema(),
             "set_stage_velocity": self.SetStageVelocityInput.model_json_schema(),
@@ -2097,7 +1997,6 @@ class Microscope:
             f"Service (service_id={service_id}) started successfully, available at {self.server_url}{server.config.workspace}/services"
         )
 
-        
         logger.info(f'You can use this service using the service id: {svc.id}')
         id = svc.id.split(":")[1]
 
@@ -2127,8 +2026,6 @@ class Microscope:
                 "do_laser_autofocus": self.do_laser_autofocus_schema,
                 "set_laser_reference": self.set_laser_reference_schema,
                 "get_status": self.get_status_schema,
-                "find_similar_image_text": self.find_similar_image_text_schema,
-                "find_similar_image_image": self.find_similar_image_image_schema,
                 "get_current_well_location": self.get_current_well_location_schema,
                 "get_microscope_configuration": self.get_microscope_configuration_schema,
                 "set_stage_velocity": self.set_stage_velocity_schema,
@@ -2233,23 +2130,8 @@ class Microscope:
                     raise
             else:
                 raise
-    
-    async def connect_to_similarity_search_service(self):
-        if self.is_local:
-            similarity_search_server = await connect_to_server(
-                {"client_id": f"similarity-search-{self.service_id}-{uuid.uuid4()}", "server_url": "http://192.168.2.1:9527", "token": os.environ.get("REEF_LOCAL_TOKEN"), "workspace": os.environ.get("REEF_LOCAL_WORKSPACE"), "ping_interval": None}
-            )
-            similarity_search_svc = await similarity_search_server.get_service("image-text-similarity-search")
-        else:
-            similarity_search_server = await connect_to_server(
-                {"client_id": f"similarity-search-{self.service_id}-{uuid.uuid4()}", "server_url": "https://hypha.aicell.io", "token": os.environ.get("AGENT_LENS_WORKSPACE_TOKEN"), "workspace": "agent-lens", "ping_interval": None}
-            )
-            similarity_search_svc = await similarity_search_server.get_service("image-text-similarity-search")
-        return similarity_search_svc
 
     async def setup(self):
-
-        self.similarity_search_svc = await self.connect_to_similarity_search_service()
 
         # Determine workspace and token based on simulation mode
         if self.is_simulation and not self.is_local:
