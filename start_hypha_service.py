@@ -458,8 +458,8 @@ class Microscope:
             if microscope_svc is None:
                 raise RuntimeError("Microscope service not found")
             
-            result = await microscope_svc.hello_world()
-            if result != "Hello world":
+            result = await microscope_svc.ping()
+            if result != "pong":
                 raise RuntimeError(f"Microscope service returned unexpected response: {result}")
             
             datastore_id = f'data-store-{"simu" if self.is_simulation else "real"}-{self.service_id}'
@@ -533,12 +533,9 @@ class Microscope:
         for task_name in self.task_status:
             self.task_status[task_name] = "not_started"
     @schema_function(skip_self=True)
-    def hello_world(self, context=None):
-        """Hello world"""
-        task_name = "hello_world"
-        self.task_status[task_name] = "started"
-        self.task_status[task_name] = "finished"
-        return "Hello world"
+    def ping(self, context=None):
+        """Ping the service"""
+        return "pong"
     
     @schema_function(skip_self=True)
     def move_by_distance(self, x: float=Field(1.0, description="disntance through X axis, unit: milimeter"), y: float=Field(1.0, description="disntance through Y axis, unit: milimeter"), z: float=Field(1.0, description="disntance through Z axis, unit: milimeter"), context=None):
@@ -2031,7 +2028,7 @@ class Microscope:
                 "run_in_executor": run_in_executor
             },
             "type": "echo",
-            "hello_world": self.hello_world,
+            "ping": self.ping,
             "is_service_healthy": self.is_service_healthy,
             "move_by_distance": self.move_by_distance,
             "snap": self.snap,
