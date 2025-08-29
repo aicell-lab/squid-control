@@ -8,7 +8,6 @@ import threading
 from crc import CrcCalculator, Crc8
 import json
 from squid_control.control.config import CONFIG
-from qtpy.QtCore import QTimer
 from scipy.spatial import ConvexHull, Delaunay
 import os
 

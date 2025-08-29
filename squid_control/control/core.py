@@ -1,4 +1,3 @@
-# Remove Qt imports and replace with standard Python
 import os
 import threading
 import time
@@ -27,7 +26,6 @@ import squid_control.control.utils_config as utils_config
 from squid_control.control.microcontroller import LIMIT_CODE
 
 
-# Simple event system to replace Qt signals
 class EventEmitter:
     def __init__(self):
         self._callbacks = {}
@@ -96,7 +94,7 @@ class ObjectiveStore:
 
 
 class StreamHandler:
-    """Handle image streams with callback-based events instead of Qt signals"""
+    """Handle image streams with callback-based events"""
 
     def __init__(
         self,
@@ -124,12 +122,11 @@ class StreamHandler:
         self.timestamp_last = 0
         self.counter = 0
         self.fps_real = 0
-        
-        # Direct callback for WebRTC instead of signal
+        # Direct callback for WebRTC
         self.webrtc_frame_callback = None
         self.general_frame_callback = None # New callback for general frame updates
 
-        # Callback functions to replace Qt signals
+        # Callback functions
         self.image_to_display_callback = None
         self.packet_image_to_write_callback = None
         self.packet_image_for_tracking_callback = None
@@ -768,11 +765,6 @@ class NavigationController:
 
         # to be moved to gui for transparency
         self.microcontroller.set_callback(self.update_pos)
-
-        # self.timer_read_pos = QTimer()
-        # self.timer_read_pos.setInterval(PosUpdate.INTERVAL_MS)
-        # self.timer_read_pos.timeout.connect(self.update_pos)
-        # self.timer_read_pos.start()
 
     def set_flag_click_to_move(self, flag):
         self.click_to_move = flag
@@ -2004,8 +1996,6 @@ class MultiPointWorker:
 
     def __init__(self, multiPointController):
         self.multiPointController = multiPointController
-
-        # Callback functions to replace Qt signals
         self.update_stats_callback = None
         self.image_to_display_callback = None
         self.spectrum_to_display_callback = None
