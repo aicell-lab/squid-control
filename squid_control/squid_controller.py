@@ -34,8 +34,6 @@ else:
         print(f"serial_peripherals import error - hardware peripheral functionality not available: {e}")
         SERIAL_PERIPHERALS_AVAILABLE = False
         serial_peripherals = None
-if CONFIG.SUPPORT_LASER_AUTOFOCUS:
-    import squid_control.control.core_displacement_measurement as core_displacement_measurement
 
 import time
 import asyncio
