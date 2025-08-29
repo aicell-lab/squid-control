@@ -78,9 +78,6 @@ dev = [
     "pytest-cov",
     "pytest-asyncio",
     "pytest-timeout",
-    "qtpy>=2.4.0,<3.0",
-    "PyQt5>=5.15.10,<6.0",
-    "pyqtgraph>=0.13.0,<1.0",
     "appdirs>=1.4.0,<2.0",
     "numba",
     "ruff",
@@ -91,17 +88,7 @@ dev = [
     "flake8",
 ]
 all = [
-    "qtpy>=2.4.0,<3.0",
-    "PyQt5>=5.15.10,<6.0",
-    "PyQt5-tools",
-    "pyqtgraph>=0.13.0,<1.0",
     "tensorrt",
-]
-qt = [
-    "qtpy>=2.4.0,<3.0",
-    "PyQt5>=5.15.10,<6.0",
-    "PyQt5-tools",
-    "pyqtgraph>=0.13.0,<1.0",
 ]
 tracking = [
     "tensorrt",

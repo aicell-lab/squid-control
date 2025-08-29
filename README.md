@@ -25,11 +25,6 @@ This includes all development tools:
 - Type checking (mypy)
 - Pre-commit hooks
 
-**GUI installation:**
-```bash
-pip install .[qt]
-```
-
 **Full installation (including tracking):**
 ```bash
 pip install .[all]
@@ -198,6 +193,22 @@ const region = await microscopeService.get_stitched_region({
 - **Supported Formats**: 6, 12, 24, 96, 384 well plates
 - **Well Naming**: Row letters (A-H) + Column numbers (1-12)
 - **Padding**: Configurable padding around each well (default: 2.0mm)
+
+## Troubleshooting
+
+If you encounter dependency conflicts:
+
+1. **Clean Environment**: Create a fresh virtual environment
+2. **Update pip**: `pip install --upgrade pip`
+3. **Install with extras**: Use specific optional dependency groups
+4. **Check Python Version**: Ensure you're using Python 3.8+
+
+## Version Constraints
+
+The project uses semantic versioning constraints:
+- `>=X.Y.Z,<A.B.C`: Accepts versions from X.Y.Z up to (but not including) A.B.C
+- This ensures compatibility while allowing security updates
+- Major version changes are explicitly controlled to prevent breaking changes
 
 ---
 

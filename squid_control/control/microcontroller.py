@@ -15,14 +15,6 @@ import os
 
 from enum import Enum
 
-# add user to the dialout group to avoid the need to use sudo
-
-# done (7/20/2021) - remove the time.sleep in all functions (except for __init__) to
-# make all callable functions nonblocking, instead, user should check use is_busy() to
-# check if the microcontroller has finished executing the more recent command
-
-
-# to do (7/28/2021) - add functions for configuring the stepper motors
 class LIMIT_CODE:
     X_POSITIVE = 0
     X_NEGATIVE = 1
@@ -1037,10 +1029,6 @@ class Microcontroller_Simulation:
         # for simulation
         self.timestamp_last_command = time.time()  # for simulation only
         self._mcu_cmd_execution_status = None
-        self.timer_update_command_execution_status = QTimer()
-        self.timer_update_command_execution_status.timeout.connect(
-            self._simulation_update_cmd_execution_status
-        )
 
         self.new_packet_callback_external = None
         self.terminate_reading_received_packet_thread = False
@@ -1576,12 +1564,6 @@ class Microcontroller_Simulation:
         # print('start timer')
         # timer cannot be started from another thread
         self.timestamp_last_command = time.time()
-
-    def _simulation_update_cmd_execution_status(self):
-        # print('simulation - MCU command execution finished')
-        # self._mcu_cmd_execution_status = CONFIG.CMD_EXECUTION_STATUS.COMPLETED_WITHOUT_ERRORS
-        # self.timer_update_command_execution_status.stop()
-        pass  # timer cannot be started from another thread
 
     def wait_till_operation_is_completed(self, TIMEOUT_LIMIT_S=5):
         timestamp_start = time.time()

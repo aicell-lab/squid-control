@@ -13,13 +13,14 @@ This is a Python-based control system for the Squid microscope (by Cephla Inc.),
 - Multi-channel fluorescence imaging capabilities
 
 ## Technology Stack
-- **Core**: Python 3.8+, asyncio, PyQt5, OpenCV
+- **Core**: Python 3.8+, asyncio, OpenCV (headless)
 - **Hardware Control**: PySerial, microcontroller communication
 - **Image Processing**: NumPy, SciPy, scikit-image, OpenCV, PIL
 - **Data Storage**: Zarr, TiffFile, HDF5
 - **Web Services**: Hypha RPC, Flask, aiohttp, WebRTC (aiortc)
 - **AI Integration**: OpenAI API, similarity search services
 - **Testing**: pytest, pytest-asyncio, pytest-cov
+- **Note**: Qt dependencies have been removed for headless operation
 
 ## Key Architecture Components
 
@@ -450,10 +451,12 @@ This serial communication system provides the foundation for precise, reliable, 
 - Include detailed API documentation
 
 ### GUI Development
-- Use PyQt5 signal/slot mechanism
+
+For headless operation:
+- Use callback-based event handling 
 - Implement proper threading for long operations
-- Add progress indicators for user feedback
-- Support both local and remote operation modes
+- Use the EventEmitter class for custom event handling
+- Support both local and remote operation modes via API endpoints
 
 ## Important Conventions
 
@@ -569,4 +572,4 @@ When working on this codebase:
 4. Test thoroughly with both mock and real hardware
 5. Follow the established patterns for new features
 6. Update relevant documentation and tests
-7. **For Zarr operations**: Always validate bounds and prevent zero-size writes 
+7. **For Zarr operations**: Always validate bounds and prevent zero-size writes
