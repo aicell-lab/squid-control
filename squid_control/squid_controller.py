@@ -286,7 +286,6 @@ class SquidController:
         self.navigationController.move_z_to(CONFIG.DEFAULT_Z_POS_MM)
         # wait for the operation to finish
         
-        # FIXME: This is failing right now, z return timeout
         t0 = time.time()
         while self.microcontroller.is_busy():
             time.sleep(0.005)
