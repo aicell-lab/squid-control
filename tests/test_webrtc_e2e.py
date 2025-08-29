@@ -9,7 +9,7 @@ import threading
 import socket
 from pathlib import Path
 from hypha_rpc import connect_to_server, register_rtc_service
-from start_hypha_service import Microscope, MicroscopeVideoTrack
+from squid_control.start_hypha_service import Microscope, MicroscopeVideoTrack
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import tempfile
 import webbrowser

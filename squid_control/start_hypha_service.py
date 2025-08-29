@@ -16,23 +16,40 @@ import sys
 import io
 from PIL import Image  
 from pathlib import Path
-# Now you can import squid_control
-from squid_control.squid_controller import SquidController
-from squid_control.control.camera import TriggerModeSetting
-from squid_control.control.config import CONFIG
-from squid_control.control.config import ChannelMapper
+# Import from squid_control package (now relative since we're inside the package)
+# Handle both module and script execution
+try:
+    from .squid_controller import SquidController
+    from .control.camera import TriggerModeSetting
+    from .control.config import CONFIG
+    from .control.config import ChannelMapper
+    from .hypha_tools.hypha_storage import HyphaDataStore
+    from .hypha_tools.chatbot.aask import aask
+    from .hypha_tools.artifact_manager.artifact_manager import SquidArtifactManager
+except ImportError:
+    # Fallback for direct script execution from project root
+    import sys
+    import os
+    # Add the project root to Python path
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
+    
+    from squid_control.squid_controller import SquidController
+    from squid_control.control.camera import TriggerModeSetting
+    from squid_control.control.config import CONFIG
+    from squid_control.control.config import ChannelMapper
+    from squid_control.hypha_tools.hypha_storage import HyphaDataStore
+    from squid_control.hypha_tools.chatbot.aask import aask
+    from squid_control.hypha_tools.artifact_manager.artifact_manager import SquidArtifactManager
+
 from pydantic import Field, BaseModel
 from typing import List, Optional
 from collections import deque
 import threading
-
-from squid_control.hypha_tools.hypha_storage import HyphaDataStore
-from squid_control.hypha_tools.chatbot.aask import aask
 import base64
-from pydantic import Field
 from hypha_rpc.utils.schema import schema_function
 import signal
-from squid_control.hypha_tools.artifact_manager.artifact_manager import SquidArtifactManager
 
 # WebRTC imports
 import aiohttp
@@ -2022,7 +2039,7 @@ class Microscope:
         
         # Setup zarr artifact manager for dataset upload functionality
         try:
-            from squid_control.hypha_tools.artifact_manager.artifact_manager import SquidArtifactManager
+            from .hypha_tools.artifact_manager.artifact_manager import SquidArtifactManager
             self.zarr_artifact_manager = SquidArtifactManager()
             
             # Connect to agent-lens workspace for zarr uploads
@@ -2083,7 +2100,7 @@ class Microscope:
 
 
     async def initialize_zarr_manager(self, camera):
-        from squid_control.hypha_tools.artifact_manager.artifact_manager import ZarrImageManager
+        from .hypha_tools.artifact_manager.artifact_manager import ZarrImageManager
         
         camera.zarr_image_manager = ZarrImageManager()
         
@@ -2683,7 +2700,10 @@ class Microscope:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
             
-            from squid_control.control.config import get_microscope_configuration_data
+            try:
+                from .control.config import get_microscope_configuration_data
+            except ImportError:
+                from squid_control.control.config import get_microscope_configuration_data
             
             # Call the configuration function from config.py
             result = get_microscope_configuration_data(
@@ -2722,7 +2742,10 @@ class Microscope:
             
             # Initialize ZarrImageManager if not already initialized
             if not hasattr(self, 'zarr_image_manager') or self.zarr_image_manager is None:
-                from squid_control.hypha_tools.artifact_manager.artifact_manager import ZarrImageManager
+                try:
+                    from .hypha_tools.artifact_manager.artifact_manager import ZarrImageManager
+                except ImportError:
+                    from squid_control.hypha_tools.artifact_manager.artifact_manager import ZarrImageManager
                 self.zarr_image_manager = ZarrImageManager()
                 success = await self.zarr_image_manager.connect(server_url=self.server_url)
                 if not success:
@@ -2887,8 +2910,12 @@ class Microscope:
                 # Try to get canvas info from the first well
                 try:
                     # Create a temporary canvas instance to get export info
-                    from squid_control.stitching.zarr_canvas import WellZarrCanvas
-                    from squid_control.control.config import ChannelMapper, CONFIG
+                    try:
+                        from .stitching.zarr_canvas import WellZarrCanvas
+                        from .control.config import ChannelMapper, CONFIG
+                    except ImportError:
+                        from squid_control.stitching.zarr_canvas import WellZarrCanvas
+                        from squid_control.control.config import ChannelMapper, CONFIG
                     
                     # Parse well info from path (e.g., "well_A1_96.zarr" -> A, 1, 96)
                     well_name = well_path.stem  # "well_A1_96"
@@ -2948,8 +2975,12 @@ class Microscope:
                 
                 try:
                     # Create a temporary canvas instance to export the well
-                    from squid_control.stitching.zarr_canvas import WellZarrCanvas
-                    from squid_control.control.config import ChannelMapper, CONFIG
+                    try:
+                        from .stitching.zarr_canvas import WellZarrCanvas
+                        from .control.config import ChannelMapper, CONFIG
+                    except ImportError:
+                        from squid_control.stitching.zarr_canvas import WellZarrCanvas
+                        from squid_control.control.config import ChannelMapper, CONFIG
                     
                     # Parse well info from name (e.g., "well_A1_96" -> A, 1, 96)
                     if well_name.startswith("well_"):
@@ -3919,7 +3950,8 @@ def signal_handler(sig, frame):
 signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
-if __name__ == "__main__":
+def main():
+    """Main entry point for the microscope service"""
     parser = argparse.ArgumentParser(
         description="Squid microscope control services for Hypha."
     )
@@ -3927,7 +3959,7 @@ if __name__ == "__main__":
         "--simulation",
         dest="simulation",
         action="store_true",
-        default=False,
+        default=True,
         help="Run in simulation mode (default: True)"
     )
     parser.add_argument(
@@ -3949,12 +3981,15 @@ if __name__ == "__main__":
 
     loop = asyncio.get_event_loop()
 
-    async def main():
+    async def async_main():
         try:
             microscope.setup_task = asyncio.create_task(microscope.setup())
             await microscope.setup_task
         except Exception:
             traceback.print_exc()
 
-    loop.create_task(main())
+    loop.create_task(async_main())
     loop.run_forever()
+
+if __name__ == "__main__":
+    main()

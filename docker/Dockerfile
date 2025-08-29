@@ -44,4 +44,4 @@ RUN echo "Listing site-packages to check for squid_control installation:" && \
 
 # Run the application as the non-root user "squid-user"
 USER squid-user
-CMD ["python", "start_hypha_service.py", "--simulation"]
+CMD ["python", "-m", "squid_control", "--simulation"]

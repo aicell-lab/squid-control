@@ -9,7 +9,7 @@ import json
 import zipfile
 import tempfile
 from hypha_rpc import connect_to_server, login
-from start_hypha_service import Microscope, MicroscopeVideoTrack
+from squid_control.start_hypha_service import Microscope, MicroscopeVideoTrack
 from squid_control.hypha_tools.hypha_storage import HyphaDataStore
 
 # Mark all tests in this module as asyncio and integration tests
@@ -521,7 +521,7 @@ async def test_schema_methods(test_microscope_service):
     assert "navigate_to_well" in schema
     
     # Test move_by_distance_schema
-    from start_hypha_service import Microscope
+    from squid_control.start_hypha_service import Microscope
     config = Microscope.MoveByDistanceInput(x=1.0, y=0.5, z=0.1)
     result = microscope.move_by_distance_schema(config)
     assert isinstance(result, str)
@@ -870,7 +870,7 @@ async def test_additional_schema_methods(test_microscope_service):
 # Test Pydantic input models
 async def test_pydantic_input_models():
     """Test all Pydantic input model classes."""
-    from start_hypha_service import Microscope
+    from squid_control.start_hypha_service import Microscope
     
     # Test MoveByDistanceInput
     move_input = Microscope.MoveByDistanceInput(x=1.0, y=2.0, z=0.5)
@@ -1670,7 +1670,7 @@ async def test_microscope_configuration_schema_method(test_microscope_service):
             print("1. Testing schema method...")
             
             # Test schema method with different inputs
-            from start_hypha_service import Microscope
+            from squid_control.start_hypha_service import Microscope
             if hasattr(Microscope, 'GetMicroscopeConfigurationInput'):
                 # Test with valid input
                 config_input = Microscope.GetMicroscopeConfigurationInput(
