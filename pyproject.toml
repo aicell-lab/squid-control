@@ -26,60 +26,82 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
-    "pyserial>=3.5",
-    "pandas>=2.2.0",
-    "imageio>=2.31.1",
-    "scipy>=1.10.0,<1.13",
-    "crc==1.3.0",
-    "tifffile>=2021.8.30,<2023.3.15",
-    "opencv-python-headless==4.7.0.72",
-    "lxml>=4.6,<5",
-    "scikit-image>=0.19.3",
-    "hypha-rpc>=0.20.53",
-    "pydantic>=2.0",
-    "requests>=2.26.0",
-    "numpy>=1.23,<1.24",
-    "matplotlib>=3.7.0,<=3.10",
-    "zarr>=2.11.3",
-    "flask>=3.0.0",
-    "python-dotenv>=1.0.0",
-    "openai>=1.0.0",
-    "blosc>=1.11.1",
-    "aiohttp>=3.9.0",
-    "av>=11.0.0",
-    "aiortc>=1.5.0",
-    "jax>=0.3.10,<0.4.24",
-    "jaxlib>=0.3.10,<0.4.24",
+    # Core scientific computing
+    "numpy>=1.23,<2.0",
+    "scipy>=1.10.0,<2.0",
+    "pandas>=2.0.0,<3.0",
+    
+    # Image processing and computer vision
+    "opencv-python>=4.7.0,<5.0",
+    "scikit-image>=0.19.0,<1.0",
+    "imageio>=2.31.0,<3.0",
+    "tifffile>=2021.8.30,<2024.0.0",
+    "Pillow>=9.0.0,<11.0",
+    
+    # Data storage and compression
+    "zarr>=2.11.0,<3.0",
+    "blosc>=1.11.0,<2.0",
+    
+    # Hardware communication
+    "pyserial>=3.5,<4.0",
+    "crc>=1.3.0,<2.0",
+    
+    # Web services and API
+    "hypha-rpc>=0.20.0,<1.0",
+    "flask>=3.0.0,<4.0",
+    "aiohttp>=3.9.0,<4.0",
+    "requests>=2.26.0,<3.0",
+    
+    # AI and machine learning
+    "openai>=1.0.0,<2.0",
+    "jax>=0.3.10,<0.5.0",
+    "jaxlib>=0.3.10,<0.5.0",
+    
+    # Data validation and serialization
+    "pydantic>=2.0.0,<3.0",
+    "python-dotenv>=1.0.0,<2.0",
+    
+    # XML and configuration
+    "lxml>=4.6.0,<6.0",
+    
+    # Video streaming and WebRTC
+    "av>=11.0.0,<15.0",
+    "aiortc>=1.5.0,<2.0",
+    
+    # Visualization and plotting
+    "matplotlib>=3.7.0,<4.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0",
+    "pytest>=7.0,<8.0",
     "pytest-cov",
     "pytest-asyncio",
     "pytest-timeout",
-    "qtpy>=2.4.0",
-    "PyQt5>=5.15.10",
-    "pyqtgraph>=0.13.3",
-    "appdirs>=1.4.0",
-    "numpy>=1.23,<1.24",
+    "qtpy>=2.4.0,<3.0",
+    "PyQt5>=5.15.10,<6.0",
+    "pyqtgraph>=0.13.0,<1.0",
+    "appdirs>=1.4.0,<2.0",
     "numba",
     "ruff",
     "mypy",
     "pre-commit",
+    "black",
+    "isort",
+    "flake8",
 ]
 all = [
-    "qtpy>=2.4.0",
-    "pyqt5>=5.15.10",
-    "pyqt5-tools",
-    "pyqtgraph>=0.13.3",
+    "qtpy>=2.4.0,<3.0",
+    "PyQt5>=5.15.10,<6.0",
+    "PyQt5-tools",
+    "pyqtgraph>=0.13.0,<1.0",
     "tensorrt",
 ]
 qt = [
-    "qtpy>=2.4.0",
-    "pyqt5>=5.15.10",
-    "pyqt5-tools",
-    "pyqtgraph>=0.13.3",
+    "qtpy>=2.4.0,<3.0",
+    "PyQt5>=5.15.10,<6.0",
+    "PyQt5-tools",
+    "pyqtgraph>=0.13.0,<1.0",
 ]
 tracking = [
     "tensorrt",
@@ -158,3 +180,30 @@ python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true
+
+[tool.black]
+line-length = 88
+target-version = ['py38', 'py39', 'py310', 'py311']
+include = '\.pyi?$'
+extend-exclude = '''
+/(
+  # directories
+  \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 88
+multi_line_output = 3
+include_trailing_comma = true
+force_grid_wrap = 0
+use_parentheses = true
+ensure_newline_before_comments = true

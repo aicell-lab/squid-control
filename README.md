@@ -6,15 +6,43 @@ The Squid Control software is a Python package that provides a simple interface 
 
 ### Installation Options
 
-Basic installation:
+This project now uses `pyproject.toml` as the single source of truth for dependencies. The old `requirements.txt` has been removed to avoid version conflicts.
+
+**Basic installation:**
 ```bash
 pip install .
 ```
 
-For development (recommend):
+**For development (recommended):**
 ```bash
 pip install .[dev]
 ```
+
+This includes all development tools:
+- pytest and testing utilities
+- Code formatting (black, isort)
+- Linting (ruff, flake8)
+- Type checking (mypy)
+- Pre-commit hooks
+
+**GUI installation:**
+```bash
+pip install .[qt]
+```
+
+**Full installation (including tracking):**
+```bash
+pip install .[all]
+```
+
+### Dependency Management
+
+All dependencies are now managed through `pyproject.toml` with the following benefits:
+
+- **Version Compatibility**: Dependencies are carefully versioned to avoid conflicts
+- **Optional Dependencies**: Install only what you need
+- **Modern Standards**: Uses PEP 621 compliant dependency specification
+- **Build System**: Standardized build process with setuptools
 
 ### Usage
 
@@ -26,6 +54,21 @@ python -m squid_control --config HCS_v2
 If you want to use a different configuration file, you can specify the path to the configuration file:
 ```
 python -m squid_control --config /home/user/configuration_HCS_v2.ini
+```
+
+### Environment Setup
+
+For development, we recommend using conda:
+
+```bash
+# Create conda environment
+conda create -n squid python=3.11
+
+# Activate environment
+conda activate squid
+
+# Install in development mode
+pip install -e .[dev]
 ```
 
 ### Simulation Mode
@@ -171,7 +214,6 @@ The current branch is a fork from https://github.com/hongquanli/octopi-research/
 commit dbb49fc314d82d8099d5e509c0e1ad9a919245c9 (HEAD -> master, origin/master, origin/HEAD)
 Author: Hongquan Li <hqlisu@gmail.com>
 Date:   Thu Apr 4 18:07:51 2024 -0700
-
     add laser af characterization mode for saving images from laser af camera
 ```
 
