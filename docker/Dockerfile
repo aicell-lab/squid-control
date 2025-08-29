@@ -32,8 +32,8 @@ RUN git config --global --add safe.directory /app
 RUN git clean -fdX && rm -rf .git
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-RUN pip install .
+RUN pip install --no-cache-dir .
+RUN pip install .[dev]
 
 # Diagnostic steps:
 RUN echo "Listing site-packages to check for squid_control installation:" && \
