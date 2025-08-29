@@ -1,7 +1,7 @@
 import os 
 import shutil
 # app specific libraries
-import squid_control.control.core_reef as core
+import squid_control.control.core as core
 import squid_control.control.microcontroller as microcontroller
 from squid_control.control.config import *
 from squid_control.control.camera import get_camera
