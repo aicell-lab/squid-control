@@ -4,8 +4,6 @@ The Squid Control software is a Python package that provides a simple interface 
 
 ## Installation and Usage
 
-See the [installation guide](./docs/installation.md) for instructions on how to install and use the software.
-
 ### Installation Options
 
 Basic installation:
@@ -45,8 +43,6 @@ The simulation mode includes a **virtual microscope sample** using Zarr data arc
 - The `Camera_Simulation` class (in `camera_default.py`) handles simulated image acquisition.
 - The `ZarrImageManager` retrieves image data from the Zarr archives, either by direct array access or by assembling the region from smaller chunks.
 - The image is processed with the requested exposure time, intensity, and optional Z-blurring, then returned to the user.
-
-
 
 #### Simulated Sample Features:
 - Supports different imaging channels (brightfield and fluorescence)
@@ -160,8 +156,6 @@ const region = await microscopeService.get_stitched_region({
 - **Well Naming**: Row letters (A-H) + Column numbers (1-12)
 - **Padding**: Configurable padding around each well (default: 2.0mm)
 
-For detailed usage examples and API documentation, see the [Feature Introduction](./docs/feature_introduction.md) and [Hypha Tutorial](./docs/hypha_tutorial.md).
-
 ---
 
 ## About
@@ -186,8 +180,4 @@ How to make pypi work:
  - Create a new token in the account settings
  - In the repository setting, create a new secret called `PYPI_API_TOKEN` and paste the token in the value field
  - Then, if you want to manually publish a new pypi package, go to actions, select the `Publish to PyPi` workflow, and click on `Run workflow`.
-
----
-
-**Tip:** For more details on the simulated sample and the Zarr workflow, see [Feature Introduction](./docs/feature_introduction.md).
 
