@@ -120,7 +120,6 @@ pytest -v
 **Run specific test function:**
 ```bash
 pytest tests/test_squid_controller.py::test_controller_initialization
-pytest tests/test_hypha_service.py::test_task_status_management -v
 ```
 
 **Run tests in parallel (if pytest-xdist is installed):**

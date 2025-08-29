@@ -4,19 +4,40 @@ The Squid Control software is a Python package that provides a simple interface 
 
 ## Installation and Usage
 
-See the [installation guide](./docs/installation.md) for instructions on how to install and use the software.
-
 ### Installation Options
 
-Basic installation:
+This project now uses `pyproject.toml` as the single source of truth for dependencies. The old `requirements.txt` has been removed to avoid version conflicts.
+
+**Basic installation:**
 ```bash
 pip install .
 ```
 
-For development (recommend):
+**For development (recommended):**
 ```bash
 pip install .[dev]
 ```
+
+This includes all development tools:
+- pytest and testing utilities
+- Code formatting (black, isort)
+- Linting (ruff, flake8)
+- Type checking (mypy)
+- Pre-commit hooks
+
+**Full installation (including tracking):**
+```bash
+pip install .[all]
+```
+
+### Dependency Management
+
+All dependencies are now managed through `pyproject.toml` with the following benefits:
+
+- **Version Compatibility**: Dependencies are carefully versioned to avoid conflicts
+- **Optional Dependencies**: Install only what you need
+- **Modern Standards**: Uses PEP 621 compliant dependency specification
+- **Build System**: Standardized build process with setuptools
 
 ### Usage
 
@@ -28,6 +49,21 @@ python -m squid_control --config HCS_v2
 If you want to use a different configuration file, you can specify the path to the configuration file:
 ```
 python -m squid_control --config /home/user/configuration_HCS_v2.ini
+```
+
+### Environment Setup
+
+For development, we recommend using conda:
+
+```bash
+# Create conda environment
+conda create -n squid python=3.11
+
+# Activate environment
+conda activate squid
+
+# Install in development mode
+pip install -e .[dev]
 ```
 
 ### Simulation Mode
@@ -45,8 +81,6 @@ The simulation mode includes a **virtual microscope sample** using Zarr data arc
 - The `Camera_Simulation` class (in `camera_default.py`) handles simulated image acquisition.
 - The `ZarrImageManager` retrieves image data from the Zarr archives, either by direct array access or by assembling the region from smaller chunks.
 - The image is processed with the requested exposure time, intensity, and optional Z-blurring, then returned to the user.
-
-
 
 #### Simulated Sample Features:
 - Supports different imaging channels (brightfield and fluorescence)
@@ -160,7 +194,21 @@ const region = await microscopeService.get_stitched_region({
 - **Well Naming**: Row letters (A-H) + Column numbers (1-12)
 - **Padding**: Configurable padding around each well (default: 2.0mm)
 
-For detailed usage examples and API documentation, see the [Feature Introduction](./docs/feature_introduction.md) and [Hypha Tutorial](./docs/hypha_tutorial.md).
+## Troubleshooting
+
+If you encounter dependency conflicts:
+
+1. **Clean Environment**: Create a fresh virtual environment
+2. **Update pip**: `pip install --upgrade pip`
+3. **Install with extras**: Use specific optional dependency groups
+4. **Check Python Version**: Ensure you're using Python 3.8+
+
+## Version Constraints
+
+The project uses semantic versioning constraints:
+- `>=X.Y.Z,<A.B.C`: Accepts versions from X.Y.Z up to (but not including) A.B.C
+- This ensures compatibility while allowing security updates
+- Major version changes are explicitly controlled to prevent breaking changes
 
 ---
 
@@ -177,7 +225,6 @@ The current branch is a fork from https://github.com/hongquanli/octopi-research/
 commit dbb49fc314d82d8099d5e509c0e1ad9a919245c9 (HEAD -> master, origin/master, origin/HEAD)
 Author: Hongquan Li <hqlisu@gmail.com>
 Date:   Thu Apr 4 18:07:51 2024 -0700
-
     add laser af characterization mode for saving images from laser af camera
 ```
 
@@ -186,8 +233,4 @@ How to make pypi work:
  - Create a new token in the account settings
  - In the repository setting, create a new secret called `PYPI_API_TOKEN` and paste the token in the value field
  - Then, if you want to manually publish a new pypi package, go to actions, select the `Publish to PyPi` workflow, and click on `Run workflow`.
-
----
-
-**Tip:** For more details on the simulated sample and the Zarr workflow, see [Feature Introduction](./docs/feature_introduction.md).
 

@@ -1,7 +1,7 @@
 import os 
 import shutil
 # app specific libraries
-import squid_control.control.core_reef as core
+import squid_control.control.core as core
 import squid_control.control.microcontroller as microcontroller
 from squid_control.control.config import *
 from squid_control.control.camera import get_camera
@@ -34,8 +34,6 @@ else:
         print(f"serial_peripherals import error - hardware peripheral functionality not available: {e}")
         SERIAL_PERIPHERALS_AVAILABLE = False
         serial_peripherals = None
-if CONFIG.SUPPORT_LASER_AUTOFOCUS:
-    import squid_control.control.core_displacement_measurement as core_displacement_measurement
 
 import time
 import asyncio
@@ -85,9 +83,9 @@ class SquidController:
         self.scan_stop_requested = False  # Flag to stop ongoing scans
         self.zarr_artifact_manager = None  # Initialize zarr artifact manager to None
         if is_simulation:
-            config_path = os.path.join(os.path.dirname(path), 'configuration_HCS_v2_example.ini')
+            config_path = os.path.join(os.path.dirname(path), 'config', 'configuration_HCS_v2_example.ini')
         else:
-            config_path = os.path.join(os.path.dirname(path), 'configuration_HCS_v2.ini')
+            config_path = os.path.join(os.path.dirname(path), 'config', 'configuration_HCS_v2.ini')
 
         print(f"Loading configuration from: {config_path}")
         load_config(config_path, False)
@@ -167,7 +165,7 @@ class SquidController:
         self.microcontroller.configure_actuators()
 
         self.configurationManager = core.ConfigurationManager(
-            filename="./u2os_fucci_illumination_configurations.xml"
+            filename=CONFIG.CHANNEL_CONFIGURATIONS_PATH
         )
 
         self.streamHandler = core.StreamHandler(
@@ -286,7 +284,6 @@ class SquidController:
         self.navigationController.move_z_to(CONFIG.DEFAULT_Z_POS_MM)
         # wait for the operation to finish
         
-        # FIXME: This is failing right now, z return timeout
         t0 = time.time()
         while self.microcontroller.is_busy():
             time.sleep(0.005)
@@ -323,11 +320,10 @@ class SquidController:
         if CONFIG.SUPPORT_LASER_AUTOFOCUS:
 
             # controllers
-            self.configurationManager_focus_camera = core.ConfigurationManager(filename='./focus_camera_configurations.xml')
+            self.configurationManager_focus_camera = core.ConfigurationManager(filename=CONFIG.CHANNEL_CONFIGURATIONS_PATH)
             self.streamHandler_focus_camera = core.StreamHandler()
             self.liveController_focus_camera = core.LiveController(self.camera_focus,self.microcontroller,self.configurationManager_focus_camera,control_illumination=False,for_displacement_measurement=True)
             self.multipointController = core.MultiPointController(self.camera,self.navigationController,self.liveController,self.autofocusController,self.configurationManager,scanCoordinates=self.scanCoordinates,parent=self)
-            self.displacementMeasurementController = core_displacement_measurement.DisplacementMeasurementController()
             self.laserAutofocusController = core.LaserAutofocusController(self.microcontroller,self.camera_focus,self.liveController_focus_camera,self.navigationController,has_two_interfaces=CONFIG.HAS_TWO_INTERFACES,use_glass_top=CONFIG.USE_GLASS_TOP)
 
             # camera

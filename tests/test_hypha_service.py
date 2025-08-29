@@ -9,7 +9,7 @@ import json
 import zipfile
 import tempfile
 from hypha_rpc import connect_to_server, login
-from start_hypha_service import Microscope, MicroscopeVideoTrack
+from squid_control.start_hypha_service import Microscope, MicroscopeVideoTrack
 from squid_control.hypha_tools.hypha_storage import HyphaDataStore
 
 # Mark all tests in this module as asyncio and integration tests
@@ -170,8 +170,8 @@ async def test_service_registration_and_connectivity(test_microscope_service):
     microscope, service = test_microscope_service
     
     # Test basic connectivity with timeout
-    result = await asyncio.wait_for(service.hello_world(), timeout=10)
-    assert result == "Hello world"
+    result = await asyncio.wait_for(service.ping(), timeout=10)
+    assert result == "pong"
     
     # Verify the service has the expected methods
     assert hasattr(service, 'move_by_distance')
@@ -452,21 +452,20 @@ async def test_concurrent_operations(test_microscope_service):
     # Create tasks for different operations
     tasks = [
         asyncio.wait_for(service.get_status(), timeout=10),
-        asyncio.wait_for(service.hello_world(), timeout=10),
-        asyncio.wait_for(service.get_all_task_status(), timeout=10),
+        asyncio.wait_for(service.ping(), timeout=10),
         asyncio.wait_for(service.get_simulated_sample_data_alias(), timeout=10)
     ]
     
     results = await asyncio.gather(*tasks, return_exceptions=True)
     
-    # Verify at least the hello_world result (most reliable)
-    hello_result = None
+    # Verify at least the ping result (most reliable)
+    ping_result = None
     for result in results:
-        if isinstance(result, str) and result == "Hello world":
-            hello_result = result
+        if isinstance(result, str) and result == "pong":
+            ping_result = result
             break
     
-    assert hello_result == "Hello world", f"Expected 'Hello world' result, got: {results}"
+    assert ping_result == "pong", f"Expected 'pong' result, got: {results}"
 
 # Integration tests with real SquidController
 async def test_service_controller_integration(test_microscope_service):
@@ -522,7 +521,7 @@ async def test_schema_methods(test_microscope_service):
     assert "navigate_to_well" in schema
     
     # Test move_by_distance_schema
-    from start_hypha_service import Microscope
+    from squid_control.start_hypha_service import Microscope
     config = Microscope.MoveByDistanceInput(x=1.0, y=0.5, z=0.1)
     result = microscope.move_by_distance_schema(config)
     assert isinstance(result, str)
@@ -651,40 +650,7 @@ async def test_edge_cases_and_error_handling(test_microscope_service):
     await service.navigate_to_well(row='A', col=1, wellplate_type='96')  # Top-left
     await service.navigate_to_well(row='H', col=12, wellplate_type='96')  # Bottom-right
 
-# Task status comprehensive tests
-async def test_comprehensive_task_status(test_microscope_service):
-    """Test comprehensive task status functionality."""
-    microscope, service = test_microscope_service
-    
-    # Test all task status methods
-    all_status = await service.get_all_task_status()
-    expected_tasks = [
-        "move_by_distance", "move_to_position", "get_status",
-        "update_parameters_from_client", "one_new_frame", "snap",
-        "open_illumination", "close_illumination", "set_illumination",
-        "set_camera_exposure", "home_stage", "return_stage",
-        "move_to_loading_position", "auto_focus", "do_laser_autofocus",
-        "set_laser_reference", "navigate_to_well",
-        "adjust_video_frame"
-    ]
-    
-    for task in expected_tasks:
-        assert task in all_status
-        assert all_status[task] in ["not_started", "started", "finished", "failed"]
-    
-    # Test individual task operations affect status
-    await service.move_by_distance(x=0.1, y=0.1, z=0.0)
-    move_status = microscope.get_task_status("move_by_distance")
-    assert move_status in ["finished", "failed"]
-    
-    # Test reset functionality
-    microscope.reset_task_status("move_by_distance")
-    assert microscope.get_task_status("move_by_distance") == "not_started"
-    
-    microscope.reset_all_task_status()
-    all_status_after_reset = await service.get_all_task_status()
-    for task, status in all_status_after_reset.items():
-        assert status == "not_started"
+
 
 # Simulation-specific tests
 async def test_simulation_features(test_microscope_service):
@@ -815,10 +781,6 @@ async def test_service_lifecycle_management(test_microscope_service):
     for channel, param_name in microscope.channel_param_map.items():
         assert hasattr(microscope, param_name)
         assert param_name in microscope.parameters or param_name.startswith('F')
-    
-    # Test task status initialization
-    all_status = await service.get_all_task_status()
-    assert len(all_status) >= 15  # Should have many tracked tasks
 
 # Comprehensive illumination control tests
 async def test_comprehensive_illumination_control(test_microscope_service):
@@ -908,7 +870,7 @@ async def test_additional_schema_methods(test_microscope_service):
 # Test Pydantic input models
 async def test_pydantic_input_models():
     """Test all Pydantic input model classes."""
-    from start_hypha_service import Microscope
+    from squid_control.start_hypha_service import Microscope
     
     # Test MoveByDistanceInput
     move_input = Microscope.MoveByDistanceInput(x=1.0, y=2.0, z=0.5)
@@ -1112,33 +1074,24 @@ async def test_authorization_management():
         microscope.authorized_emails = []
         assert microscope.check_permission(user) == False  # Should deny when list is empty
         
-        # Test load_authorized_emails with login_required=False
-        emails = microscope.load_authorized_emails(login_required=False)
-        assert emails is None
+        # Test load_authorized_emails without parameters
+        emails = microscope.load_authorized_emails()
+        # If AUTHORIZED_USERS env var is set, it should return a list; otherwise None
+        if emails is not None:
+            assert isinstance(emails, list)
+            assert len(emails) > 0
+            # Check that we have valid emails in the list
+            assert all('@' in email for email in emails)
+            # Check that the list contains valid email format (without exposing specific emails)
+            assert all('@' in email and '.' in email.split('@')[1] for email in emails)
+        else:
+            # No environment variable set
+            assert emails is None
         
     finally:
         microscope.squidController.close()
 
-# Test task status edge cases
-async def test_task_status_edge_cases(test_microscope_service):
-    """Test edge cases in task status management."""
-    microscope, service = test_microscope_service
-    
-    # Test getting status of non-existent task
-    status = microscope.get_task_status("nonexistent_task")
-    assert status == "unknown"
-    
-    # Test resetting non-existent task
-    microscope.reset_task_status("nonexistent_task")  # Should not raise error
-    
-    # Test that all expected tasks exist
-    all_status = await service.get_all_task_status()
-    required_tasks = [
-        "move_by_distance", "snap", "get_status", "set_illumination"
-    ]
-    
-    for task in required_tasks:
-        assert task in all_status
+
 
 # Video buffering tests
 async def test_video_buffering_functionality(test_microscope_service):
@@ -1375,8 +1328,8 @@ async def test_service_cleanup(test_microscope_service):
     microscope, service = test_microscope_service
     
     # Test that the service is responsive
-    result = await asyncio.wait_for(service.hello_world(), timeout=10)
-    assert result == "Hello world"
+    result = await asyncio.wait_for(service.ping(), timeout=10)
+    assert result == "pong"
     
     # Test that SquidController can be closed
     # (This will be handled by the fixture cleanup)
@@ -1717,7 +1670,7 @@ async def test_microscope_configuration_schema_method(test_microscope_service):
             print("1. Testing schema method...")
             
             # Test schema method with different inputs
-            from start_hypha_service import Microscope
+            from squid_control.start_hypha_service import Microscope
             if hasattr(Microscope, 'GetMicroscopeConfigurationInput'):
                 # Test with valid input
                 config_input = Microscope.GetMicroscopeConfigurationInput(
@@ -2059,7 +2012,7 @@ async def test_comprehensive_service_functionality(test_microscope_service):
         print("1. Testing service method availability...")
         
         expected_methods = [
-            "hello_world", "get_status", "move_by_distance", "snap",
+            "ping", "get_status", "move_by_distance", "snap",
             "set_illumination", "navigate_to_well", "get_microscope_configuration",
             "set_stage_velocity"
         ]
