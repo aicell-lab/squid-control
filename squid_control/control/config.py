@@ -678,7 +678,7 @@ class BaseConfig(BaseModel):
 
     SHOW_DAC_CONTROL: bool = False
     CACHE_CONFIG_FILE_PATH: str = None
-    CHANNEL_CONFIGURATIONS_PATH: str = "./focus_camera_configurations.xml"
+    CHANNEL_CONFIGURATIONS_PATH: str = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "u2os_fucci_illumination_configurations.xml")
     LAST_COORDS_PATH: str = ""
 
     # for check if the stage is moved
@@ -778,7 +778,7 @@ CONFIG = BaseConfig()
 def load_config(config_path, multipoint_function):
     global CONFIG
 
-    config_dir = Path(os.path.abspath(__file__)).parent
+    config_dir = Path(os.path.abspath(__file__)).parent.parent
 
     current_dir = Path(__file__).parent
     if not str(config_path).endswith(".ini"):
@@ -789,10 +789,10 @@ def load_config(config_path, multipoint_function):
     # Convert Path object to string if needed
     config_path = str(config_path)
 
-    CONFIG.CACHE_CONFIG_FILE_PATH = str(config_dir / "cache_config_file_path.txt")
+    CONFIG.CACHE_CONFIG_FILE_PATH = str(config_dir / "config" / "cache_config_file_path.txt")
 
-    CONFIG.CHANNEL_CONFIGURATIONS_PATH = str(config_dir / "u2os_fucci_illumination_configurations.xml")
-    CONFIG.LAST_COORDS_PATH = str(config_dir / "last_coords.txt")
+    CONFIG.CHANNEL_CONFIGURATIONS_PATH = str(config_dir / "config" / "u2os_fucci_illumination_configurations.xml")
+    CONFIG.LAST_COORDS_PATH = str(config_dir / "config" / "last_coords.txt")
 
     # Check if configuration file exists
     if not os.path.exists(config_path):
@@ -861,8 +861,8 @@ def load_config(config_path, multipoint_function):
             CONFIG.A1_Y_MM += CONFIG.WELLPLATE_OFFSET_Y_MM
 
     # Write configuration to txt file after reading
-    CONFIG.write_config_to_txt('config_parameters.txt')
-    print("Configuration loaded and written to config_parameters.txt")
+    CONFIG.write_config_to_txt(str(config_dir / "config" / "config_parameters.txt"))
+    print("Configuration loaded and written to config/config_parameters.txt")
 
     try:
         if cached_config_file_path and os.path.exists(cached_config_file_path):
@@ -1147,7 +1147,7 @@ def get_microscope_configuration_data(config_section="all", include_defaults=Tru
         "include_defaults": include_defaults,
         "timestamp": time.time(),
         "config_file_path": getattr(CONFIG, 'CACHE_CONFIG_FILE_PATH', None),
-        "channel_configurations_path": getattr(CONFIG, 'CHANNEL_CONFIGURATIONS_PATH', './focus_camera_configurations.xml'),
+        "channel_configurations_path": getattr(CONFIG, 'CHANNEL_CONFIGURATIONS_PATH', os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "u2os_fucci_illumination_configurations.xml")),
     }
     
     return {

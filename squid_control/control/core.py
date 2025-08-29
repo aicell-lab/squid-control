@@ -3186,7 +3186,16 @@ class MultiPointController:
 
 class ConfigurationManager:
     def __init__(self, filename=CONFIG.CHANNEL_CONFIGURATIONS_PATH):
-        self.config_filename = filename
+        # Ensure we have an absolute path to prevent working directory issues
+        if not os.path.isabs(filename):
+            # Convert relative path to absolute path relative to the package directory
+            # __file__ is in squid_control/control/core.py, so we need to go up 1 level to get to squid_control/
+            package_dir = os.path.dirname(__file__)  # This gives us squid_control/control/
+            package_dir = os.path.dirname(package_dir)  # This gives us squid_control/
+            self.config_filename = os.path.join(package_dir, os.path.basename(filename))
+        else:
+            self.config_filename = filename
+            
         print(f"Illumination configurations file: {self.config_filename}")
         self.configurations = []
         self.read_configurations()
@@ -3200,8 +3209,13 @@ class ConfigurationManager:
         )
 
     def read_configurations(self):
-        if os.path.isfile(self.config_filename) == False:
-            utils_config.generate_default_configuration(self.config_filename)
+        if not os.path.isfile(self.config_filename):
+            # Don't auto-generate files during testing - this can cause issues
+            if 'PYTEST_CURRENT_TEST' in os.environ:
+                raise FileNotFoundError(f"Configuration file not found: {self.config_filename}. "
+                                      f"Please ensure the file exists in the squid_control package directory.")
+            else:
+                utils_config.generate_default_configuration(self.config_filename)
         self.config_xml_tree = ET.parse(self.config_filename)
         self.config_xml_tree_root = self.config_xml_tree.getroot()
         self.num_configurations = 0

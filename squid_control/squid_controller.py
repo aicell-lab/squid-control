@@ -85,9 +85,9 @@ class SquidController:
         self.scan_stop_requested = False  # Flag to stop ongoing scans
         self.zarr_artifact_manager = None  # Initialize zarr artifact manager to None
         if is_simulation:
-            config_path = os.path.join(os.path.dirname(path), 'configuration_HCS_v2_example.ini')
+            config_path = os.path.join(os.path.dirname(path), 'config', 'configuration_HCS_v2_example.ini')
         else:
-            config_path = os.path.join(os.path.dirname(path), 'configuration_HCS_v2.ini')
+            config_path = os.path.join(os.path.dirname(path), 'config', 'configuration_HCS_v2.ini')
 
         print(f"Loading configuration from: {config_path}")
         load_config(config_path, False)
@@ -167,7 +167,7 @@ class SquidController:
         self.microcontroller.configure_actuators()
 
         self.configurationManager = core.ConfigurationManager(
-            filename="./u2os_fucci_illumination_configurations.xml"
+            filename=CONFIG.CHANNEL_CONFIGURATIONS_PATH
         )
 
         self.streamHandler = core.StreamHandler(
@@ -323,7 +323,7 @@ class SquidController:
         if CONFIG.SUPPORT_LASER_AUTOFOCUS:
 
             # controllers
-            self.configurationManager_focus_camera = core.ConfigurationManager(filename='./focus_camera_configurations.xml')
+            self.configurationManager_focus_camera = core.ConfigurationManager(filename=CONFIG.CHANNEL_CONFIGURATIONS_PATH)
             self.streamHandler_focus_camera = core.StreamHandler()
             self.liveController_focus_camera = core.LiveController(self.camera_focus,self.microcontroller,self.configurationManager_focus_camera,control_illumination=False,for_displacement_measurement=True)
             self.multipointController = core.MultiPointController(self.camera,self.navigationController,self.liveController,self.autofocusController,self.configurationManager,scanCoordinates=self.scanCoordinates,parent=self)
