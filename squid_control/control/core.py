@@ -3868,7 +3868,7 @@ class LaserAutofocusController:
             self.image = image
             # optionally display the image
             if CONFIG.LASER_AF_DISPLAY_SPOT_IMAGE:
-                pass  # TODO: add image display logic if needed
+                pass
             # calculate centroid
             x, y = self._caculate_centroid(image)
             tmp_x = tmp_x + x
