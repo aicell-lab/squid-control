@@ -1488,7 +1488,6 @@ async def test_webrtc_data_channel_metadata(webrtc_test_services):
         microscope_instance.webrtc_connected = True  # Mark as connected
         
         # Create MicroscopeVideoTrack
-        from start_hypha_service import MicroscopeVideoTrack
         video_track = MicroscopeVideoTrack(microscope_instance)
         
         # Test multiple frames with different microscope settings
