@@ -113,10 +113,10 @@ class VideoBuffer:
             self.last_frame_data = frame_data
             self.last_metadata = metadata
             self.frame_timestamp = time.time()
-            
+
     def get_frame_data(self):
         """Get the most recent compressed frame data and metadata from buffer
-        
+
         Returns:
             tuple: (frame_data, metadata) or (None, None) if no frame available
         """
@@ -128,13 +128,13 @@ class VideoBuffer:
                 return self.last_frame_data, self.last_metadata
             else:
                 return None, None
-    
+
     def get_frame(self):
         """Get the most recent decompressed frame from buffer (for backward compatibility)"""
         frame_data, _ = self.get_frame_data()  # Ignore metadata for backward compatibility
         if frame_data is None:
             return None
-            
+
         # Decode JPEG back to numpy array
         try:
             if frame_data['format'] == 'jpeg':
@@ -149,9 +149,9 @@ class VideoBuffer:
                 return np.frombuffer(frame_data['data'], dtype=np.uint8).reshape((-1, 750, 3))
         except Exception as e:
             logger.error(f"Error decoding frame: {e}")
-        
+
         return None
-                
+
     def get_frame_age(self):
         """Get the age of the most recent frame in seconds"""
         with self.lock:
@@ -159,7 +159,7 @@ class VideoBuffer:
                 return time.time() - self.frame_timestamp
             else:
                 return float('inf')
-                
+
     def clear(self):
         """Clear the buffer"""
         with self.lock:
@@ -188,7 +188,7 @@ class MicroscopeVideoTrack(MediaStreamTrack):
 
     def draw_crosshair(self, img, center_x, center_y, size=20, color=[255, 255, 255]):
         """Draw a crosshair on the image"""
-        import cv2
+        import cv2  # noqa: PLC0415
         # Draw horizontal line
         cv2.line(img, (center_x - size, center_y), (center_x + size, center_y), color, 2)
         # Draw vertical line
@@ -198,11 +198,11 @@ class MicroscopeVideoTrack(MediaStreamTrack):
         if not self.running:
             logger.warning("MicroscopeVideoTrack: recv() called but track is not running")
             raise Exception("Track stopped")
-            
+
         try:
             if self.start_time is None:
                 self.start_time = time.time()
-            
+
             next_frame_time = self.start_time + (self.count / self.fps)
             sleep_duration = next_frame_time - time.time()
             if sleep_duration > 0:
@@ -213,7 +213,7 @@ class MicroscopeVideoTrack(MediaStreamTrack):
                 frame_width=self.frame_width,
                 frame_height=self.frame_height
             )
-            
+
             # Extract frame data and metadata
             if isinstance(frame_response, dict) and 'data' in frame_response:
                 frame_data = frame_response
@@ -222,7 +222,7 @@ class MicroscopeVideoTrack(MediaStreamTrack):
                 # Fallback for backward compatibility
                 frame_data = frame_response
                 frame_metadata = {}
-            
+
             # Decompress JPEG data to numpy array for WebRTC
             processed_frame = self.microscope_instance._decode_frame_jpeg(frame_data)
 
@@ -248,7 +248,7 @@ class MicroscopeVideoTrack(MediaStreamTrack):
                     logger.debug(f"Sent metadata via data channel: {len(metadata_json)} bytes (with gray level stats)")
                 except Exception as e:
                     logger.warning(f"Failed to send metadata via data channel: {e}")
-            
+
             if self.count % (self.fps * 5) == 0:  # Log every 5 seconds
                 duration = current_time - self.start_time
                 if duration > 0:
@@ -267,10 +267,10 @@ class MicroscopeVideoTrack(MediaStreamTrack):
                                    f"channel={frame_metadata.get('channel')}, intensity={frame_metadata.get('intensity')}")
                 else:
                     logger.info(f"MicroscopeVideoTrack: Sent frame {self.count}")
-            
+
             self.count += 1
             return new_video_frame
-            
+
         except Exception as e:
             logger.error(f"MicroscopeVideoTrack: Error in recv(): {e}", exc_info=True)
             self.running = False
@@ -300,7 +300,7 @@ class MicroscopeVideoTrack(MediaStreamTrack):
         self.microscope_instance.webrtc_connected = False
 
 class Microscope:
-    def __init__(self, is_simulation, is_local):
+    def __init__(self, is_simulation, is_local):  # noqa: PLR0915
         self.current_x = 0
         self.current_y = 0
         self.current_z = 0
@@ -346,7 +346,7 @@ class Microscope:
         self.server = None
         self.service_id = os.environ.get("MICROSCOPE_SERVICE_ID")
         self.setup_task = None  # Track the setup task
-        
+
         # WebRTC related attributes
         self.video_track = None
         self.webrtc_service_id = None
@@ -362,13 +362,13 @@ class Microscope:
         self.buffer_fps = 5  # Background frame acquisition FPS
         self.last_parameters_update = 0
         self.parameters_update_interval = 1.0  # Update parameters every 1 second
-        
+
         # Adjustable frame size attributes - replaces hardcoded 750x750
         self.buffer_frame_width = 750  # Current buffer frame width
         self.buffer_frame_height = 750  # Current buffer frame height
         self.default_frame_width = 750  # Default frame size
         self.default_frame_height = 750
-        
+
         # Auto-stop video buffering attributes
         self.last_video_request_time = None
         self.video_idle_timeout = 1  # Increase to 1 seconds to prevent rapid cycling
@@ -376,22 +376,22 @@ class Microscope:
         self.webrtc_connected = False
         self.buffering_start_time = None
         self.min_buffering_duration = 1.0  # Minimum time to keep buffering active
-        
+
         # Scanning control attributes
         self.scanning_in_progress = False  # Flag to prevent video buffering during scans
 
     def load_authorized_emails(self):
         """Load authorized user emails from environment variable.
-        
+
         Returns:
             list: List of authorized email addresses, or None if no restrictions
         """
         authorized_users = os.environ.get("AUTHORIZED_USERS")
-        
+
         if not authorized_users:
             logger.info("No AUTHORIZED_USERS environment variable set - allowing all authenticated users")
             return None
-            
+
         try:
             # Parse the AUTHORIZED_USERS environment variable as a list of emails
             if isinstance(authorized_users, str):
@@ -404,12 +404,12 @@ class Microscope:
             else:
                 # If it's already a list, use it directly
                 authorized_emails = authorized_users
-            
+
             # Validate that we have a list of strings
             if not isinstance(authorized_emails, list):
                 logger.warning("AUTHORIZED_USERS must be a list of emails - allowing all authenticated users")
                 return None
-                
+
             # Filter out empty strings and validate email format
             valid_emails = []
             for email in authorized_emails:
@@ -417,14 +417,14 @@ class Microscope:
                     valid_emails.append(email.strip())
                 else:
                     logger.warning(f"Skipping invalid email format: {email}")
-            
+
             if valid_emails:
                 logger.info(f"Loaded {len(valid_emails)} authorized emails from AUTHORIZED_USERS")
                 return valid_emails
             else:
                 logger.warning("No valid emails found in AUTHORIZED_USERS - allowing all authenticated users")
                 return None
-                
+
         except Exception as e:
             logger.error(f"Error parsing AUTHORIZED_USERS environment variable: {e} - allowing all authenticated users")
             return None
@@ -436,31 +436,31 @@ class Microscope:
             return True
         else:
             return False
-    
+
     async def is_service_healthy(self, context=None):
         """Check if all services are healthy"""
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             microscope_svc = await self.server.get_service(self.service_id)
             if microscope_svc is None:
                 raise RuntimeError("Microscope service not found")
-            
+
             result = await microscope_svc.ping()
             if result != "pong":
                 raise RuntimeError(f"Microscope service returned unexpected response: {result}")
-            
+
             datastore_id = f'data-store-{"simu" if self.is_simulation else "real"}-{self.service_id}'
             datastore_svc = await self.server.get_service(datastore_id)
             if datastore_svc is None:
                 raise RuntimeError("Datastore service not found")
-            
+
             # Shorten chatbot service ID to avoid OpenAI API limits
             short_service_id = self.service_id[:20] if len(self.service_id) > 20 else self.service_id
             chatbot_id = f"sq-cb-{'simu' if self.is_simulation else 'real'}-{short_service_id}"
-            
+
             chatbot_server_url = "https://chat.bioimage.io"
             try:
                 chatbot_token = os.environ.get("WORKSPACE_TOKEN_CHATBOT")
@@ -478,7 +478,7 @@ class Microscope:
                         raise RuntimeError("Chatbot service not found")
             except Exception as chatbot_error:
                 raise RuntimeError(f"Chatbot service health check failed: {str(chatbot_error)}")
-            
+
 
 
             logger.info("All services are healthy")
@@ -488,12 +488,12 @@ class Microscope:
             import traceback
             logger.error(traceback.format_exc())
             raise RuntimeError(f"Service health check failed: {str(e)}")
-    
+
     @schema_function(skip_self=True)
     def ping(self, context=None):
         """Ping the service"""
         return "pong"
-    
+
     @schema_function(skip_self=True)
     def move_by_distance(self, x: float=Field(1.0, description="disntance through X axis, unit: milimeter"), y: float=Field(1.0, description="disntance through Y axis, unit: milimeter"), z: float=Field(1.0, description="disntance through Z axis, unit: milimeter"), context=None):
         """
@@ -504,7 +504,7 @@ class Microscope:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             is_success, x_pos, y_pos, z_pos, x_des, y_des, z_des = self.squidController.move_by_distance_limited(x, y, z)
             if is_success:
                 result = f'The stage moved ({x},{y},{z})mm through x,y,z axis, from ({x_pos},{y_pos},{z_pos})mm to ({x_des},{y_des},{z_des})mm'
@@ -531,7 +531,7 @@ class Microscope:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             self.get_status()
             initial_x = self.parameters['current_x']
             initial_y = self.parameters['current_y']
@@ -572,14 +572,14 @@ class Microscope:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             current_x, current_y, current_z, current_theta = self.squidController.navigationController.update_pos(microcontroller=self.squidController.microcontroller)
             is_illumination_on = self.squidController.liveController.illumination_on
-            scan_channel = self.squidController.multipointController.selected_configurations
+            #scan_channel = self.squidController.multipointController.selected_configurations
             is_busy = self.squidController.is_busy
             # Get current well location information
             well_info = self.squidController.get_well_from_position('96')  # Default to 96-well plate
-            
+
             self.parameters = {
                 'is_busy': is_busy,
                 'current_x': current_x,
@@ -617,7 +617,7 @@ class Microscope:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             if self.parameters is None:
                 self.parameters = {}
 
@@ -647,14 +647,14 @@ class Microscope:
         """
         self.squidController.set_simulated_sample_data_alias(sample_data_alias)
         return f"The alias of simulated sample is set to {sample_data_alias}"
-    
+
     @schema_function(skip_self=True)
     def get_simulated_sample_data_alias(self, context=None):
         """
         Get the alias of simulated sample
         """
         return self.squidController.get_simulated_sample_data_alias()
-    
+
     @schema_function(skip_self=True)
     async def one_new_frame(self, context=None):
         """
@@ -664,14 +664,14 @@ class Microscope:
         # Check authentication
         if context and not self.check_permission(context.get("user", {})):
             raise Exception("User not authorized to access this service")
-        
+
         # Stop video buffering to prevent camera overload
         if self.frame_acquisition_running:
             logger.info("Stopping video buffering for one_new_frame operation to prevent camera conflicts")
             await self.stop_video_buffering()
             # Wait a moment for the buffering to fully stop
             await asyncio.sleep(0.1)
-        
+
         channel = self.squidController.current_channel
         intensity, exposure_time = 50, 100  # Default values
         try:
@@ -685,10 +685,10 @@ class Microscope:
                     logger.warning(f"Parameter {param_name} for channel {channel} is not properly initialized. Using defaults.")
             else:
                 logger.warning(f"Unknown channel {channel} in one_new_frame. Using default intensity/exposure.")
-            
+
             # Get the raw image from the camera with original bit depth preserved and full frame
             raw_img = await self.squidController.snap_image(channel, intensity, exposure_time, full_frame=True)
-            
+
             # In simulation mode, resize small images to expected camera resolution
             if self.squidController.is_simulation:
                 height, width = raw_img.shape[:2]
@@ -697,27 +697,27 @@ class Microscope:
                 expected_height = 3000  # Expected camera height
                 if width < expected_width or height < expected_height:
                     raw_img = cv2.resize(raw_img, (expected_width, expected_height), interpolation=cv2.INTER_LINEAR)
-            
+
             # Crop the image before resizing, similar to squid_controller.py approach
             crop_height = CONFIG.Acquisition.CROP_HEIGHT
             crop_width = CONFIG.Acquisition.CROP_WIDTH
             height, width = raw_img.shape[:2]  # Support both grayscale and color images
             start_x = width // 2 - crop_width // 2
             start_y = height // 2 - crop_height // 2
-            
+
             # Ensure crop coordinates are within bounds
             start_x = max(0, start_x)
             start_y = max(0, start_y)
             end_x = min(width, start_x + crop_width)
             end_y = min(height, start_y + crop_height)
-            
+
             cropped_img = raw_img[start_y:end_y, start_x:end_x]
-            
+
             self.get_status()
-            
+
             # Return the numpy array directly with preserved bit depth
             return cropped_img
-            
+
         except Exception as e:
             logger.error(f"Failed to get new frame: {e}")
             raise e
@@ -732,13 +732,13 @@ class Microscope:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             # If scanning is in progress, return a scanning placeholder immediately
             if self.scanning_in_progress:
                 logger.debug("Scanning in progress, returning scanning placeholder frame")
                 placeholder = self._create_placeholder_frame(frame_width, frame_height, "Scanning in Progress...")
                 placeholder_compressed = self._encode_frame_jpeg(placeholder, quality=85)
-                
+
                 # Create metadata for scanning placeholder frame
                 scanning_metadata = {
                     'stage_position': {'x_mm': None, 'y_mm': None, 'z_mm': None},
@@ -748,7 +748,7 @@ class Microscope:
                     'exposure_time_ms': None,
                     'scanning_status': 'in_progress'
                 }
-                
+
                 return {
                     'format': placeholder_compressed['format'],
                     'data': placeholder_compressed['data'],
@@ -758,28 +758,28 @@ class Microscope:
                     'compression_ratio': placeholder_compressed.get('compression_ratio', 1.0),
                     'metadata': scanning_metadata
                 }
-            
+
             # Update last video request time for auto-stop functionality (only when not scanning)
             self.last_video_request_time = time.time()
-            
+
             # Start video buffering if not already running and not scanning
             if not self.frame_acquisition_running:
                 logger.info("Starting video buffering for remote video frame request")
                 await self.start_video_buffering()
-            
+
             # Start idle checking task if not running
             if self.video_idle_check_task is None or self.video_idle_check_task.done():
                 self.video_idle_check_task = asyncio.create_task(self._monitor_video_idle())
-            
+
             # Get compressed frame data and metadata from buffer
             frame_data, frame_metadata = self.video_buffer.get_frame_data()
-            
+
             if frame_data is not None:
                 # Check if we need to resize the frame
                 # Use current buffer frame size instead of hardcoded values
                 buffered_width = self.buffer_frame_width
                 buffered_height = self.buffer_frame_height
-                
+
                 if frame_width != buffered_width or frame_height != buffered_height:
                     # Need to resize - decompress, resize, and recompress
                     decompressed_frame = self._decode_frame_jpeg(frame_data)
@@ -826,7 +826,7 @@ class Microscope:
                 logger.warning("No buffered frame available")
                 placeholder = self._create_placeholder_frame(frame_width, frame_height, "No buffered frame available")
                 placeholder_compressed = self._encode_frame_jpeg(placeholder, quality=85)
-                
+
                 # Create metadata for placeholder frame
                 placeholder_metadata = {
                     'stage_position': {'x_mm': None, 'y_mm': None, 'z_mm': None},
@@ -836,7 +836,7 @@ class Microscope:
                     'exposure_time_ms': None,
                     'error': 'No buffered frame available'
                 }
-                
+
                 return {
                     'format': placeholder_compressed['format'],
                     'data': placeholder_compressed['data'],
@@ -846,7 +846,7 @@ class Microscope:
                     'compression_ratio': placeholder_compressed.get('compression_ratio', 1.0),
                     'metadata': placeholder_metadata
                 }
-                
+
         except Exception as e:
             logger.error(f"Error getting video frame: {e}", exc_info=True)
             # Create error placeholder and compress it
@@ -857,13 +857,13 @@ class Microscope:
         """Configure video buffering parameters for optimal streaming performance."""
         try:
             self.buffer_fps_target = max(1, min(30, buffer_fps))  # Clamp between 1-30 FPS
-            
+
             # Update buffer size
             old_size = self.frame_buffer.maxlen
             self.frame_buffer = deque(maxlen=max(1, min(20, buffer_size)))  # Clamp between 1-20 frames
-            
+
             logger.info(f"Video buffer configured: FPS={self.buffer_fps_target}, buffer_size={self.frame_buffer.maxlen} (was {old_size})")
-            
+
             return {
                 "success": True,
                 "message": f"Video buffer configured with {self.buffer_fps_target} FPS target and {self.frame_buffer.maxlen} frame buffer size",
@@ -880,7 +880,7 @@ class Microscope:
         try:
             buffer_fill = len(self.video_buffer.frame_buffer)
             buffer_capacity = self.video_buffer.max_size
-            
+
             return {
                 "success": True,
                 "buffer_running": self.frame_acquisition_running,
@@ -910,10 +910,10 @@ class Microscope:
                     "message": "Video buffering is already running",
                     "was_already_running": True
                 }
-            
+
             await self.start_frame_buffer_acquisition()
             logger.info("Video buffering started manually")
-            
+
             return {
                 "success": True,
                 "message": "Video buffering started successfully",
@@ -930,9 +930,9 @@ class Microscope:
         if not self.frame_acquisition_running:
             logger.info("Video buffering not running")
             return
-            
+
         self.frame_acquisition_running = False
-        
+
         # Stop idle monitoring task
         if self.video_idle_check_task and not self.video_idle_check_task.done():
             self.video_idle_check_task.cancel()
@@ -941,7 +941,7 @@ class Microscope:
             except asyncio.CancelledError:
                 pass
             self.video_idle_check_task = None
-        
+
         # Stop frame acquisition task
         if self.frame_acquisition_task:
             try:
@@ -953,19 +953,19 @@ class Microscope:
                     await self.frame_acquisition_task
                 except asyncio.CancelledError:
                     pass
-        
+
         self.video_buffer.clear()
         self.last_video_request_time = None
         self.buffering_start_time = None
         logger.info("Video buffering stopped")
-        
+
     @schema_function(skip_self=True)
     def configure_video_idle_timeout(self, idle_timeout: float = Field(5.0, description="Idle timeout in seconds (0 to disable automatic stop)"), context=None):
         """Configure how long to wait before automatically stopping video buffering when inactive."""
         try:
             self.video_idle_timeout = max(0, idle_timeout)  # Ensure non-negative
             logger.info(f"Video idle timeout set to {self.video_idle_timeout} seconds")
-            
+
             return {
                 "success": True,
                 "message": f"Video idle timeout configured to {self.video_idle_timeout} seconds",
@@ -983,29 +983,29 @@ class Microscope:
         This controls how fast the microscope acquires frames for video streaming.
         Higher FPS provides smoother video but uses more resources.
         """
-        
+
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             # Validate FPS range
             if not isinstance(fps, int) or fps < 1 or fps > 30:
                 raise ValueError(f"Invalid FPS value: {fps}. Must be an integer between 1 and 30.")
-            
+
             # Store old FPS for comparison
             old_fps = self.buffer_fps
             was_running = self.frame_acquisition_running
-            
+
             # Update FPS setting
             self.buffer_fps = fps
             logger.info(f"Video FPS updated from {old_fps} to {fps}")
-            
+
             # Update any active WebRTC video tracks with the new FPS
             if hasattr(self, 'video_track') and self.video_track is not None:
                 self.video_track.update_fps(fps)
                 logger.info("Updated WebRTC video track FPS")
-            
+
             # If video buffering is currently running, restart it with new FPS
             if was_running:
                 logger.info("Restarting video buffering with new FPS settings")
@@ -1014,7 +1014,7 @@ class Microscope:
                 await asyncio.sleep(0.2)
                 await self.start_video_buffering()
                 logger.info(f"Video buffering restarted with {fps} FPS")
-            
+
             return {
                 "success": True,
                 "message": f"Video FPS successfully updated from {old_fps} to {fps} FPS",
@@ -1022,7 +1022,7 @@ class Microscope:
                 "new_fps": fps,
                 "buffering_restarted": was_running
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to set video FPS: {e}")
             raise e
@@ -1041,7 +1041,7 @@ class Microscope:
             if self.buffer_acquisition_running:
                 logger.info("Stopping video buffering for test cleanup")
                 await self.stop_frame_buffer_acquisition()
-            
+
             # Close camera resources properly
             if hasattr(self, 'squidController') and self.squidController:
                 if hasattr(self.squidController, 'camera') and self.squidController.camera:
@@ -1064,7 +1064,7 @@ class Microscope:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             await self.start_video_buffering()
             return {"success": True, "message": "Video buffering started successfully"}
         except Exception as e:
@@ -1078,17 +1078,17 @@ class Microscope:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             if not self.frame_acquisition_running:
                 return {
                     "success": True,
                     "message": "Video buffering is already stopped",
                     "was_already_stopped": True
                 }
-            
+
             await self.stop_video_buffering()
             logger.info("Video buffering stopped manually")
-            
+
             return {
                 "success": True,
                 "message": "Video buffering stopped successfully"
@@ -1104,10 +1104,10 @@ class Microscope:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             buffer_size = len(self.video_buffer.buffer) if self.video_buffer else 0
             frame_age = self.video_buffer.get_frame_age() if self.video_buffer else float('inf')
-            
+
             return {
                 "buffering_active": self.frame_acquisition_running,
                 "buffer_size": buffer_size,
