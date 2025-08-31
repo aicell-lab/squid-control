@@ -103,12 +103,12 @@ def main():
     
     try:
         if args.command == "microscope":
-            # Import and run main microscope service
+            # Import locally to avoid circular imports
             from .start_hypha_service import main as microscope_main
             microscope_main()
             
         elif args.command == "mirror":
-            # Import and run mirror service
+            # Import locally to avoid circular imports
             from .services.mirror.cli import main as mirror_main
             mirror_main()
             

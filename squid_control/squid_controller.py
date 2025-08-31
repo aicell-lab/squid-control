@@ -41,7 +41,8 @@ import asyncio
 #find the current path
 path=os.path.abspath(__file__)
 # Get the directory where config.py is located
-config_dir = os.path.join(os.path.dirname(os.path.dirname(path)), 'squid_control/control')
+# Use package-relative path instead of hardcoded path
+config_dir = os.path.join(os.path.dirname(path), 'control')
 cache_file_path = os.path.join(config_dir, 'cache_config_file_path.txt')
 
 # Try to read the cached config path

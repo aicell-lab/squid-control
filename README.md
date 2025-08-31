@@ -4,9 +4,42 @@ The Squid Control software is a Python package that provides a simple interface 
 
 ## Installation and Usage
 
+### Quick Start
+
+**Option 1: Install from source (recommended for development)**
+```bash
+# Clone the repository
+git clone https://github.com/aicell-lab/squid-control.git
+cd squid-control
+
+# Install in development mode
+pip install -e .[dev]
+```
+
+**Option 2: Install specific features**
+```bash
+# Basic installation
+pip install -e .
+
+# With development tools
+pip install -e .[dev]
+
+# With all optional features
+pip install -e .[all]
+```
+
+**Option 3: Install from requirements.txt**
+```bash
+# Install core dependencies
+pip install -r requirements.txt
+
+# Then install the package
+pip install -e .
+```
+
 ### Installation Options
 
-This project now uses `pyproject.toml` as the single source of truth for dependencies. The old `requirements.txt` has been removed to avoid version conflicts.
+This project uses `pyproject.toml` as the single source of truth for dependencies, with a `requirements.txt` for simple dependency installation.
 
 **Basic installation:**
 ```bash
@@ -32,7 +65,7 @@ pip install .[all]
 
 ### Dependency Management
 
-All dependencies are now managed through `pyproject.toml` with the following benefits:
+All dependencies are managed through `pyproject.toml` with the following benefits:
 
 - **Version Compatibility**: Dependencies are carefully versioned to avoid conflicts
 - **Optional Dependencies**: Install only what you need
@@ -41,7 +74,30 @@ All dependencies are now managed through `pyproject.toml` with the following ben
 
 ### Usage
 
-To run the software, use the following command:
+**Command Line Interface:**
+```bash
+# Run microscope service
+squid-control microscope --simulation --verbose
+
+# Run mirror service
+squid-control mirror --cloud-service-id "mirror-service" --local-service-id "local-service"
+
+# Or use python -m
+python -m squid_control microscope --simulation
+```
+
+**Python API:**
+```python
+from squid_control import Microscope, SquidController
+
+# Create microscope instance
+microscope = Microscope(simulation=True)
+
+# Use the controller
+controller = SquidController(microscope)
+```
+
+**Legacy usage (still supported):**
 ```bash
 python -m squid_control --config HCS_v2
 ```

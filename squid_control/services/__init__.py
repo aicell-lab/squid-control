@@ -7,7 +7,7 @@ This module contains various services including:
 - WebRTC video streaming services
 """
 
-__version__ = "1.0.0"
+__version__ = "0.1.0"
 
 # Import main service classes
 from .mirror.mirror_service import MirrorMicroscopeService

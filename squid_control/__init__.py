@@ -25,21 +25,30 @@ Usage:
     from squid_control.services.mirror import MirrorMicroscopeService
 """
 
-__version__ = "1.0.0"
+__version__ = "0.1.0"
 __author__ = "Cephla Inc."
 
-# Import main classes for easy access
-from .start_hypha_service import Microscope
-from .squid_controller import SquidController
+# Use lazy imports to avoid installation-time failures
+def _import_main_classes():
+    """Lazy import to avoid import errors during installation"""
+    try:
+        from .start_hypha_service import Microscope
+        from .squid_controller import SquidController
+        return Microscope, SquidController
+    except ImportError:
+        return None, None
 
-# Import mirror service classes
-try:
-    from .services.mirror import MirrorMicroscopeService, MicroscopeVideoTrack
-    MIRROR_SERVICES_AVAILABLE = True
-except ImportError:
-    MIRROR_SERVICES_AVAILABLE = False
-    MirrorMicroscopeService = None
-    MicroscopeVideoTrack = None
+def _import_mirror_services():
+    """Lazy import of mirror services"""
+    try:
+        from .services.mirror import MirrorMicroscopeService, MicroscopeVideoTrack
+        return MirrorMicroscopeService, MicroscopeVideoTrack, True
+    except ImportError:
+        return None, None, False
+
+# Lazy load classes
+Microscope, SquidController = _import_main_classes()
+MirrorMicroscopeService, MicroscopeVideoTrack, MIRROR_SERVICES_AVAILABLE = _import_mirror_services()
 
 __all__ = [
     "Microscope",

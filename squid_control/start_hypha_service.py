@@ -36,14 +36,14 @@ except ImportError:
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
     
-    from squid_control.control.camera import TriggerModeSetting
-    from squid_control.control.config import CONFIG, ChannelMapper
-    from squid_control.hypha_tools.artifact_manager.artifact_manager import (
+    from .control.camera import TriggerModeSetting
+    from .control.config import CONFIG, ChannelMapper
+    from .hypha_tools.artifact_manager.artifact_manager import (
         SquidArtifactManager,
     )
-    from squid_control.hypha_tools.chatbot.aask import aask
-    from squid_control.hypha_tools.hypha_storage import HyphaDataStore
-    from squid_control.squid_controller import SquidController
+    from .hypha_tools.chatbot.aask import aask
+    from .hypha_tools.hypha_storage import HyphaDataStore
+    from .squid_controller import SquidController
 
 import base64
 import signal
@@ -2706,7 +2706,7 @@ class Microscope:
             try:
                 from .control.config import get_microscope_configuration_data
             except ImportError:
-                from squid_control.control.config import get_microscope_configuration_data
+                from .control.config import get_microscope_configuration_data
             
             # Call the configuration function from config.py
             result = get_microscope_configuration_data(
@@ -2748,7 +2748,7 @@ class Microscope:
                 try:
                     from .hypha_tools.artifact_manager.artifact_manager import ZarrImageManager
                 except ImportError:
-                    from squid_control.hypha_tools.artifact_manager.artifact_manager import ZarrImageManager
+                    from .hypha_tools.artifact_manager.artifact_manager import ZarrImageManager
                 self.zarr_image_manager = ZarrImageManager()
                 success = await self.zarr_image_manager.connect(server_url=self.server_url)
                 if not success:
@@ -2917,8 +2917,8 @@ class Microscope:
                         from .stitching.zarr_canvas import WellZarrCanvas
                         from .control.config import ChannelMapper, CONFIG
                     except ImportError:
-                        from squid_control.stitching.zarr_canvas import WellZarrCanvas
-                        from squid_control.control.config import ChannelMapper, CONFIG
+                        from .stitching.zarr_canvas import WellZarrCanvas
+                        from .control.config import ChannelMapper, CONFIG
                     
                     # Parse well info from path (e.g., "well_A1_96.zarr" -> A, 1, 96)
                     well_name = well_path.stem  # "well_A1_96"
@@ -2982,8 +2982,8 @@ class Microscope:
                         from .stitching.zarr_canvas import WellZarrCanvas
                         from .control.config import ChannelMapper, CONFIG
                     except ImportError:
-                        from squid_control.stitching.zarr_canvas import WellZarrCanvas
-                        from squid_control.control.config import ChannelMapper, CONFIG
+                        from .stitching.zarr_canvas import WellZarrCanvas
+                        from .control.config import ChannelMapper, CONFIG
                     
                     # Parse well info from name (e.g., "well_A1_96" -> A, 1, 96)
                     if well_name.startswith("well_"):

@@ -47,7 +47,8 @@ def mm_to_usteps(x, y, z):
 edge_positions_usteps = [mm_to_usteps(x, y, z) for x, y, z in edge_positions_mm]
 
 # Path to save the JSON file
-json_file_path = 'squid-control/squid_control/control/edge_positions.json'
+import os
+json_file_path = os.path.join(os.path.dirname(__file__), 'edge_positions.json')
 
 # Save edge positions to a JSON file
 with open(json_file_path, 'w') as file:
