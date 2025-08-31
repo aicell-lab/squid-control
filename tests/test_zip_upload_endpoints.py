@@ -631,7 +631,7 @@ async def upload_zip_with_retry(put_url: str, zip_path: Path, size_mb: int, max_
             print(f"Waiting {wait_time}s before retry...")
             await asyncio.sleep(wait_time)
 
-@pytest_asyncio.fixture(scope="function")
+@pytest_asyncio.fixture(scope="session")
 async def artifact_manager():
     """Create artifact manager connection for testing."""
     token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
@@ -662,7 +662,7 @@ async def artifact_manager():
         print("🧹 Final cleanup of test galleries...")
         await cleanup_test_galleries(artifact_manager)
 
-@pytest_asyncio.fixture(scope="function") 
+@pytest_asyncio.fixture(scope="session") 
 async def test_gallery(artifact_manager):
     """Create a test gallery and clean it up after test."""
     gallery_id = f"test-zip-gallery-{uuid.uuid4().hex[:8]}"
