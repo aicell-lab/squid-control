@@ -270,7 +270,8 @@ The project uses semantic versioning constraints:
 
 ## About
 
-<img style="width:60px;" src="./docs/assets/cephla_logo.svg"> Cephla Inc. 
+<img style="width:60px;" src="./docs/assets/aicell-lab.jpeg"> AICell Lab  
+<img style="width:60px;" src="./docs/assets/cephla_logo.svg"> Cephla Inc.
 
 ---
 
