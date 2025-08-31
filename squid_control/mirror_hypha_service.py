@@ -1,25 +1,27 @@
-import os
-import logging
-import logging.handlers
-import time
 import argparse
 import asyncio
-import traceback
-import dotenv
+import fractions
 import json
-from hypha_rpc import login, connect_to_server, register_rtc_service
+import logging
+import logging.handlers
+import os
+import time
+import traceback
+
 # WebRTC imports
 import aiohttp
-import fractions
-from av import VideoFrame
-from aiortc import MediaStreamTrack
+
 # Image processing imports
 import cv2
+import dotenv
 import numpy as np
+from aiortc import MediaStreamTrack
+from av import VideoFrame
+from hypha_rpc import connect_to_server, login, register_rtc_service
 
 dotenv.load_dotenv()  
 ENV_FILE = dotenv.find_dotenv()  
-if ENV_FILE:  
+if ENV_FILE:
     dotenv.load_dotenv(ENV_FILE)  
 
 # Set up logging
@@ -67,13 +69,13 @@ class MicroscopeVideoTrack(MediaStreamTrack):
     def draw_crosshair(self, img, center_x, center_y, size=20, color=[255, 255, 255]):
         """Draw a crosshair at the specified position"""
         height, width = img.shape[:2]
-        
+
         # Horizontal line
         if 0 <= center_y < height:
             start_x = max(0, center_x - size)
             end_x = min(width, center_x + size)
             img[center_y, start_x:end_x] = color
-        
+
         # Vertical line
         if 0 <= center_x < width:
             start_y = max(0, center_y - size)
@@ -84,14 +86,14 @@ class MicroscopeVideoTrack(MediaStreamTrack):
         if not self.running:
             logger.warning("MicroscopeVideoTrack: recv() called but track is not running")
             raise Exception("Track stopped")
-            
+
         try:
             if self.start_time is None:
                 self.start_time = time.time()
-            
+
             # Time the entire frame processing (including sleep)
             frame_start_time = time.time()
-            
+
             # Calculate and perform FPS throttling sleep
             next_frame_time = self.start_time + (self.count / self.fps)
             sleep_duration = next_frame_time - time.time()
@@ -100,7 +102,7 @@ class MicroscopeVideoTrack(MediaStreamTrack):
                 await asyncio.sleep(sleep_duration)
             sleep_end = time.time()
             actual_sleep_time = (sleep_end - sleep_start) * 1000  # Convert to ms
-            
+
             # Start timing actual processing after sleep
             processing_start_time = time.time()
 
@@ -117,7 +119,7 @@ class MicroscopeVideoTrack(MediaStreamTrack):
             )
             get_frame_end = time.time()
             get_frame_latency = (get_frame_end - get_frame_start) * 1000  # Convert to ms
-            
+
             # Extract stage position from frame metadata
             stage_position = None
             if isinstance(frame_data, dict) and 'metadata' in frame_data:
@@ -125,17 +127,14 @@ class MicroscopeVideoTrack(MediaStreamTrack):
                 logger.debug(f"Frame {self.count}: Found stage_position in metadata: {stage_position}")
             else:
                 logger.debug(f"Frame {self.count}: No metadata found in frame_data, keys: {list(frame_data.keys()) if isinstance(frame_data, dict) else 'not dict'}")
-                
+
             # Handle new JPEG format returned by get_video_frame
             if isinstance(frame_data, dict) and 'data' in frame_data:
                 # New format: dictionary with JPEG data
                 jpeg_data = frame_data['data']
-                frame_format = frame_data.get('format', 'jpeg')
                 frame_size_bytes = frame_data.get('size_bytes', len(jpeg_data))
-                compression_ratio = frame_data.get('compression_ratio', 1.0)
-                
-                print(f"Frame {self.count} compressed data: {frame_size_bytes / 1024:.2f} KB, compression ratio: {compression_ratio:.2f}")
-                
+                #compression_ratio = frame_data.get('compression_ratio', 1.0)
+
                 # Decode JPEG data to numpy array
                 decode_start = time.time()
                 if isinstance(jpeg_data, bytes):
@@ -158,12 +157,12 @@ class MicroscopeVideoTrack(MediaStreamTrack):
                 if hasattr(processed_frame, 'nbytes'):
                     frame_size_bytes = processed_frame.nbytes
                 else:
-                    import sys
+                    import sys  # noqa: PLC0415
                     frame_size_bytes = sys.getsizeof(processed_frame)
-                
+
                 frame_size_kb = frame_size_bytes / 1024
                 print(f"Frame {self.count} raw data size: {frame_size_kb:.2f} KB ({frame_size_bytes} bytes)")
-            
+
             # Time processing the frame
             process_start = time.time()
             current_time = time.time()
@@ -177,7 +176,7 @@ class MicroscopeVideoTrack(MediaStreamTrack):
             new_video_frame.time_base = time_base
             process_end = time.time()
             process_latency = (process_end - process_start) * 1000  # Convert to ms
-            
+
             # SEND METADATA VIA WEBRTC DATA CHANNEL
             # Send metadata through data channel instead of embedding in video frame
             if stage_position and self.parent_service:
@@ -191,27 +190,25 @@ class MicroscopeVideoTrack(MediaStreamTrack):
                     # Add any additional metadata from frame_data if available
                     if isinstance(frame_data, dict) and 'metadata' in frame_data:
                         frame_metadata.update(frame_data['metadata'])
-                    
+
                     metadata_json = json.dumps(frame_metadata)
                     # Send metadata via WebRTC data channel
                     asyncio.create_task(self._send_metadata_via_datachannel(metadata_json))
                     logger.debug(f"Sent metadata via data channel: {len(metadata_json)} bytes")
                 except Exception as e:
                     logger.warning(f"Failed to send metadata via data channel: {e}")
-            
+
             # Calculate processing and total latencies
             processing_end_time = time.time()
             processing_latency = (processing_end_time - processing_start_time) * 1000  # Convert to ms
             total_frame_latency = (processing_end_time - frame_start_time) * 1000  # Convert to ms
-            
+
             # Print timing information every frame (you can adjust frequency as needed)
             if isinstance(frame_data, dict) and 'data' in frame_data:
                 print(f"Frame {self.count} timing: sleep={actual_sleep_time:.2f}ms, get_video_frame={get_frame_latency:.2f}ms, decode={decode_latency:.2f}ms, process={process_latency:.2f}ms, processing_total={processing_latency:.2f}ms, total_with_sleep={total_frame_latency:.2f}ms")
             else:
                 print(f"Frame {self.count} timing: sleep={actual_sleep_time:.2f}ms, get_video_frame={get_frame_latency:.2f}ms, process={process_latency:.2f}ms, processing_total={processing_latency:.2f}ms, total_with_sleep={total_frame_latency:.2f}ms")
-            
 
-            
             if self.count % (self.fps * 5) == 0:  # Log every 5 seconds
                 duration = current_time - self.start_time
                 if duration > 0:
@@ -219,10 +216,10 @@ class MicroscopeVideoTrack(MediaStreamTrack):
                     logger.info(f"MicroscopeVideoTrack: Sent frame {self.count}, actual FPS: {actual_fps:.2f}")
                 else:
                     logger.info(f"MicroscopeVideoTrack: Sent frame {self.count}")
-            
+
             self.count += 1
             return new_video_frame
-            
+
         except Exception as e:
             logger.error(f"MicroscopeVideoTrack: Error in recv(): {e}", exc_info=True)
             self.running = False
@@ -256,7 +253,7 @@ class MirrorMicroscopeService:
         self.cloud_service_id = "mirror-microscope-control-squid-1"
         self.cloud_server = None
         self.cloud_service = None  # Add reference to registered cloud service
-        
+
         # Connection to local service
         self.local_server_url = "http://reef.dyn.scilifelab.se:9527"
         self.local_token = os.environ.get("REEF_LOCAL_TOKEN")
@@ -273,7 +270,7 @@ class MirrorMicroscopeService:
 
         # Setup task tracking
         self.setup_task = None
-        
+
         # Store dynamically created mirror methods
         self.mirrored_methods = {}
 
@@ -286,7 +283,7 @@ class MirrorMicroscopeService:
                 "token": self.local_token,
                 "ping_interval": None
             })
-            
+
             # Connect to the local service
             self.local_service = await self.local_server.get_service(self.local_service_id)
             logger.info(f"Successfully connected to local service {self.local_service_id}")
@@ -308,13 +305,13 @@ class MirrorMicroscopeService:
                     logger.info(f"Successfully unregistered cloud service {self.cloud_service_id}")
                 except Exception as e:
                     logger.warning(f"Failed to unregister cloud service {self.cloud_service_id}: {e}")
-                
+
                 self.cloud_service = None
-            
+
             # Clear mirrored methods
             self.mirrored_methods.clear()
             logger.info("Cleared mirrored methods")
-            
+
         except Exception as e:
             logger.error(f"Error during cloud service cleanup: {e}")
 
@@ -327,14 +324,14 @@ class MirrorMicroscopeService:
                     success = await self.connect_to_local_service()
                     if not success or self.local_service is None:
                         raise Exception("Failed to connect to local service")
-                
+
                 # Forward the call to the local service
                 result = await local_method(*args, **kwargs)
                 return result
             except Exception as e:
                 logger.error(f"Failed to call {method_name}: {e}")
                 raise e
-        
+
         return mirror_method
 
     def _get_mirrored_methods(self):
@@ -342,11 +339,11 @@ class MirrorMicroscopeService:
         if self.local_service is None:
             logger.warning("Cannot create mirror methods: local_service is None")
             return {}
-        
+
         logger.info(f"Creating mirror methods for local service {self.local_service_id}")
         logger.info(f"Local service type: {type(self.local_service)}")
         logger.info(f"Local service attributes: {list(dir(self.local_service))}")
-        
+
         mirrored_methods = {}
         
         # Methods to exclude from mirroring (these are handled specially)

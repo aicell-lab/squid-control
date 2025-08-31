@@ -1,66 +1,69 @@
-import os
-import logging
-import logging.handlers
-import time
 import argparse
 import asyncio
 import fractions
-from functools import partial
-import traceback
-import numpy as np
-from hypha_rpc import login, connect_to_server, register_rtc_service
+import io
 import json
+import logging
+import logging.handlers
+import os
+import sys
+import time
+import traceback
+from functools import partial
+from pathlib import Path
+
 import cv2
 import dotenv
-import sys
-import io
-from PIL import Image  
-from pathlib import Path
+import numpy as np
+from hypha_rpc import connect_to_server, login, register_rtc_service
+from PIL import Image
+
 # Import from squid_control package (now relative since we're inside the package)
 # Handle both module and script execution
 try:
-    from .squid_controller import SquidController
     from .control.camera import TriggerModeSetting
-    from .control.config import CONFIG
-    from .control.config import ChannelMapper
-    from .hypha_tools.hypha_storage import HyphaDataStore
-    from .hypha_tools.chatbot.aask import aask
+    from .control.config import CONFIG, ChannelMapper
     from .hypha_tools.artifact_manager.artifact_manager import SquidArtifactManager
+    from .hypha_tools.chatbot.aask import aask
+    from .hypha_tools.hypha_storage import HyphaDataStore
+    from .squid_controller import SquidController
 except ImportError:
     # Fallback for direct script execution from project root
-    import sys
     import os
+    import sys
     # Add the project root to Python path
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
     
-    from squid_control.squid_controller import SquidController
     from squid_control.control.camera import TriggerModeSetting
-    from squid_control.control.config import CONFIG
-    from squid_control.control.config import ChannelMapper
-    from squid_control.hypha_tools.hypha_storage import HyphaDataStore
+    from squid_control.control.config import CONFIG, ChannelMapper
+    from squid_control.hypha_tools.artifact_manager.artifact_manager import (
+        SquidArtifactManager,
+    )
     from squid_control.hypha_tools.chatbot.aask import aask
-    from squid_control.hypha_tools.artifact_manager.artifact_manager import SquidArtifactManager
+    from squid_control.hypha_tools.hypha_storage import HyphaDataStore
+    from squid_control.squid_controller import SquidController
 
-from pydantic import Field, BaseModel
-from typing import List, Optional
-from collections import deque
-import threading
 import base64
-from hypha_rpc.utils.schema import schema_function
 import signal
+import threading
+from collections import deque
+from typing import List, Optional
 
 # WebRTC imports
 import aiohttp
-from av import VideoFrame
 from aiortc import MediaStreamTrack
+from av import VideoFrame
+from hypha_rpc.utils.schema import schema_function
+from pydantic import BaseModel, Field
 
-dotenv.load_dotenv()  
-ENV_FILE = dotenv.find_dotenv()  
-if ENV_FILE:  
-    dotenv.load_dotenv(ENV_FILE)  
-import uuid
+dotenv.load_dotenv()
+ENV_FILE = dotenv.find_dotenv()
+if ENV_FILE:
+    dotenv.load_dotenv(ENV_FILE)
+import uuid  # noqa: E402
+
 # Set up logging
 
 def setup_logging(log_file="squid_control_service.log", max_bytes=100000, backup_count=3):
@@ -93,10 +96,10 @@ class VideoBuffer:
         self.last_frame_data = None  # Store compressed frame data
         self.last_metadata = None  # Store metadata for last frame
         self.frame_timestamp = 0
-        
+
     def put_frame(self, frame_data, metadata=None):
         """Add a compressed frame and its metadata to the buffer
-        
+
         Args:
             frame_data: dict with compressed frame info from _encode_frame_jpeg()
             metadata: dict with frame metadata including stage position and timestamp
