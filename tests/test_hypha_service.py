@@ -521,15 +521,15 @@ async def test_schema_methods(test_microscope_service):
     assert "navigate_to_well" in schema
     
     # Test move_by_distance_schema
-    from squid_control.start_hypha_service import Microscope
-    config = Microscope.MoveByDistanceInput(x=1.0, y=0.5, z=0.1)
+    from squid_control.start_hypha_service import MicroscopeHyphaService
+    config = MicroscopeHyphaService.MoveByDistanceInput(x=1.0, y=0.5, z=0.1)
     result = microscope.move_by_distance_schema(config)
     assert isinstance(result, str)
     assert "moved" in result.lower() or "cannot move" in result.lower()
     
     # Test move_to_position_schema with safe position
     # X: 10-112.5mm, Y: 6-76mm, Z: 0.05-6mm
-    config = Microscope.MoveToPositionInput(x=35.0, y=30.0, z=3.0)
+    config = MicroscopeHyphaService.MoveToPositionInput(x=35.0, y=30.0, z=3.0)
     try:
         result = microscope.move_to_position_schema(config)
         assert isinstance(result, str)
@@ -539,25 +539,25 @@ async def test_schema_methods(test_microscope_service):
         assert "limit" in str(e) or "range" in str(e)
     
     # Test snap_image_schema
-    config = Microscope.SnapImageInput(exposure=100, channel=0, intensity=50)
+    config = MicroscopeHyphaService.SnapImageInput(exposure=100, channel=0, intensity=50)
     result = await microscope.snap_image_schema(config)
     assert isinstance(result, str)
     assert "![Image](" in result
     
     # Test navigate_to_well_schema
-    config = Microscope.NavigateToWellInput(row='B', col=3, wellplate_type='96')
+    config = MicroscopeHyphaService.NavigateToWellInput(row='B', col=3, wellplate_type='96')
     result = await microscope.navigate_to_well_schema(config)
     assert isinstance(result, str)
     assert "B,3" in result
     
     # Test set_illumination_schema
-    config = Microscope.SetIlluminationInput(channel=0, intensity=60)
+    config = MicroscopeHyphaService.SetIlluminationInput(channel=0, intensity=60)
     result = microscope.set_illumination_schema(config)
     assert isinstance(result, dict)
     assert "result" in result
     
     # Test set_camera_exposure_schema
-    config = Microscope.SetCameraExposureInput(channel=0, exposure_time=150)
+    config = MicroscopeHyphaService.SetCameraExposureInput(channel=0, exposure_time=150)
     result = microscope.set_camera_exposure_schema(config)
     assert isinstance(result, dict)
     assert "result" in result
@@ -838,7 +838,7 @@ async def test_additional_schema_methods(test_microscope_service):
     microscope, service = test_microscope_service
     
     # Test auto_focus_schema
-    config = Microscope.AutoFocusInput(N=10, delta_Z=1.524)
+    config = MicroscopeHyphaService.AutoFocusInput(N=10, delta_Z=1.524)
     result = await microscope.auto_focus_schema(config)
     assert "auto-focus" in result.lower()
     
@@ -870,44 +870,44 @@ async def test_additional_schema_methods(test_microscope_service):
 # Test Pydantic input models
 async def test_pydantic_input_models():
     """Test all Pydantic input model classes."""
-    from squid_control.start_hypha_service import Microscope
+    from squid_control.start_hypha_service import MicroscopeHyphaService
     
     # Test MoveByDistanceInput
-    move_input = Microscope.MoveByDistanceInput(x=1.0, y=2.0, z=0.5)
+    move_input = MicroscopeHyphaService.MoveByDistanceInput(x=1.0, y=2.0, z=0.5)
     assert move_input.x == 1.0
     assert move_input.y == 2.0
     assert move_input.z == 0.5
     
     # Test MoveToPositionInput
-    position_input = Microscope.MoveToPositionInput(x=5.0, y=None, z=3.35)
+    position_input = MicroscopeHyphaService.MoveToPositionInput(x=5.0, y=None, z=3.35)
     assert position_input.x == 5.0
     assert position_input.y is None
     assert position_input.z == 3.35
     
     # Test SnapImageInput
-    snap_input = Microscope.SnapImageInput(exposure=100, channel=0, intensity=50)
+    snap_input = MicroscopeHyphaService.SnapImageInput(exposure=100, channel=0, intensity=50)
     assert snap_input.exposure == 100
     assert snap_input.channel == 0
     assert snap_input.intensity == 50
     
     # Test NavigateToWellInput
-    well_input = Microscope.NavigateToWellInput(row='B', col=3, wellplate_type='96')
+    well_input = MicroscopeHyphaService.NavigateToWellInput(row='B', col=3, wellplate_type='96')
     assert well_input.row == 'B'
     assert well_input.col == 3
     assert well_input.wellplate_type == '96'
     
     # Test SetIlluminationInput
-    illum_input = Microscope.SetIlluminationInput(channel=11, intensity=75)
+    illum_input = MicroscopeHyphaService.SetIlluminationInput(channel=11, intensity=75)
     assert illum_input.channel == 11
     assert illum_input.intensity == 75
     
     # Test SetCameraExposureInput
-    exposure_input = Microscope.SetCameraExposureInput(channel=12, exposure_time=200)
+    exposure_input = MicroscopeHyphaService.SetCameraExposureInput(channel=12, exposure_time=200)
     assert exposure_input.channel == 12
     assert exposure_input.exposure_time == 200
     
     # Test AutoFocusInput
-    af_input = Microscope.AutoFocusInput(N=15, delta_Z=2.0)
+    af_input = MicroscopeHyphaService.AutoFocusInput(N=15, delta_Z=2.0)
     assert af_input.N == 15
     assert af_input.delta_Z == 2.0
 
@@ -1044,13 +1044,13 @@ async def test_initialization_edge_cases():
     """Test microscope initialization with different configurations."""
     
     # Test simulation mode initialization
-    microscope_sim = Microscope(is_simulation=True, is_local=False)
+    microscope_sim = MicroscopeHyphaService(is_simulation=True, is_local=False)
     assert microscope_sim.is_simulation == True
     assert microscope_sim.is_local == False
     microscope_sim.squidController.close()
     
     # Test local mode initialization
-    microscope_local = Microscope(is_simulation=True, is_local=True)
+    microscope_local = MicroscopeHyphaService(is_simulation=True, is_local=True)
     assert microscope_local.is_simulation == True
     assert microscope_local.is_local == True
     # Check that local URL contains the expected local IP address
@@ -1060,7 +1060,7 @@ async def test_initialization_edge_cases():
 # Test authorization and email management
 async def test_authorization_management():
     """Test authorization and email management functionality."""
-            microscope = MicroscopeHyphaService(is_simulation=True, is_local=False)
+    microscope = MicroscopeHyphaService(is_simulation=True, is_local=False)
     
     try:
         # Test with login_required=True but no authorized emails
