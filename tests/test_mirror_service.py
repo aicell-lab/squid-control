@@ -252,6 +252,81 @@ class TestMirrorService:
         assert "success" in config_result
         assert config_result["success"] is True
 
+    async def test_schema_preservation_real(self, real_microscope_service):
+        """Test that schema information is properly preserved in mirror methods."""
+        microscope, microscope_service, service_id = real_microscope_service
+
+        service = MirrorMicroscopeService()
+        service.local_service = microscope_service
+
+        mirrored_methods = service._get_mirrored_methods()
+
+        # Test schema preservation for key methods
+        test_methods = ['move_by_distance', 'get_status', 'ping', 'set_illumination']
+        
+        for method_name in test_methods:
+            if method_name in mirrored_methods:
+                mirror_method = mirrored_methods[method_name]
+                original_method = getattr(microscope_service, method_name)
+                
+                # Check if original method has schema
+                if hasattr(original_method, '__schema__'):
+                    original_schema = getattr(original_method, '__schema__')
+                    
+                    # Check if mirror method has schema
+                    assert hasattr(mirror_method, '__schema__'), f"Mirror method {method_name} missing __schema__ attribute"
+                    
+                    mirror_schema = getattr(mirror_method, '__schema__')
+                    
+                    # Schema should be preserved (not None)
+                    if original_schema is not None:
+                        assert mirror_schema is not None, f"Mirror method {method_name} has None schema when original has schema"
+                        
+                        # Check that key schema elements are preserved
+                        assert mirror_schema.get('name') == original_schema.get('name'), f"Schema name mismatch for {method_name}"
+                        assert mirror_schema.get('description') == original_schema.get('description'), f"Schema description mismatch for {method_name}"
+                        
+                        # Check that parameters are preserved
+                        original_params = original_schema.get('parameters', {})
+                        mirror_params = mirror_schema.get('parameters', {})
+                        assert mirror_params == original_params, f"Schema parameters mismatch for {method_name}"
+                        
+                        # Check that docstring is preserved
+                        if original_schema.get('description'):
+                            assert mirror_method.__doc__ == original_schema.get('description'), f"Docstring mismatch for {method_name}"
+                        
+                        print(f"✅ Schema preserved for {method_name}: {mirror_schema.get('name')} - {mirror_schema.get('description')[:50]}...")
+                    else:
+                        print(f"⚠️ Original method {method_name} has None schema")
+                else:
+                    print(f"ℹ️ Original method {method_name} has no schema attribute")
+            else:
+                print(f"❌ Method {method_name} not found in mirrored methods")
+
+        # Test specific schema details for a well-known method
+        if 'move_by_distance' in mirrored_methods:
+            mirror_method = mirrored_methods['move_by_distance']
+            assert hasattr(mirror_method, '__schema__')
+            
+            schema = getattr(mirror_method, '__schema__')
+            assert schema is not None
+            
+            # Check specific parameter details
+            parameters = schema.get('parameters', {})
+            properties = parameters.get('properties', {})
+            
+            # Check that x, y, z parameters are preserved
+            assert 'x' in properties, "x parameter missing from schema"
+            assert 'y' in properties, "y parameter missing from schema"
+            assert 'z' in properties, "z parameter missing from schema"
+            
+            # Check parameter descriptions
+            x_param = properties.get('x', {})
+            assert 'description' in x_param, "x parameter missing description"
+            assert 'unit: milimeter' in x_param['description'], "x parameter description incomplete"
+            
+            print(f"✅ Detailed schema verification passed for move_by_distance")
+
     async def test_video_streaming_controls(self):
         """Test video streaming start/stop controls."""
         service = MirrorMicroscopeService()

@@ -19,6 +19,7 @@ import aiohttp
 # Image processing imports
 import dotenv
 from hypha_rpc import connect_to_server, login, register_rtc_service
+from hypha_rpc.utils.schema import schema_function
 
 from .video_track import MicroscopeVideoTrack
 
@@ -144,6 +145,25 @@ class MirrorMicroscopeService:
                 logger.error(f"Failed to call {method_name}: {e}")
                 raise e
 
+        # Check if the original method has schema information
+        if hasattr(local_method, '__schema__'):
+            # Preserve the schema information from the original method
+            original_schema = getattr(local_method, '__schema__')
+            
+            # Handle case where schema might be None
+            if original_schema is not None:
+                logger.info(f"Preserving schema for method {method_name}: {original_schema}")
+                
+                # Create a new function with the same signature and schema
+                # We need to manually copy the schema information since we can't use the decorator directly
+                mirror_method.__schema__ = original_schema
+                mirror_method.__doc__ = original_schema.get('description', f"Mirror of {method_name}")
+            else:
+                logger.debug(f"Schema is None for method {method_name}, using basic mirror")
+        else:
+            # No schema information available, return the basic mirror method
+            logger.debug(f"No schema information found for method {method_name}, using basic mirror")
+        
         return mirror_method
 
     def _get_mirrored_methods(self):
