@@ -3962,8 +3962,8 @@ def main():
         "--simulation",
         dest="simulation",
         action="store_true",
-        default=True,
-        help="Run in simulation mode (default: True)"
+        default=False,
+        help="Run in simulation mode (default: False)"
     )
     parser.add_argument(
         "--local",

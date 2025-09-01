@@ -110,7 +110,7 @@ def main():
             # that matches what start_hypha_service.py expects
             import argparse as ap
             microscope_parser = ap.ArgumentParser()
-            microscope_parser.add_argument("--simulation", action="store_true", default=True)
+            microscope_parser.add_argument("--simulation", action="store_true", default=False)
             microscope_parser.add_argument("--local", action="store_true", default=False)
             microscope_parser.add_argument("--verbose", "-v", action="count")
             
