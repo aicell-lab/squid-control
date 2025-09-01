@@ -6,7 +6,7 @@ The Squid Control software is a Python package that provides a simple interface 
 
 ### Quick Start
 
-**Option 1: Install from source (recommended for development)**
+**Install from source (recommended for development)**
 ```bash
 # Clone the repository
 git clone https://github.com/aicell-lab/squid-control.git
@@ -15,48 +15,6 @@ cd squid-control
 # Install in development mode
 pip install -e .[dev]
 ```
-
-**Option 2: Install specific features**
-```bash
-# Basic installation
-pip install -e .
-
-# With development tools
-pip install -e .[dev]
-
-# With all optional features
-pip install -e .[all]
-```
-
-**Option 3: Install from requirements.txt**
-```bash
-# Install core dependencies
-pip install -r requirements.txt
-
-# Then install the package
-pip install -e .
-```
-
-### Installation Options
-
-This project uses `pyproject.toml` as the single source of truth for dependencies, with a `requirements.txt` for simple dependency installation.
-
-**Basic installation:**
-```bash
-pip install .
-```
-
-**For development (recommended):**
-```bash
-pip install .[dev]
-```
-
-This includes all development tools:
-- pytest and testing utilities
-- Code formatting (black, isort)
-- Linting (ruff, flake8)
-- Type checking (mypy)
-- Pre-commit hooks
 
 **Full installation (including tracking):**
 ```bash
