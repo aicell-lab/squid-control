@@ -77,7 +77,7 @@ The **Mirror Service** is a sophisticated proxy system that bridges cloud and lo
 
 The public Hypha server (`hypha.aicell.io`) may not always be stable for critical device control. The mirror service provides a solution:
 
-1. **Setup local Hypha service** on your workstation for stable device control
+1. **Setup local Hypha server** on your workstation for stable device control
 2. **Register local microscope service** on your local Hypha server
 3. **Run mirror service** on the same workstation to mirror hardware control to remote servers
 4. **Result**: You get both stability (local control) and remote access (cloud availability)
@@ -126,10 +126,8 @@ The Squid Control system features advanced **Zarr Canvas & Image Stitching** cap
 
 #### **Environment Variables**
 - `ZARR_PATH`: Base directory for zarr storage (default: `/tmp/zarr_canvas`)
-
-#### **Well Plate Support**
-- **Supported Formats**: 6, 12, 24, 96, 384 well plates
-- **Well Naming**: Row letters (A-H) + Column numbers (1-12)
+- Authentication token for cloud Hypha server
+- Authentication token for local Hypha server (if user have)
 
 ---
 
