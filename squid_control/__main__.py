@@ -83,6 +83,11 @@ Examples:
         help="Local server URL"
     )
     mirror_parser.add_argument(
+        "--log-file",
+        default="mirror_squid_control_service.log",
+        help="Log file path"
+    )
+    mirror_parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable verbose logging"
@@ -135,8 +140,72 @@ def main():
             
         elif args.command == "mirror":
             # Import locally to avoid circular imports
-            from .services.mirror.cli import main as mirror_main
-            mirror_main()
+            from .services.mirror.cli import MirrorMicroscopeService
+            import asyncio
+            import traceback
+            
+            # Create and configure the mirror service
+            mirror_service = MirrorMicroscopeService()
+            
+            # Override configuration with command-line arguments
+            mirror_service.cloud_service_id = args.cloud_service_id
+            mirror_service.local_service_id = args.local_service_id
+            mirror_service.cloud_server_url = args.cloud_server_url
+            mirror_service.cloud_workspace = args.cloud_workspace
+            mirror_service.local_server_url = args.local_server_url
+            
+            # Set up logging
+            if args.verbose:
+                import logging
+                logging.getLogger().setLevel(logging.DEBUG)
+            
+            print(f"Starting mirror service:")
+            print(f"  Cloud Service ID: {mirror_service.cloud_service_id}")
+            print(f"  Local Service ID: {mirror_service.local_service_id}")
+            print(f"  Cloud Server: {mirror_service.cloud_server_url}")
+            print(f"  Cloud Workspace: {mirror_service.cloud_workspace}")
+            print(f"  Local Server: {mirror_service.local_server_url}")
+            print(f"  Log File: {args.log_file}")
+            print()
+            
+            # Run the service
+            loop = asyncio.get_event_loop()
+            
+            async def run_service():
+                try:
+                    mirror_service.setup_task = asyncio.create_task(mirror_service.setup())
+                    await mirror_service.setup_task
+                    
+                    # Start the health check task
+                    asyncio.create_task(mirror_service.check_service_health())
+                    
+                    # Keep the service running
+                    while True:
+                        await asyncio.sleep(1)
+                        
+                except KeyboardInterrupt:
+                    print("\nShutting down mirror service...")
+                except Exception as e:
+                    print(f"Error running mirror service: {e}")
+                    traceback.print_exc()
+                finally:
+                    # Cleanup
+                    try:
+                        if mirror_service.cloud_service:
+                            await mirror_service.cleanup_cloud_service()
+                        if mirror_service.cloud_server:
+                            await mirror_service.cloud_server.disconnect()
+                        if mirror_service.local_server:
+                            await mirror_service.local_server.disconnect()
+                    except Exception as cleanup_error:
+                        print(f"Error during cleanup: {cleanup_error}")
+            
+            try:
+                loop.run_until_complete(run_service())
+            except KeyboardInterrupt:
+                print("\nMirror service stopped by user")
+            finally:
+                loop.close()
             
         else:
             print(f"Unknown command: {args.command}")
