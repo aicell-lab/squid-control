@@ -101,6 +101,31 @@ The simulation mode includes a **virtual microscope sample** using Zarr data arc
 - Realistic Z-axis blurring for out-of-focus images
 - High-resolution sample data covering the stage area
 
+## Configuration
+
+The Squid Control system uses configuration files to customize microscope behavior for different hardware setups and use cases.
+
+### Configuration Files
+
+#### **`configuration_HCS_v2_example.ini`** (Example Configuration)
+- **Purpose**: Template configuration file for development and testing
+- **Usage**: Used by simulation mode and as a starting point for new microscope setups
+- **Content**: Contains all available configuration parameters with example values
+- **Location**: `squid_control/config/configuration_HCS_v2_example.ini`
+
+#### **`configuration_HCS_v2.ini`** (Hardware-Specific Configuration)
+- **Purpose**: Real hardware configuration for specific microscope instances
+- **Usage**: Each physical microscope should have its own unique configuration file
+- **Content**: Calibrated parameters specific to individual microscope hardware
+- **Customization**: Contains hardware-specific values for:
+  - Motor parameters (steps per revolution, screw pitches, microstepping)
+  - Stage movement signs and limits
+  - Camera sensor specifications and pixel sizes
+  - Objective lens configurations
+  - Well plate positioning and spacing
+  - Autofocus and tracking parameters
+  - Software position limits and safety boundaries
+
 ## Mirror Service
 
 The **Mirror Service** is a sophisticated proxy system that bridges cloud and local microscope control systems, enabling remote control of microscopes while maintaining full WebRTC video streaming capabilities.
