@@ -3930,23 +3930,28 @@ class Microscope:
             logger.error(f"Failed to get experiment info: {e}")
             raise e
 
+# Global variable to hold the microscope instance
+_microscope_instance = None
+
 # Define a signal handler for graceful shutdown
 def signal_handler(sig, frame):
+    global _microscope_instance
     logger.info('Signal received, shutting down gracefully...')
     
     # Stop video buffering
-    if hasattr(microscope, 'frame_acquisition_running') and microscope.frame_acquisition_running:
+    if _microscope_instance and hasattr(_microscope_instance, 'frame_acquisition_running') and _microscope_instance.frame_acquisition_running:
         logger.info('Stopping video buffering...')
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                loop.create_task(microscope.stop_video_buffering())
+                loop.create_task(_microscope_instance.stop_video_buffering())
             else:
-                loop.run_until_complete(microscope.stop_video_buffering())
+                loop.run_until_complete(_microscope_instance.stop_video_buffering())
         except Exception as e:
             logger.error(f'Error stopping video buffering: {e}')
     
-    microscope.squidController.close()
+    if _microscope_instance and hasattr(_microscope_instance, 'squidController'):
+        _microscope_instance.squidController.close()
     sys.exit(0)
 
 # Register the signal handler for SIGINT and SIGTERM
@@ -3955,6 +3960,8 @@ signal.signal(signal.SIGTERM, signal_handler)
 
 def main():
     """Main entry point for the microscope service"""
+    global _microscope_instance
+    
     parser = argparse.ArgumentParser(
         description="Squid microscope control services for Hypha."
     )
@@ -3981,6 +3988,7 @@ def main():
         logging.basicConfig(level=logging.INFO)
 
     microscope = Microscope(is_simulation=args.simulation, is_local=args.local)
+    _microscope_instance = microscope  # Set the global variable
 
     loop = asyncio.get_event_loop()
 
