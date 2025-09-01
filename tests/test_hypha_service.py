@@ -9,7 +9,7 @@ import json
 import zipfile
 import tempfile
 from hypha_rpc import connect_to_server, login
-from squid_control.start_hypha_service import Microscope, MicroscopeVideoTrack
+from squid_control.start_hypha_service import MicroscopeHyphaService, MicroscopeVideoTrack
 from squid_control.hypha_tools.hypha_storage import HyphaDataStore
 
 # Mark all tests in this module as asyncio and integration tests
@@ -74,7 +74,7 @@ async def test_microscope_service():
             # Create real microscope instance in simulation mode
             print("🔬 Creating Microscope instance...")
             start_time = time.time()
-            microscope = Microscope(is_simulation=True, is_local=False)
+            microscope = MicroscopeHyphaService(is_simulation=True, is_local=False)
             init_time = time.time() - start_time
             print(f"✅ Microscope initialization took {init_time:.1f} seconds")
             
@@ -1060,7 +1060,7 @@ async def test_initialization_edge_cases():
 # Test authorization and email management
 async def test_authorization_management():
     """Test authorization and email management functionality."""
-    microscope = Microscope(is_simulation=True, is_local=False)
+            microscope = MicroscopeHyphaService(is_simulation=True, is_local=False)
     
     try:
         # Test with login_required=True but no authorized emails

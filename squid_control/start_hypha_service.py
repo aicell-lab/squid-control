@@ -299,7 +299,7 @@ class MicroscopeVideoTrack(MediaStreamTrack):
         # Mark WebRTC as disconnected
         self.microscope_instance.webrtc_connected = False
 
-class Microscope:
+class MicroscopeHyphaService:
     def __init__(self, is_simulation, is_local):  # noqa: PLR0915
         self.current_x = 0
         self.current_y = 0
@@ -3987,7 +3987,7 @@ def main():
     else:
         logging.basicConfig(level=logging.INFO)
 
-    microscope = Microscope(is_simulation=args.simulation, is_local=args.local)
+    microscope = MicroscopeHyphaService(is_simulation=args.simulation, is_local=args.local)
     _microscope_instance = microscope  # Set the global variable
 
     loop = asyncio.get_event_loop()

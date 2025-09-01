@@ -41,7 +41,7 @@ This is a Python-based control system for the Squid microscope (by Cephla Inc.),
 - WebRTC video streaming capabilities
 - Task status tracking and error handling
 - AI chatbot integration for natural language control
-- `Microscope` class: Main service class for microscope control
+- `MicroscopeHyphaService` class: Main service class for microscope control
 - Video buffering system for smooth streaming
 
 ### Mirror Service (`squid_control/services/mirror/`)
@@ -745,7 +745,7 @@ python squid_control/run_mirror_service.py [options]
 ```
 
 ### Service Architecture
-- **`Microscope` class**: Main service class in `start_hypha_service.py` (3998 lines)
+- **`MicroscopeHyphaService` class**: Main service class in `start_hypha_service.py` (3998 lines)
 - **`SquidController` class**: High-level controller in `squid_controller.py` (2714 lines)
 - **`MirrorMicroscopeService`**: Mirror service for cloud proxy in `services/mirror/`
 

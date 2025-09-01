@@ -20,7 +20,7 @@ Usage:
     python -m squid_control mirror --cloud-service-id "mirror-microscope-control-squid-2" --local-service-id "microscope-control-squid-2"
     
     # Import in Python code
-    from squid_control.start_hypha_service import Microscope
+    from squid_control.start_hypha_service import MicroscopeHyphaService
     from squid_control.squid_controller import SquidController
     from squid_control.services.mirror import MirrorMicroscopeService
 """
@@ -32,9 +32,9 @@ __author__ = "Cephla Inc."
 def _import_main_classes():
     """Lazy import to avoid import errors during installation"""
     try:
-        from .start_hypha_service import Microscope
+        from .start_hypha_service import MicroscopeHyphaService
         from .squid_controller import SquidController
-        return Microscope, SquidController
+        return MicroscopeHyphaService, SquidController
     except ImportError:
         return None, None
 
@@ -47,11 +47,11 @@ def _import_mirror_services():
         return None, None, False
 
 # Lazy load classes
-Microscope, SquidController = _import_main_classes()
+MicroscopeHyphaService, SquidController = _import_main_classes()
 MirrorMicroscopeService, MicroscopeVideoTrack, MIRROR_SERVICES_AVAILABLE = _import_mirror_services()
 
 __all__ = [
-    "Microscope",
+    "MicroscopeHyphaService",
     "SquidController",
 ]
 

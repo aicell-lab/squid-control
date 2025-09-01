@@ -9,7 +9,7 @@ import threading
 import socket
 from pathlib import Path
 from hypha_rpc import connect_to_server, register_rtc_service
-from squid_control.start_hypha_service import Microscope, MicroscopeVideoTrack
+from squid_control.start_hypha_service import MicroscopeHyphaService, MicroscopeVideoTrack
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import tempfile
 import webbrowser
@@ -1068,7 +1068,7 @@ async def webrtc_test_services():
             
             # Create microscope instance in simulation mode
             print("🔬 Creating Microscope instance...")
-            microscope = Microscope(is_simulation=True, is_local=False)
+            microscope = MicroscopeHyphaService(is_simulation=True, is_local=False)
             microscope.service_id = test_id
             microscope.login_required = False  # Disable auth for tests
             microscope.authorized_emails = None

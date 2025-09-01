@@ -11,7 +11,7 @@ from squid_control.services.mirror.mirror_service import MirrorMicroscopeService
 from squid_control.services.mirror.video_track import MicroscopeVideoTrack
 
 # Import the real microscope service for testing
-from squid_control.start_hypha_service import Microscope
+from squid_control.start_hypha_service import MicroscopeHyphaService
 
 # Mark all tests in this module as asyncio and integration tests
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
@@ -81,7 +81,7 @@ async def test_server_connection():
 
 async def _create_test_microscope(test_id):
     """Helper function to create and configure a test microscope."""
-    microscope = Microscope(is_simulation=True, is_local=False)
+    microscope = MicroscopeHyphaService(is_simulation=True, is_local=False)
     microscope.service_id = test_id
     microscope.login_required = False  # Disable auth for tests
     microscope.authorized_emails = None
