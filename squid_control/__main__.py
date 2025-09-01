@@ -105,7 +105,33 @@ def main():
         if args.command == "microscope":
             # Import locally to avoid circular imports
             from .start_hypha_service import main as microscope_main
-            microscope_main()
+            
+            # Create a new argument parser for the microscope service
+            # that matches what start_hypha_service.py expects
+            import argparse as ap
+            microscope_parser = ap.ArgumentParser()
+            microscope_parser.add_argument("--simulation", action="store_true", default=True)
+            microscope_parser.add_argument("--local", action="store_true", default=False)
+            microscope_parser.add_argument("--verbose", "-v", action="count")
+            
+            # Convert our args to the format expected by start_hypha_service.py
+            microscope_args = []
+            if args.simulation:
+                microscope_args.append("--simulation")
+            if args.local:
+                microscope_args.append("--local")
+            if args.verbose:
+                microscope_args.append("--verbose")
+            
+            # Temporarily replace sys.argv to pass arguments to microscope_main
+            original_argv = sys.argv
+            sys.argv = ["start_hypha_service.py"] + microscope_args
+            
+            try:
+                microscope_main()
+            finally:
+                # Restore original sys.argv
+                sys.argv = original_argv
             
         elif args.command == "mirror":
             # Import locally to avoid circular imports

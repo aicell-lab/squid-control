@@ -33,36 +33,35 @@ All dependencies are managed through `pyproject.toml` with the following benefit
 ### Usage
 
 **Command Line Interface:**
+
+The Squid Control system provides a unified command-line interface with subcommands:
+
 ```bash
-# Run microscope service
-squid-control microscope --simulation --verbose
+# Main microscope service
+python -m squid_control microscope [--simulation] [--local] [--verbose]
 
-# Run mirror service
-squid-control mirror --cloud-service-id "mirror-service" --local-service-id "local-service"
+# Mirror service for cloud-to-local proxy
+python -m squid_control mirror [--cloud-service-id ID] [--local-service-id ID] [--verbose]
 
-# Or use python -m
+# Examples:
+# Run microscope in simulation mode
 python -m squid_control microscope --simulation
-```
 
-**Python API:**
-```python
-from squid_control import Microscope, SquidController
+# Run microscope in local mode
+python -m squid_control microscope --local
 
-# Create microscope instance
-microscope = Microscope(simulation=True)
+# Run microscope with verbose logging
+python -m squid_control microscope --simulation --verbose
 
-# Use the controller
-controller = SquidController(microscope)
-```
+# Run mirror service with custom service IDs
+python -m squid_control mirror \
+  --cloud-service-id "mirror-microscope-control-squid-2" \
+  --local-service-id "microscope-control-squid-2"
 
-**Legacy usage (still supported):**
-```bash
-python -m squid_control --config HCS_v2
-```
-
-If you want to use a different configuration file, you can specify the path to the configuration file:
-```
-python -m squid_control --config /home/user/configuration_HCS_v2.ini
+# Get help
+python -m squid_control --help
+python -m squid_control microscope --help
+python -m squid_control mirror --help
 ```
 
 ### Environment Setup
@@ -83,8 +82,8 @@ pip install -e .[dev]
 ### Simulation Mode
 
 To start simulation mode, use the following command:
-```
-python -m squid_control --config HCS_v2 --simulation
+```bash
+python -m squid_control microscope --simulation
 ```
 
 #### Simulated Sample (Zarr-based Virtual Sample)
@@ -101,6 +100,37 @@ The simulation mode includes a **virtual microscope sample** using Zarr data arc
 - Adjustable exposure time and intensity
 - Realistic Z-axis blurring for out-of-focus images
 - High-resolution sample data covering the stage area
+
+## Mirror Service
+
+The **Mirror Service** is a sophisticated proxy system that bridges cloud and local microscope control systems, enabling remote control of microscopes while maintaining full WebRTC video streaming capabilities.
+
+### How to Use Mirror Service
+
+```bash
+# Run mirror service with default settings
+python -m squid_control mirror
+
+# Run with custom service IDs
+python -m squid_control mirror \
+  --cloud-service-id "mirror-microscope-control-squid-2" \
+  --local-service-id "microscope-control-squid-2"
+
+# Run with custom server URLs
+python -m squid_control mirror \
+  --cloud-server-url "https://hypha.aicell.io" \
+  --cloud-workspace "reef-imaging" \
+  --local-server-url "http://localhost:9527" \
+  --local-service-id "microscope-control-squid-1"
+```
+
+### Mirror Service Features
+
+- **Dynamic Method Mirroring**: Automatically mirrors all available methods from local services to cloud
+- **WebRTC Video Streaming**: Real-time video with metadata transmission via data channels
+- **Health Monitoring**: Automatic health checks with exponential backoff reconnection
+- **Configurable Service IDs**: Customizable cloud and local service identifiers
+- **Automatic Illumination Control**: Manages illumination based on WebRTC connection state
 
 ## Zarr Canvas & Image Stitching
 
@@ -179,6 +209,17 @@ If you encounter dependency conflicts:
 2. **Update pip**: `pip install --upgrade pip`
 3. **Install with extras**: Use specific optional dependency groups
 4. **Check Python Version**: Ensure you're using Python 3.8+
+
+### Common Issues
+
+**Command not found errors:**
+- Make sure you're using the correct subcommand format: `python -m squid_control microscope --simulation`
+- Don't use flags without subcommands: `python -m squid_control --simulation` (will fail)
+
+**Service connection issues:**
+- Check network connectivity for cloud services
+- Verify local server URLs and ports
+- Ensure proper authentication tokens are set
 
 ## Version Constraints
 
