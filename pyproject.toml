@@ -111,7 +111,7 @@ exclude = ["tests*", "scripts*"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"
-addopts = "-ra -q --cov=squid_control --cov-report=term-missing --timeout=1000 --timeout-method=thread"
+addopts = "-ra -q --timeout=1000 --timeout-method=thread"
 testpaths = [
     "tests",
 ]
@@ -136,6 +136,9 @@ omit = [
     # AI/service modules not used in core simulation
     "squid_control/hypha_tools/chatbot/*",
     "squid_control/hypha_tools/hypha_storage.py",
+    # Test files
+    "tests/*",
+    "scripts/*",
 ]
 
 [tool.coverage.report]
@@ -150,6 +153,9 @@ exclude_lines = [
     "if.*GX_AVAILABLE",
     "except ImportError:",
 ]
+precision = 2
+show_missing = true
+skip_covered = false
 
 [tool.ruff]
 line-length = 88
