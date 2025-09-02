@@ -1,18 +1,18 @@
-import platform
-import serial
-import sys
-import serial.tools.list_ports
-import time
-import numpy as np
-import threading
-from crc import CrcCalculator, Crc8
 import json
-from squid_control.control.config import CONFIG
-from scipy.spatial import ConvexHull, Delaunay
 import os
+import platform
+import sys
+import threading
+import time
 
+import numpy as np
+import serial
+import serial.tools.list_ports
+from crc import Crc8, CrcCalculator
+from scipy.spatial import Delaunay
 
-from enum import Enum
+from squid_control.control.config import CONFIG
+
 
 class LIMIT_CODE:
     X_POSITIVE = 0
@@ -106,7 +106,7 @@ class Microcontroller:
         self.edge_positions_file = os.path.join(script_dir,"edge_positions.json")
         self.load_edge_positions()
         print("edge positions in usteps: ", self.edge_positions)
-        #-------------------        
+        #-------------------
 
         if version == "Arduino Due":
             controller_ports = [
@@ -114,29 +114,27 @@ class Microcontroller:
                 for p in serial.tools.list_ports.comports()
                 if "Arduino Due" == p.description
             ]  # autodetect - based on Deepak's code
+        elif sn is not None:
+            controller_ports = [
+                p.device
+                for p in serial.tools.list_ports.comports()
+                if sn == p.serial_number
+            ]
+        elif sys.platform == "win32":
+            controller_ports = [
+                p.device
+                for p in serial.tools.list_ports.comports()
+                if p.manufacturer == "Microsoft"
+            ]
         else:
-            if sn is not None:
-                controller_ports = [
-                    p.device
-                    for p in serial.tools.list_ports.comports()
-                    if sn == p.serial_number
-                ]
-            else:
-                if sys.platform == "win32":
-                    controller_ports = [
-                        p.device
-                        for p in serial.tools.list_ports.comports()
-                        if p.manufacturer == "Microsoft"
-                    ]
-                else:
-                    controller_ports = [
-                        p.device
-                        for p in serial.tools.list_ports.comports()
-                        if p.manufacturer == "Teensyduino"
-                    ]
+            controller_ports = [
+                p.device
+                for p in serial.tools.list_ports.comports()
+                if p.manufacturer == "Teensyduino"
+            ]
 
         if not controller_ports:
-            raise IOError("no controller found")
+            raise OSError("no controller found")
         if len(controller_ports) > 1:
             print("multiple controller found - using the first")
 
@@ -180,11 +178,11 @@ class Microcontroller:
         """Clears the list of edge positions"""
         self.edge_positions = []
         self.save_edge_positions()
-    
+
     def load_edge_positions(self):
         """Loads the list of edge positions from a file"""
         try:
-            with open(self.edge_positions_file, "r") as f:
+            with open(self.edge_positions_file) as f:
                 edge_positions_mm = json.load(f)
                 print("edge_positions_mm: ", edge_positions_mm)
                 for i in range(len(edge_positions_mm)):
@@ -216,12 +214,12 @@ class Microcontroller:
         except FileNotFoundError:
             print("Edge positions file not found!")
             exit()
-        
+
     def save_edge_positions(self):
         """Saves the list of edge positions to a file"""
         with open(self.edge_positions_file, "w") as f:
             json.dump(self.edge_positions, f)
-    
+
     def is_point_in_concave_hull(self, point):
         """Returns True if the point is inside the concave hull of the edge positions"""
         if len(self.edge_positions) < 4:
@@ -232,7 +230,7 @@ class Microcontroller:
         hull = Delaunay(points)
         return hull.find_simplex(point) >= 0
  #-----------------------------------------------
-    
+
     def turn_on_illumination(self):
         cmd = bytearray(self.tx_buffer_length)
         cmd[1] = CMD_SET.TURN_ON_ILLUMINATION
@@ -355,7 +353,7 @@ class Microcontroller:
             print("Set X axis' max velocity back to default")
         else:
             print(f"Target position {target_pos} is outside the safe area, X movement cancelled")
-            
+
     def move_x_to_usteps(self, usteps):
         payload = self._int_to_payload(usteps, 4)
         cmd = bytearray(self.tx_buffer_length)
@@ -365,7 +363,7 @@ class Microcontroller:
         cmd[4] = (payload >> 8) & 0xFF
         cmd[5] = payload & 0xFF
         self.send_command(cmd)
-    
+
     def move_x_to_usteps_limited(self, usteps):
         target_pos = usteps
         if self.is_point_in_concave_hull([target_pos, self.y_pos, self.z_pos]):
@@ -428,7 +426,7 @@ class Microcontroller:
 
         else:
             print("Target position is outside the safe area, Y movement cancelled")
-       
+
     def move_y_to_usteps(self, usteps):
         payload = self._int_to_payload(usteps, 4)
         cmd = bytearray(self.tx_buffer_length)
@@ -438,7 +436,7 @@ class Microcontroller:
         cmd[4] = (payload >> 8) & 0xFF
         cmd[5] = payload & 0xFF
         self.send_command(cmd)
-    
+
     def move_y_to_usteps_limited(self, usteps):
         target_pos = usteps
         if self.is_point_in_concave_hull([self.x_pos, target_pos, self.z_pos]):
@@ -491,8 +489,8 @@ class Microcontroller:
         self.send_command(cmd)
         # while self.mcu_cmd_execution_in_progress == True:
         #     time.sleep(self._motion_status_checking_interval)
-    
-    def move_z_usteps_limited(self, usteps):    
+
+    def move_z_usteps_limited(self, usteps):
         target_pos = self.z_pos + CONFIG.STAGE_MOVEMENT_SIGN_Z * usteps
         if self.is_point_in_concave_hull([self.x_pos, self.y_pos, target_pos]):
             self.move_z_usteps(usteps)
@@ -509,7 +507,7 @@ class Microcontroller:
         cmd[4] = (payload >> 8) & 0xFF
         cmd[5] = payload & 0xFF
         self.send_command(cmd)
-    
+
     def move_z_to_usteps_limited(self, usteps):
         target_pos = usteps
         if self.is_point_in_concave_hull([self.x_pos, self.y_pos, target_pos]):
@@ -991,8 +989,7 @@ class Microcontroller:
     def set_dac80508_scaling_factor_for_illumination(
         self, illumination_intensity_factor
     ):
-        if illumination_intensity_factor > 1:
-            illumination_intensity_factor = 1
+        illumination_intensity_factor = min(illumination_intensity_factor, 1)
 
         if illumination_intensity_factor < 0:
             illumination_intensity_factor = 0.01
@@ -1072,11 +1069,11 @@ class Microcontroller_Simulation:
         """Clears the list of edge positions"""
         self.edge_positions = []
         self.save_edge_positions()
-    
+
     def load_edge_positions(self):
         """Loads the list of edge positions from a file"""
         try:
-            with open(self.edge_positions_file, "r") as f:
+            with open(self.edge_positions_file) as f:
                 edge_positions_mm = json.load(f)
                 print("edge_positions_mm: ", edge_positions_mm)
                 for i in range(len(edge_positions_mm)):
@@ -1108,12 +1105,12 @@ class Microcontroller_Simulation:
         except FileNotFoundError:
             print("Edge positions file not found!")
             exit()
-        
+
     def save_edge_positions(self):
         """Saves the list of edge positions to a file"""
         with open(self.edge_positions_file, "w") as f:
             json.dump(self.edge_positions, f)
-    
+
     def is_point_in_concave_hull(self, point):
         """Returns True if the point is inside the concave hull of the edge positions"""
         if len(self.edge_positions) < 4:
@@ -1135,7 +1132,7 @@ class Microcontroller_Simulation:
         cmd = bytearray(self.tx_buffer_length)
         self.send_command(cmd)
         print("   mcu command " + str(self._cmd_id) + ": move x to")
-        
+
     def move_x_continuous_usteps(self, distance_usteps, scan_velocity_mm):
         """
         This function is used to move the stage continuously in the x direction. Its was designed for 'Zoom Scan' feature.
@@ -1152,7 +1149,7 @@ class Microcontroller_Simulation:
             print("Set X axis' max velocity back to default")
         else:
             print(f"Target position {target_pos} is outside the safe area, X movement cancelled")
-            
+
     def move_y_usteps(self, usteps):
         self.y_pos = self.y_pos + CONFIG.STAGE_MOVEMENT_SIGN_Y * usteps
         cmd = bytearray(self.tx_buffer_length)
@@ -1575,8 +1572,7 @@ class Microcontroller_Simulation:
     def set_dac80508_scaling_factor_for_illumination(
         self, illumination_intensity_factor
     ):
-        if illumination_intensity_factor > 1:
-            illumination_intensity_factor = 1
+        illumination_intensity_factor = min(illumination_intensity_factor, 1)
 
         if illumination_intensity_factor < 0:
             illumination_intensity_factor = 0.01

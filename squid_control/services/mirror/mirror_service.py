@@ -9,24 +9,20 @@ import asyncio
 import logging
 import logging.handlers
 import os
-import time
-import traceback
-from typing import Optional, Dict, Any
 
 # WebRTC imports
 import aiohttp
 
 # Image processing imports
 import dotenv
-from hypha_rpc import connect_to_server, login, register_rtc_service
-from hypha_rpc.utils.schema import schema_function
+from hypha_rpc import connect_to_server, register_rtc_service
 
 from .video_track import MicroscopeVideoTrack
 
-dotenv.load_dotenv()  
-ENV_FILE = dotenv.find_dotenv()  
+dotenv.load_dotenv()
+ENV_FILE = dotenv.find_dotenv()
 if ENV_FILE:
-    dotenv.load_dotenv(ENV_FILE)  
+    dotenv.load_dotenv(ENV_FILE)
 
 # Set up logging
 def setup_logging(log_file="mirror_squid_control_service.log", max_bytes=100000, backup_count=3):
@@ -56,7 +52,7 @@ class MirrorMicroscopeService:
     This service allows remote control of microscopes by mirroring local service
     methods to the cloud while maintaining WebRTC video streaming capabilities.
     """
-    
+
     def __init__(self):
         self.login_required = True
         # Connection to cloud service
@@ -92,7 +88,7 @@ class MirrorMicroscopeService:
         try:
             logger.info(f"Connecting to local service at {self.local_server_url}")
             self.local_server = await connect_to_server({
-                "server_url": self.local_server_url, 
+                "server_url": self.local_server_url,
                 "token": self.local_token,
                 "ping_interval": None
             })
@@ -149,11 +145,11 @@ class MirrorMicroscopeService:
         if hasattr(local_method, '__schema__'):
             # Preserve the schema information from the original method
             original_schema = getattr(local_method, '__schema__')
-            
+
             # Handle case where schema might be None
             if original_schema is not None:
                 logger.info(f"Preserving schema for method {method_name}: {original_schema}")
-                
+
                 # Create a new function with the same signature and schema
                 # We need to manually copy the schema information since we can't use the decorator directly
                 mirror_method.__schema__ = original_schema
@@ -163,7 +159,7 @@ class MirrorMicroscopeService:
         else:
             # No schema information available, return the basic mirror method
             logger.debug(f"No schema information found for method {method_name}, using basic mirror")
-        
+
         return mirror_method
 
     def _get_mirrored_methods(self):
@@ -177,28 +173,28 @@ class MirrorMicroscopeService:
         logger.info(f"Local service attributes: {list(dir(self.local_service))}")
 
         mirrored_methods = {}
-        
+
         # Methods to exclude from mirroring (these are handled specially)
         excluded_methods = {
             'name', 'id', 'config', 'type',  # Service metadata
             '__class__', '__doc__', '__dict__', '__module__',  # Python internals
         }
-        
+
         # Get all attributes from the local service
         for attr_name in dir(self.local_service):
             if attr_name.startswith('_') or attr_name in excluded_methods:
                 logger.debug(f"Skipping attribute: {attr_name} (excluded or private)")
                 continue
-                
+
             attr = getattr(self.local_service, attr_name)
-            
+
             # Check if it's callable (a method)
             if callable(attr):
                 logger.info(f"Creating mirror method for: {attr_name}")
                 mirrored_methods[attr_name] = self._create_mirror_method(attr_name, attr)
             else:
                 logger.debug(f"Skipping non-callable attribute: {attr_name}")
-        
+
         logger.info(f"Total mirrored methods created: {len(mirrored_methods)}")
         logger.info(f"Mirrored method names: {list(mirrored_methods.keys())}")
         return mirrored_methods
@@ -222,7 +218,7 @@ class MirrorMicroscopeService:
                         raise Exception(f"Cloud service not healthy: {e}")
                 else:
                     logger.info("Cloud service ID or server not set, waiting for service registration")
-                    
+
                 # Always check local service regardless of whether it's None
                 try:
                     if self.local_service is None:
@@ -230,15 +226,15 @@ class MirrorMicroscopeService:
                         success = await self.connect_to_local_service()
                         if not success or self.local_service is None:
                             raise Exception("Failed to connect to local service")
-                    
+
                     #logger.info("Checking local service health...")
                     local_ping_result = await asyncio.wait_for(self.local_service.ping(), timeout=10)
                     #logger.info(f"Local service response: {local_ping_result}")
-                    
+
                     if local_ping_result != "pong":
                         logger.error(f"Local service health check failed: {local_ping_result}")
                         raise Exception("Local service not healthy")
-                    
+
                     #logger.info("Local service health check passed")
                 except Exception as e:
                     logger.error(f"Local service health check failed: {e}")
@@ -247,12 +243,12 @@ class MirrorMicroscopeService:
             except Exception as e:
                 logger.error(f"Service health check failed: {e}")
                 logger.info("Attempting to clean up and rerun setup...")
-                
+
                 # Clean up everything properly
                 try:
                     # First, clean up the cloud service
                     await self.cleanup_cloud_service()
-                    
+
                     # Then disconnect from servers
                     if self.cloud_server:
                         await self.cloud_server.disconnect()
@@ -273,13 +269,13 @@ class MirrorMicroscopeService:
                 retry_count = 0
                 max_retries = 50
                 base_delay = 10
-                
+
                 while retry_count < max_retries:
                     try:
                         delay = base_delay * (2 ** min(retry_count, 5))  # Cap at 32 * base_delay
                         logger.info(f"Retrying setup in {delay} seconds (attempt {retry_count + 1}/{max_retries})")
                         await asyncio.sleep(delay)
-                        
+
                         # Rerun the setup method
                         self.setup_task = asyncio.create_task(self.setup())
                         await self.setup_task
@@ -292,23 +288,23 @@ class MirrorMicroscopeService:
                             logger.error("Max retries reached, giving up on setup")
                             await asyncio.sleep(60)  # Wait longer before next health check cycle
                             break
-            
+
             await asyncio.sleep(10)  # Check more frequently (was 30)
 
     async def start_hypha_service(self, server):
         """Start the Hypha service with dynamically mirrored methods"""
         self.cloud_server = server
-        
+
         # Ensure we have a connection to the local service
         if self.local_service is None:
             logger.info("Local service not connected, attempting to connect before creating mirror methods")
             success = await self.connect_to_local_service()
             if not success:
                 raise Exception("Cannot start Hypha service without local service connection")
-        
+
         # Get the mirrored methods from the current local service
         self.mirrored_methods = self._get_mirrored_methods()
-        
+
         # Base service configuration with core methods
         service_config = {
             "name": "Mirror Microscope Control Service",
@@ -320,10 +316,10 @@ class MirrorMicroscopeService:
             "type": "echo",
             "ping": self.ping,
         }
-        
+
         # Add all mirrored methods to the service configuration
         service_config.update(self.mirrored_methods)
-        
+
         # Register the service
         self.cloud_service = await server.register_service(service_config)
 
@@ -337,29 +333,29 @@ class MirrorMicroscopeService:
         logger.info(f"You can also test the service via the HTTP proxy: {self.cloud_server_url}/{server.config.workspace}/services/{id}")
 
     async def start_webrtc_service(self, server, webrtc_service_id_arg):
-        self.webrtc_service_id = webrtc_service_id_arg 
-        
+        self.webrtc_service_id = webrtc_service_id_arg
+
         async def on_init(peer_connection):
             logger.info("WebRTC peer connection initialized")
             # Mark as connected when peer connection starts
             self.webrtc_connected = True
-            
+
             # Create data channel for metadata transmission
             self.metadata_data_channel = peer_connection.createDataChannel("metadata", ordered=True)
             logger.info("Created metadata data channel")
-            
+
             @self.metadata_data_channel.on("open")
             def on_data_channel_open():
                 logger.info("Metadata data channel opened")
-            
+
             @self.metadata_data_channel.on("close")
             def on_data_channel_close():
                 logger.info("Metadata data channel closed")
-            
+
             @self.metadata_data_channel.on("error")
             def on_data_channel_error(error):
                 logger.error(f"Metadata data channel error: {error}")
-            
+
             @peer_connection.on("connectionstatechange")
             async def on_connectionstatechange():
                 logger.info(f"WebRTC connection state changed to: {peer_connection.connectionState}")
@@ -375,19 +371,19 @@ class MirrorMicroscopeService:
                 elif peer_connection.connectionState in ["connected"]:
                     # Mark as connected
                     self.webrtc_connected = True
-            
+
             @peer_connection.on("track")
             def on_track(track):
                 logger.info(f"Track {track.kind} received from client")
-                
+
                 if self.video_track and self.video_track.running:
-                    self.video_track.stop() 
-                
+                    self.video_track.stop()
+
                 # Ensure local_service is available before creating video track
                 if self.local_service is None:
                     logger.error("Cannot create video track: local_service is not available")
                     return
-                
+
                 try:
                     self.local_service.on_illumination()
                     logger.info("Illumination opened")
@@ -397,7 +393,7 @@ class MirrorMicroscopeService:
                 except Exception as e:
                     logger.error(f"Failed to create video track: {e}")
                     return
-                
+
                 @track.on("ended")
                 def on_ended():
                     logger.info(f"Client track {track.kind} ended")
@@ -442,18 +438,18 @@ class MirrorMicroscopeService:
         # Connect to cloud workspace
         logger.info(f"Connecting to cloud workspace {self.cloud_workspace} at {self.cloud_server_url}")
         server = await connect_to_server({
-            "server_url": self.cloud_server_url, 
-            "token": self.cloud_token, 
+            "server_url": self.cloud_server_url,
+            "token": self.cloud_token,
             "workspace": self.cloud_workspace,
             "ping_interval": None
         })
-        
+
         # Connect to local service first (needed to get available methods)
         logger.info("Connecting to local service before setting up mirror service")
         success = await self.connect_to_local_service()
         if not success or self.local_service is None:
             raise Exception("Failed to connect to local service during setup")
-        
+
         # Verify local service is working
         try:
             ping_result = await asyncio.wait_for(self.local_service.ping(), timeout=10)
@@ -463,19 +459,19 @@ class MirrorMicroscopeService:
         except Exception as e:
             logger.error(f"Local service verification failed: {e}")
             raise Exception(f"Local service not responding properly: {e}")
-        
+
         # Small delay to ensure local service is fully ready
         await asyncio.sleep(1)
-        
+
         # Start the cloud service with mirrored methods
         logger.info("Starting cloud service with mirrored methods")
         await self.start_hypha_service(server)
-        
+
         # Start the WebRTC service
         self.webrtc_service_id = f"video-track-{self.local_service_id}"
         logger.info(f"Starting WebRTC service with id: {self.webrtc_service_id}")
         await self.start_webrtc_service(server, self.webrtc_service_id)
-        
+
         logger.info("Setup completed successfully")
 
     def ping(self):
@@ -531,13 +527,13 @@ class MirrorMicroscopeService:
         try:
             if self.local_service is None:
                 await self.connect_to_local_service()
-            
+
             # Update WebRTC video track FPS if active
             if self.video_track and self.video_track.running:
                 old_webrtc_fps = self.video_track.fps
                 self.video_track.fps = fps
                 logger.info(f"WebRTC video track FPS updated from {old_webrtc_fps} to {fps}")
-            
+
             # Forward call to local service if it has this method
             if hasattr(self.local_service, 'set_video_fps'):
                 result = await self.local_service.set_video_fps(fps)
@@ -545,7 +541,7 @@ class MirrorMicroscopeService:
             else:
                 logger.warning("Local service does not have set_video_fps method")
                 return {"status": "webrtc_only", "message": f"WebRTC FPS set to {fps}, local service method not available"}
-            
+
         except Exception as e:
             logger.error(f"Failed to set video FPS: {e}")
             raise e

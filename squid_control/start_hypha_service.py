@@ -9,7 +9,6 @@ import os
 import sys
 import time
 import traceback
-from functools import partial
 from pathlib import Path
 
 import cv2
@@ -35,12 +34,8 @@ except ImportError:
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
-    
-    from .control.camera import TriggerModeSetting
+
     from .control.config import CONFIG, ChannelMapper
-    from .hypha_tools.artifact_manager.artifact_manager import (
-        SquidArtifactManager,
-    )
     from .hypha_tools.chatbot.aask import aask
     from .hypha_tools.hypha_storage import HyphaDataStore
     from .squid_controller import SquidController
@@ -469,7 +464,7 @@ class MicroscopeHyphaService:
                 else:
                     chatbot_server = await connect_to_server({
                         "client_id": f"squid-chatbot-{self.service_id}-{uuid.uuid4()}",
-                        "server_url": chatbot_server_url, 
+                        "server_url": chatbot_server_url,
                         "token": chatbot_token,
                         "ping_interval": None
                     })
@@ -1135,7 +1130,7 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             self.video_contrast_min = min_val
             self.video_contrast_max = max_val
             logger.info(f"Video contrast adjusted: min={min_val}, max={max_val}")
@@ -1150,18 +1145,18 @@ class MicroscopeHyphaService:
         Get an image from microscope
         Returns: the URL of the image
         """
-        
+
         # Check authentication
         if context and not self.check_permission(context.get("user", {})):
             raise Exception("User not authorized to access this service")
-        
+
         # Stop video buffering to prevent camera overload
         if self.frame_acquisition_running:
             logger.info("Stopping video buffering for snap operation to prevent camera conflicts")
             await self.stop_video_buffering()
             # Wait a moment for the buffering to fully stop
             await asyncio.sleep(0.1)
-        
+
         try:
             gray_img = await self.squidController.snap_image(channel, intensity, exposure_time)
             logger.info('The image is snapped')
@@ -1176,7 +1171,7 @@ class MicroscopeHyphaService:
             file_id = self.datastore.put('file', png_image.tobytes(), 'snapshot.png', "Captured microscope image in PNG format")
             data_url = self.datastore.get_url(file_id)
             logger.info(f'The image is snapped and saved as {data_url}')
-            
+
             #update the current illumination channel and intensity
             self.squidController.current_channel = channel
             param_name = self.channel_param_map.get(channel)
@@ -1184,7 +1179,7 @@ class MicroscopeHyphaService:
                 setattr(self, param_name, [intensity, exposure_time])
             else:
                 logger.warning(f"Unknown channel {channel} in snap, parameters not updated for intensity/exposure attributes.")
-            
+
             self.get_status()
             return data_url
         except Exception as e:
@@ -1201,7 +1196,7 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             self.squidController.liveController.turn_on_illumination()
             logger.info('Bright field illumination turned on.')
             return 'Bright field illumination turned on.'
@@ -1219,7 +1214,7 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             self.squidController.liveController.turn_off_illumination()
             logger.info('Illumination turned off.')
             return 'Illumination turned off.'
@@ -1237,7 +1232,7 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             if illumination_settings is None:
                 logger.warning("No illumination settings provided, using default settings")
                 illumination_settings = [
@@ -1248,7 +1243,7 @@ class MicroscopeHyphaService:
                     {'channel': 'Fluorescence 638 nm Ex', 'intensity': 100, 'exposure_time': 200},
                     {'channel': 'Fluorescence 730 nm Ex', 'intensity': 100, 'exposure_time': 200},
                 ]
-            
+
             # Check if video buffering is active and stop it during scanning
             video_buffering_was_active = self.frame_acquisition_running
             if video_buffering_was_active:
@@ -1257,12 +1252,12 @@ class MicroscopeHyphaService:
                 # Wait additional time to ensure camera fully settles after stopping video buffering
                 logger.info("Waiting for camera to settle after stopping video buffering...")
                 await asyncio.sleep(0.5)
-            
+
             # Set scanning flag to prevent automatic video buffering restart during scan
             self.scanning_in_progress = True
-            
+
             logger.info("Start scanning well plate with custom illumination settings")
-            
+
             # Run the blocking plate_scan operation in a separate thread executor
             # This prevents the asyncio event loop from being blocked during long scans
             await asyncio.get_event_loop().run_in_executor(
@@ -1277,7 +1272,7 @@ class MicroscopeHyphaService:
                 Ny,
                 action_ID
             )
-            
+
             logger.info("Well plate scanning completed")
             return "Well plate scanning completed"
         except Exception as e:
@@ -1287,7 +1282,7 @@ class MicroscopeHyphaService:
             # Always reset the scanning flag, regardless of success or failure
             self.scanning_in_progress = False
             logger.info("Well plate scanning completed, video buffering auto-start is now re-enabled")
-    
+
     @schema_function(skip_self=True)
     def scan_well_plate_simulated(self, context=None):
         """
@@ -1298,7 +1293,7 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             time.sleep(600)
             return "Well plate scanning completed"
         except Exception as e:
@@ -1316,7 +1311,7 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             # if light is on, turn it off first
             if self.squidController.liveController.illumination_on:
                 self.squidController.liveController.turn_off_illumination()
@@ -1327,7 +1322,7 @@ class MicroscopeHyphaService:
             else:
                 self.squidController.liveController.set_illumination(channel, intensity)
                 time.sleep(0.005)
-                
+
             param_name = self.channel_param_map.get(channel)
             self.squidController.current_channel = channel
             if param_name:
@@ -1338,13 +1333,13 @@ class MicroscopeHyphaService:
                 setattr(self, param_name, [intensity, current_params[1]])
             else:
                 logger.warning(f"Unknown channel {channel} in set_illumination, parameters not updated for intensity attributes.")
-                
+
             logger.info(f'The intensity of the channel {channel} illumination is set to {intensity}.')
             return f'The intensity of the channel {channel} illumination is set to {intensity}.'
         except Exception as e:
             logger.error(f"Failed to set illumination: {e}")
             raise e
-    
+
     @schema_function(skip_self=True)
     def set_camera_exposure(self,channel: int=Field(..., description="Light source (e.g., 0 for Bright Field, Fluorescence channels: 11 for 405 nm, 12 for 488 nm, 13 for 638nm, 14 for 561 nm, 15 for 730 nm)"), exposure_time: int=Field(..., description="Exposure time in milliseconds"), context=None):
         """
@@ -1355,9 +1350,9 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             self.squidController.camera.set_exposure_time(exposure_time)
-            
+
             param_name = self.channel_param_map.get(channel)
             self.squidController.current_channel = channel
             if param_name:
@@ -1385,7 +1380,7 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             self.squidController.liveController.stop_live()
             self.multipointController.abort_acqusition_requested=True
             logger.info("Stop scanning well plate")
@@ -1404,7 +1399,7 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             # Run the blocking home_stage operation in a separate thread executor
             # This prevents the asyncio event loop from being blocked during homing
             await asyncio.get_event_loop().run_in_executor(
@@ -1416,7 +1411,7 @@ class MicroscopeHyphaService:
         except Exception as e:
             logger.error(f"Failed to home stage: {e}")
             raise e
-    
+
     @schema_function(skip_self=True)
     async def return_stage(self, context=None):
         """
@@ -1428,7 +1423,7 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             # Run the blocking return_stage operation in a separate thread executor
             # This prevents the asyncio event loop from being blocked during stage movement
             await asyncio.get_event_loop().run_in_executor(
@@ -1440,7 +1435,7 @@ class MicroscopeHyphaService:
         except Exception as e:
             logger.error(f"Failed to return stage: {e}")
             raise e
-    
+
     @schema_function(skip_self=True)
     async def move_to_loading_position(self, context=None):
         """
@@ -1452,7 +1447,7 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             # Run the blocking move_to_slide_loading_position operation in a separate thread executor
             # This prevents the asyncio event loop from being blocked during stage movement
             await asyncio.get_event_loop().run_in_executor(
@@ -1476,14 +1471,14 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             await self.squidController.do_autofocus()
             logger.info('The camera is auto-focused')
             return 'The camera is auto-focused'
         except Exception as e:
             logger.error(f"Failed to auto focus: {e}")
             raise e
-    
+
     @schema_function(skip_self=True)
     async def do_laser_autofocus(self, context=None):
         """
@@ -1495,14 +1490,14 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             await self.squidController.do_laser_autofocus()
             logger.info('The camera is auto-focused')
             return 'The camera is auto-focused'
         except Exception as e:
             logger.error(f"Failed to do laser autofocus: {e}")
             raise e
-        
+
     @schema_function(skip_self=True)
     async def set_laser_reference(self, context=None):
         """
@@ -1514,7 +1509,7 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             if self.is_simulation:
                 pass
             else:
@@ -1529,7 +1524,7 @@ class MicroscopeHyphaService:
         except Exception as e:
             logger.error(f"Failed to set laser reference: {e}")
             raise e
-        
+
     @schema_function(skip_self=True)
     async def navigate_to_well(self, row: str=Field('A', description="Row number of the well position (e.g., 'A')"), col: int=Field(1, description="Column number of the well position"), wellplate_type: str=Field('96', description="Type of the well plate (e.g., '6', '12', '24', '96', '384')"), context=None):
         """
@@ -1541,7 +1536,7 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             if wellplate_type is None:
                 wellplate_type = '96'
             # Run the blocking move_to_well operation in a separate thread executor
@@ -1570,7 +1565,7 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             logger.info(f"chatbot_service_url: {self.chatbot_service_url}")
             return self.chatbot_service_url
         except Exception as e:
@@ -1592,7 +1587,7 @@ class MicroscopeHyphaService:
         except Exception as e:
             logger.error(f"Error fetching ICE servers: {e}")
             return None
-    
+
     class MoveByDistanceInput(BaseModel):
         """Move the stage by a distance in x, y, z axis."""
         x: float = Field(0, description="Move the stage along X axis")
@@ -1707,7 +1702,7 @@ class MicroscopeHyphaService:
         z = config.z if config.z is not None else 0
         result = self.move_to_position(x, y, z, context)
         return result['message']
-    
+
     async def auto_focus_schema(self, config: AutoFocusInput, context=None):
         await self.auto_focus(context)
         return "Auto-focus completed."
@@ -1784,11 +1779,11 @@ class MicroscopeHyphaService:
     async def start_hypha_service(self, server, service_id, run_in_executor=None):
         self.server = server
         self.service_id = service_id
-        
+
         # Default to True for production, False for tests (identified by "test" in service_id)
         if run_in_executor is None:
             run_in_executor = "test" not in service_id.lower()
-        
+
         # Build the service configuration
         service_config = {
             "name": "Microscope Control Service",
@@ -1850,7 +1845,7 @@ class MicroscopeHyphaService:
             "list_microscope_galleries": self.list_microscope_galleries,
             "list_gallery_datasets": self.list_gallery_datasets,
         }
-        
+
         # Only register get_canvas_chunk when not in local mode
         if not self.is_local:
             service_config["get_canvas_chunk"] = self.get_canvas_chunk
@@ -1904,29 +1899,29 @@ class MicroscopeHyphaService:
         logger.info(f"Extension service registered with id: {svc.id}, you can visit the service at:\n {self.chatbot_service_url}")
 
     async def start_webrtc_service(self, server, webrtc_service_id_arg):
-        self.webrtc_service_id = webrtc_service_id_arg 
-        
+        self.webrtc_service_id = webrtc_service_id_arg
+
         async def on_init(peer_connection):
             logger.info("WebRTC peer connection initialized")
             # Mark as connected when peer connection starts
             self.webrtc_connected = True
-            
+
             # Create data channel for metadata transmission
             self.metadata_data_channel = peer_connection.createDataChannel("metadata", ordered=True)
             logger.info("Created metadata data channel")
-            
+
             @self.metadata_data_channel.on("open")
             def on_data_channel_open():
                 logger.info("Metadata data channel opened")
-            
+
             @self.metadata_data_channel.on("close")
             def on_data_channel_close():
                 logger.info("Metadata data channel closed")
-            
+
             @self.metadata_data_channel.on("error")
             def on_data_channel_error(error):
                 logger.error(f"Metadata data channel error: {error}")
-            
+
             @peer_connection.on("connectionstatechange")
             async def on_connectionstatechange():
                 logger.info(f"WebRTC connection state changed to: {peer_connection.connectionState}")
@@ -1940,22 +1935,22 @@ class MicroscopeHyphaService:
                 elif peer_connection.connectionState in ["connected"]:
                     # Mark as connected
                     self.webrtc_connected = True
-            
+
             @peer_connection.on("track")
             def on_track(track):
                 logger.info(f"Track {track.kind} received from client")
-                
+
                 if self.video_track and self.video_track.running:
-                    self.video_track.stop() 
-                
-                self.video_track = MicroscopeVideoTrack(self) 
+                    self.video_track.stop()
+
+                self.video_track = MicroscopeVideoTrack(self)
                 peer_connection.addTrack(self.video_track)
                 logger.info("Added MicroscopeVideoTrack to peer connection")
                 self.is_streaming = True
-                
+
                 # Start video buffering when WebRTC starts
                 asyncio.create_task(self.start_video_buffering())
-                
+
                 @track.on("ended")
                 def on_ended():
                     logger.info(f"Client track {track.kind} ended")
@@ -1965,7 +1960,7 @@ class MicroscopeHyphaService:
                         self.video_track = None
                     self.is_streaming = False
                     self.metadata_data_channel = None
-                    
+
                     # Stop video buffering when WebRTC ends
                     asyncio.create_task(self.stop_video_buffering())
 
@@ -2007,7 +2002,7 @@ class MicroscopeHyphaService:
         else:
             remote_token = os.environ.get("SQUID_WORKSPACE_TOKEN")
             remote_workspace = "squid-control"
-            
+
         remote_server = await connect_to_server(
                 {"client_id": f"squid-remote-server-{self.service_id}-{uuid.uuid4()}", "server_url": "https://hypha.aicell.io", "token": remote_token, "workspace": remote_workspace, "ping_interval": None}
             )
@@ -2022,29 +2017,31 @@ class MicroscopeHyphaService:
         else:
             # Determine workspace and token based on simulation mode
             if self.is_simulation:
-                try:  
-                    token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")  
-                except:  
+                try:
+                    token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
+                except:
                     token = await login({"server_url": self.server_url})
                 workspace = "agent-lens"
             else:
-                try:  
-                    token = os.environ.get("SQUID_WORKSPACE_TOKEN")  
-                except:  
+                try:
+                    token = os.environ.get("SQUID_WORKSPACE_TOKEN")
+                except:
                     token = await login({"server_url": self.server_url})
                 workspace = "squid-control"
-            
+
             server = await connect_to_server(
                 {"client_id": f"squid-control-server-{self.service_id}-{uuid.uuid4()}", "server_url": self.server_url, "token": token, "workspace": workspace,  "ping_interval": None}
             )
-        
+
         self.server = server
-        
+
         # Setup zarr artifact manager for dataset upload functionality
         try:
-            from .hypha_tools.artifact_manager.artifact_manager import SquidArtifactManager
+            from .hypha_tools.artifact_manager.artifact_manager import (
+                SquidArtifactManager,
+            )
             self.zarr_artifact_manager = SquidArtifactManager()
-            
+
             # Connect to agent-lens workspace for zarr uploads
             zarr_token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
             if zarr_token:
@@ -2056,7 +2053,7 @@ class MicroscopeHyphaService:
                 })
                 await self.zarr_artifact_manager.connect_server(zarr_server)
                 logger.info("Zarr artifact manager initialized successfully")
-                
+
                 # Pass the zarr artifact manager to the squid controller
                 self.squidController.zarr_artifact_manager = self.zarr_artifact_manager
                 logger.info("Zarr artifact manager passed to squid controller")
@@ -2066,7 +2063,7 @@ class MicroscopeHyphaService:
         except Exception as e:
             logger.warning(f"Failed to initialize zarr artifact manager: {e}")
             self.zarr_artifact_manager = None
-        
+
         if self.is_simulation:
             await self.start_hypha_service(self.server, service_id=self.service_id)
             datastore_id = f'data-store-simu-{self.service_id}'
@@ -2079,7 +2076,7 @@ class MicroscopeHyphaService:
             # Shorten chatbot service ID to avoid OpenAI API limits
             short_service_id = self.service_id[:20] if len(self.service_id) > 20 else self.service_id
             chatbot_id = f"sq-cb-real-{short_service_id}"
-        
+
         self.datastore = HyphaDataStore()
         try:
             await self.datastore.setup(remote_server, service_id=datastore_id)
@@ -2089,7 +2086,7 @@ class MicroscopeHyphaService:
                 await self.datastore.setup(remote_server, service_id=datastore_id, config=config)
             else:
                 raise e
-    
+
         chatbot_server_url = "https://chat.bioimage.io"
         try:
             chatbot_token= os.environ.get("WORKSPACE_TOKEN_CHATBOT")
@@ -2104,19 +2101,19 @@ class MicroscopeHyphaService:
 
     async def initialize_zarr_manager(self, camera):
         from .hypha_tools.artifact_manager.artifact_manager import ZarrImageManager
-        
+
         camera.zarr_image_manager = ZarrImageManager()
-        
+
         init_success = await camera.zarr_image_manager.connect(
             server_url=self.server_url
         )
-        
+
         if not init_success:
             raise RuntimeError("Failed to initialize ZarrImageManager")
-        
+
         if hasattr(camera, 'scale_level'):
             camera.zarr_image_manager.scale_key = f'scale{camera.scale_level}'
-        
+
         logger.info("ZarrImageManager initialized successfully for health check")
         return camera.zarr_image_manager
 
@@ -2125,20 +2122,20 @@ class MicroscopeHyphaService:
         if self.frame_acquisition_running:
             logger.info("Video buffering already running")
             return
-            
+
         self.frame_acquisition_running = True
         self.buffering_start_time = time.time()
         self.frame_acquisition_task = asyncio.create_task(self._background_frame_acquisition())
         logger.info("Video buffering started")
-        
+
     async def stop_video_buffering(self):
         """Stop the background frame acquisition task"""
         if not self.frame_acquisition_running:
             logger.info("Video buffering not running")
             return
-            
+
         self.frame_acquisition_running = False
-        
+
         # Stop idle monitoring task
         if self.video_idle_check_task and not self.video_idle_check_task.done():
             self.video_idle_check_task.cancel()
@@ -2147,7 +2144,7 @@ class MicroscopeHyphaService:
             except asyncio.CancelledError:
                 pass
             self.video_idle_check_task = None
-        
+
         # Stop frame acquisition task
         if self.frame_acquisition_task:
             try:
@@ -2159,34 +2156,34 @@ class MicroscopeHyphaService:
                     await self.frame_acquisition_task
                 except asyncio.CancelledError:
                     pass
-        
+
         self.video_buffer.clear()
         self.last_video_request_time = None
         self.buffering_start_time = None
         logger.info("Video buffering stopped")
-        
+
     async def _background_frame_acquisition(self):
         """Background task that continuously acquires frames and stores them in buffer"""
         logger.info("Background frame acquisition started")
         consecutive_failures = 0
-        
+
         while self.frame_acquisition_running:
             try:
                 # Control frame acquisition rate with adaptive timing
                 start_time = time.time()
-                
+
                 # Reduce frequency if camera is struggling
                 if consecutive_failures > 3:
                     current_fps = max(1, self.buffer_fps / 2)  # Halve the FPS if struggling
                     logger.warning(f"Camera struggling, reducing acquisition rate to {current_fps} FPS")
                 else:
                     current_fps = self.buffer_fps
-                
+
                 # Get current parameters
                 channel = self.squidController.current_channel
                 param_name = self.channel_param_map.get(channel)
                 intensity, exposure_time = 10, 10  # Default values
-                
+
                 if param_name:
                     stored_params = getattr(self, param_name, None)
                     if stored_params and isinstance(stored_params, list) and len(stored_params) == 2:
@@ -2196,7 +2193,7 @@ class MicroscopeHyphaService:
                 try:
                     # LATENCY MEASUREMENT: Start timing background frame acquisition
                     T_cam_start = time.time()
-                    
+
                     if self.is_simulation:
                         # Use existing simulation method for video buffering
                         raw_frame = await self.squidController.get_camera_frame_simulation(
@@ -2207,16 +2204,16 @@ class MicroscopeHyphaService:
                         raw_frame = await asyncio.get_event_loop().run_in_executor(
                             None, self.squidController.get_camera_frame, channel, intensity, exposure_time
                         )
-                    
+
                     # LATENCY MEASUREMENT: End timing background frame acquisition
                     T_cam_read_complete = time.time()
-                    
+
                     # Calculate frame acquisition time and frame size (only if frame is valid)
                     if raw_frame is not None:
                         frame_acquisition_time_ms = (T_cam_read_complete - T_cam_start) * 1000
                         frame_size_bytes = raw_frame.nbytes
                         frame_size_kb = frame_size_bytes / 1024
-                        
+
                         # Log timing and size information for latency analysis (less frequent to avoid spam)
                         if consecutive_failures == 0:  # Only log on successful acquisitions
                             logger.info(f"LATENCY_MEASUREMENT: Background frame acquisition took {frame_acquisition_time_ms:.2f}ms, "
@@ -2226,7 +2223,7 @@ class MicroscopeHyphaService:
                         frame_acquisition_time_ms = (T_cam_read_complete - T_cam_start) * 1000
                         logger.info(f"LATENCY_MEASUREMENT: Background frame acquisition failed after {frame_acquisition_time_ms:.2f}ms, "
                                    f"exposure_time: {exposure_time}ms, channel: {channel}, intensity: {intensity}")
-                    
+
                     # Check if frame acquisition was successful
                     if raw_frame is None:
                         consecutive_failures += 1
@@ -2236,10 +2233,10 @@ class MicroscopeHyphaService:
                             self.buffer_frame_width, self.buffer_frame_height, "Camera Overloaded"
                         )
                         compressed_placeholder = self._encode_frame_jpeg(placeholder_frame, quality=85)
-                        
+
                         # Calculate gray level statistics for placeholder frame
                         placeholder_gray_stats = self._calculate_gray_level_statistics(placeholder_frame)
-                        
+
                         # Create placeholder metadata
                         placeholder_metadata = {
                             'stage_position': {'x_mm': None, 'y_mm': None, 'z_mm': None},
@@ -2251,35 +2248,35 @@ class MicroscopeHyphaService:
                             'error': 'Camera Overloaded'
                         }
                         self.video_buffer.put_frame(compressed_placeholder, placeholder_metadata)
-                        
+
                         # If too many failures, wait longer before next attempt
                         if consecutive_failures >= 5:
                             await asyncio.sleep(2.0)  # Wait 2 seconds before retry
                             consecutive_failures = max(0, consecutive_failures - 2)  # Gradually recover
-                            
+
                     else:
                         # Process frame normally and reset failure counter
                         consecutive_failures = 0
-                        
+
                         # LATENCY MEASUREMENT: Start timing image processing
                         T_process_start = time.time()
-                        
+
                         processed_frame, gray_level_stats = self._process_raw_frame(
                             raw_frame, frame_width=self.buffer_frame_width, frame_height=self.buffer_frame_height
                         )
-                        
+
                         # LATENCY MEASUREMENT: End timing image processing
                         T_process_complete = time.time()
-                        
+
                         # LATENCY MEASUREMENT: Start timing JPEG compression
                         T_compress_start = time.time()
-                        
+
                         # Compress frame for efficient storage and transmission
                         compressed_frame = self._encode_frame_jpeg(processed_frame, quality=85)
-                        
+
                         # LATENCY MEASUREMENT: End timing JPEG compression
                         T_compress_complete = time.time()
-                        
+
                         # METADATA CAPTURE: Get current stage position and create metadata
                         frame_timestamp = time.time()
                         try:
@@ -2316,22 +2313,22 @@ class MicroscopeHyphaService:
                                 'exposure_time_ms': exposure_time,
                                 'gray_level_stats': gray_level_stats
                             }
-                        
+
                         # Calculate timing statistics
                         processing_time_ms = (T_process_complete - T_process_start) * 1000
                         compression_time_ms = (T_compress_complete - T_compress_start) * 1000
                         total_time_ms = (T_compress_complete - T_cam_start) * 1000
-                        
+
                         # Log comprehensive performance statistics
                         logger.info(f"LATENCY_PROCESSING: Background frame processing took {processing_time_ms:.2f}ms, "
                                    f"compression took {compression_time_ms:.2f}ms, "
                                    f"total_time={total_time_ms:.2f}ms, "
                                    f"compression_ratio={compressed_frame['compression_ratio']:.1f}x, "
                                    f"size: {compressed_frame['original_size']//1024}KB -> {compressed_frame['size_bytes']//1024}KB")
-                        
+
                         # Store compressed frame with metadata in buffer
                         self.video_buffer.put_frame(compressed_frame, frame_metadata)
-                    
+
                 except Exception as e:
                     consecutive_failures += 1
                     logger.error(f"Error in background frame acquisition: {e}")
@@ -2340,10 +2337,10 @@ class MicroscopeHyphaService:
                         self.buffer_frame_width, self.buffer_frame_height, f"Acquisition Error: {str(e)}"
                     )
                     compressed_placeholder = self._encode_frame_jpeg(placeholder_frame, quality=85)
-                    
+
                     # Calculate gray level statistics for placeholder frame
                     placeholder_gray_stats = self._calculate_gray_level_statistics(placeholder_frame)
-                    
+
                     # Create placeholder metadata for error case
                     error_metadata = {
                         'stage_position': {'x_mm': None, 'y_mm': None, 'z_mm': None},
@@ -2355,21 +2352,21 @@ class MicroscopeHyphaService:
                         'error': f"Acquisition Error: {str(e)}"
                     }
                     self.video_buffer.put_frame(compressed_placeholder, error_metadata)
-                
+
                 # Control frame rate with adaptive timing
                 elapsed = time.time() - start_time
                 sleep_time = max(0.1, (1.0 / current_fps) - elapsed)  # Minimum 100ms between attempts
                 if sleep_time > 0:
                     await asyncio.sleep(sleep_time)
-                    
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Unexpected error in background frame acquisition: {e}")
                 await asyncio.sleep(1.0)  # Wait 1 second on unexpected error
-                
+
         logger.info("Background frame acquisition stopped")
-        
+
     def _process_raw_frame(self, raw_frame, frame_width=750, frame_height=750):
         """Process raw frame for video streaming - OPTIMIZED"""
         try:
@@ -2379,25 +2376,25 @@ class MicroscopeHyphaService:
             height, width = raw_frame.shape[:2]  # Support both grayscale and color images
             start_x = width // 2 - crop_width // 2
             start_y = height // 2 - crop_height // 2
-            
+
             # Ensure crop coordinates are within bounds
             start_x = max(0, start_x)
             start_y = max(0, start_y)
             end_x = min(width, start_x + crop_width)
             end_y = min(height, start_y + crop_height)
-            
+
             cropped_frame = raw_frame[start_y:end_y, start_x:end_x]
-            
+
             # Now resize the cropped frame to target dimensions
             if cropped_frame.shape[:2] != (frame_height, frame_width):
                 # Use INTER_AREA for downsampling (faster than INTER_LINEAR)
                 processed_frame = cv2.resize(cropped_frame, (frame_width, frame_height), interpolation=cv2.INTER_AREA)
             else:
                 processed_frame = cropped_frame.copy()
-            
+
             # Calculate gray level statistics on original frame BEFORE min/max adjustments
             gray_level_stats = self._calculate_gray_level_statistics(processed_frame)
-            
+
             # OPTIMIZATION 2: Robust contrast adjustment (fixed)
             min_val = self.video_contrast_min
             max_val = self.video_contrast_max
@@ -2407,12 +2404,12 @@ class MicroscopeHyphaService:
                     max_val = 65535
                 else:
                     max_val = 255
-            
+
             # OPTIMIZATION 3: Improved contrast scaling with proper range handling
             if max_val > min_val:
                 # Clip values to the specified range
                 processed_frame = np.clip(processed_frame, min_val, max_val)
-                
+
                 # Scale to 0-255 range using float for precision, then convert to uint8
                 if max_val > min_val:
                     # Use float32 for accurate scaling, then convert to uint8
@@ -2424,33 +2421,33 @@ class MicroscopeHyphaService:
                 # Edge case: max_val <= min_val, return mid-gray
                 height, width = processed_frame.shape[:2]
                 processed_frame = np.full((height, width), 127, dtype=np.uint8)
-            
+
             # Ensure we have uint8 output
             if processed_frame.dtype != np.uint8:
                 processed_frame = processed_frame.astype(np.uint8)
-            
+
             # OPTIMIZATION 4: Fast color space conversion
             if len(processed_frame.shape) == 2:
                 # Direct array manipulation is faster than cv2.cvtColor for grayscale->RGB
                 processed_frame = np.stack([processed_frame] * 3, axis=2)
             elif processed_frame.shape[2] == 1:
                 processed_frame = np.repeat(processed_frame, 3, axis=2)
-            
+
             return processed_frame, gray_level_stats
-            
+
         except Exception as e:
             logger.error(f"Error processing frame: {e}")
             placeholder_frame = self._create_placeholder_frame(frame_width, frame_height, f"Processing Error: {str(e)}")
             placeholder_stats = self._calculate_gray_level_statistics(placeholder_frame)
             return placeholder_frame, placeholder_stats
-            
+
     def _create_placeholder_frame(self, width, height, message="No Frame Available"):
         """Create a placeholder frame with error message"""
         placeholder_img = np.zeros((height, width, 3), dtype=np.uint8)
-        cv2.putText(placeholder_img, message, (10, height//2), 
+        cv2.putText(placeholder_img, message, (10, height//2),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (128, 128, 128), 2)
         return placeholder_img
-    
+
     def _decode_frame_jpeg(self, frame_data):
         """
         Decode compressed frame data back to numpy array
@@ -2476,7 +2473,7 @@ class MicroscopeHyphaService:
                 return np.frombuffer(frame_data['data'], dtype=np.uint8).reshape((height, width, 3))
         except Exception as e:
             logger.error(f"Error decoding frame: {e}")
-        
+
         # Return placeholder on error
         width = frame_data.get('width', self.buffer_frame_width)
         height = frame_data.get('height', self.buffer_frame_height)
@@ -2486,21 +2483,21 @@ class MicroscopeHyphaService:
         """Calculate comprehensive gray level statistics for microscope analysis"""
         try:
             import numpy as np
-            
+
             # Convert RGB to grayscale for analysis (standard luminance formula)
             if len(rgb_frame.shape) == 3:
                 # RGB to grayscale: Y = 0.299*R + 0.587*G + 0.114*B
                 gray_frame = np.dot(rgb_frame[...,:3], [0.299, 0.587, 0.114])
             else:
                 gray_frame = rgb_frame
-            
+
             # Ensure we have a valid grayscale image
             if gray_frame.size == 0:
                 return None
-                
+
             # Convert to 0-100% range for analysis
             gray_normalized = (gray_frame / 255.0) * 100.0
-            
+
             # Calculate comprehensive statistics
             stats = {
                 'mean_percent': float(np.mean(gray_normalized)),
@@ -2520,25 +2517,25 @@ class MicroscopeHyphaService:
                     'bin_edges': []
                 }
             }
-            
+
             # Calculate histogram (20 bins from 0-100%)
             hist_counts, bin_edges = np.histogram(gray_normalized, bins=20, range=(0, 100))
             stats['histogram']['counts'] = hist_counts.tolist()
             stats['histogram']['bin_edges'] = bin_edges.tolist()
-            
+
             # Additional microscope-specific metrics
             stats['dynamic_range_percent'] = stats['max_percent'] - stats['min_percent']
             stats['contrast_ratio'] = stats['std_percent'] / stats['mean_percent'] if stats['mean_percent'] > 0 else 0
-            
+
             # Exposure quality indicators
             stats['exposure_quality'] = {
                 'underexposed_pixels_percent': float(np.sum(gray_normalized < 5) / gray_normalized.size * 100),
                 'overexposed_pixels_percent': float(np.sum(gray_normalized > 95) / gray_normalized.size * 100),
                 'well_exposed_pixels_percent': float(np.sum((gray_normalized >= 5) & (gray_normalized <= 95)) / gray_normalized.size * 100)
             }
-            
+
             return stats
-            
+
         except Exception as e:
             logger.warning(f"Error calculating gray level statistics: {e}")
             return None
@@ -2565,19 +2562,19 @@ class MicroscopeHyphaService:
                 bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
             else:
                 bgr_frame = frame
-            
+
             # Encode to JPEG with specified quality
             encode_params = [cv2.IMWRITE_JPEG_QUALITY, quality]
             success, encoded_img = cv2.imencode('.jpg', bgr_frame, encode_params)
-            
+
             if not success:
                 raise ValueError("Failed to encode frame to JPEG")
-            
+
             # Calculate compression statistics
             original_size = frame.nbytes
             compressed_size = len(encoded_img)
             compression_ratio = original_size / compressed_size if compressed_size > 0 else 1.0
-            
+
             return {
                 'format': 'jpeg',
                 'data': encoded_img.tobytes(),
@@ -2585,7 +2582,7 @@ class MicroscopeHyphaService:
                 'compression_ratio': compression_ratio,
                 'original_size': original_size
             }
-            
+
         except Exception as e:
             logger.error(f"Error encoding frame to JPEG: {e}")
             # Return uncompressed as fallback
@@ -2596,34 +2593,34 @@ class MicroscopeHyphaService:
         while self.frame_acquisition_running:
             try:
                 await asyncio.sleep(1.0)  # Check every 1 second instead of 500ms
-                
+
                 # Don't stop video buffering during scanning
                 if self.scanning_in_progress:
                     continue
-                
+
                 if self.last_video_request_time is None:
                     continue
-                    
+
                 # Check if we've been buffering for minimum duration
                 if self.buffering_start_time is not None:
                     buffering_duration = time.time() - self.buffering_start_time
                     if buffering_duration < self.min_buffering_duration:
                         continue  # Don't stop yet, maintain minimum buffering time
-                
+
                 # Check if video has been idle too long
                 idle_time = time.time() - self.last_video_request_time
                 if idle_time > self.video_idle_timeout:
                     logger.info(f"Video idle for {idle_time:.1f}s (timeout: {self.video_idle_timeout}s), stopping buffering")
                     await self.stop_video_buffering()
                     break
-            
-                
+
+
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Error in video idle monitoring: {e}")
                 await asyncio.sleep(2.0)  # Longer sleep on error
-                
+
         logger.info("Video idle monitoring stopped")
 
     @schema_function(skip_self=True)
@@ -2636,7 +2633,7 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             well_info = self.squidController.get_well_from_position(wellplate_type)
             logger.info(f'Current well location: {well_info["well_id"]} ({well_info["position_status"]})')
             return well_info
@@ -2651,35 +2648,35 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             # Validate frame size parameters
             frame_width = max(64, min(4096, frame_width))  # Clamp between 64-4096 pixels
             frame_height = max(64, min(4096, frame_height))  # Clamp between 64-4096 pixels
-            
+
             old_width = self.buffer_frame_width
             old_height = self.buffer_frame_height
-            
+
             # Update buffer frame size
             self.buffer_frame_width = frame_width
             self.buffer_frame_height = frame_height
-            
+
             # If buffer is running and size changed, restart it to use new size
             restart_needed = (frame_width != old_width or frame_height != old_height) and self.frame_acquisition_running
-            
+
             if restart_needed:
                 logger.info(f"Buffer frame size changed from {old_width}x{old_height} to {frame_width}x{frame_height}, restarting buffer")
                 # Clear existing buffer to remove old-sized frames
                 self.video_buffer.clear()
                 # Note: The frame acquisition loop will automatically use the new size for subsequent frames
-            
+
             # Update WebRTC video track if it exists
             if hasattr(self, 'video_track') and self.video_track:
                 self.video_track.frame_width = frame_width
                 self.video_track.frame_height = frame_height
                 logger.info(f"Updated WebRTC video track frame size to {frame_width}x{frame_height}")
-            
+
             logger.info(f"Video buffer frame size configured: {frame_width}x{frame_height} (was {old_width}x{old_height})")
-            
+
             return {
                 "success": True,
                 "message": f"Video buffer frame size configured to {frame_width}x{frame_height}",
@@ -2702,12 +2699,12 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             try:
                 from .control.config import get_microscope_configuration_data
             except ImportError:
                 from .control.config import get_microscope_configuration_data
-            
+
             # Call the configuration function from config.py
             result = get_microscope_configuration_data(
                 config_section=config_section,
@@ -2716,11 +2713,11 @@ class MicroscopeHyphaService:
                 is_local=self.is_local,
                 squid_controller=self.squidController
             )
-            
+
             logger.info(f"Retrieved microscope configuration for section: {config_section}")
-            
+
             return result
-            
+
         except Exception as e:
             logger.error(f"Failed to get microscope configuration: {e}")
             raise e
@@ -2728,59 +2725,63 @@ class MicroscopeHyphaService:
     @schema_function(skip_self=True)
     async def get_canvas_chunk(self, x_mm: float = Field(..., description="X coordinate of the stage location in millimeters"), y_mm: float = Field(..., description="Y coordinate of the stage location in millimeters"), scale_level: int = Field(1, description="Scale level for the chunk (0-2, where 0 is highest resolution)"), context=None):
         """Get a canvas chunk based on microscope stage location (available only in simulation mode when not running locally)"""
-        
+
         # Check if this function is available in current mode
         if self.is_local:
             raise Exception("get_canvas_chunk is not available in local mode")
-        
+
         if not self.is_simulation:
             raise Exception("get_canvas_chunk is only available in simulation mode")
-        
+
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             logger.info(f"Getting canvas chunk at position: x={x_mm}mm, y={y_mm}mm, scale_level={scale_level}")
-            
+
             # Initialize ZarrImageManager if not already initialized
             if not hasattr(self, 'zarr_image_manager') or self.zarr_image_manager is None:
                 try:
-                    from .hypha_tools.artifact_manager.artifact_manager import ZarrImageManager
+                    from .hypha_tools.artifact_manager.artifact_manager import (
+                        ZarrImageManager,
+                    )
                 except ImportError:
-                    from .hypha_tools.artifact_manager.artifact_manager import ZarrImageManager
+                    from .hypha_tools.artifact_manager.artifact_manager import (
+                        ZarrImageManager,
+                    )
                 self.zarr_image_manager = ZarrImageManager()
                 success = await self.zarr_image_manager.connect(server_url=self.server_url)
                 if not success:
                     raise RuntimeError("Failed to connect to ZarrImageManager")
                 logger.info("ZarrImageManager initialized for get_canvas_chunk")
-            
+
             # Use the current simulated sample data alias
             dataset_id = self.get_simulated_sample_data_alias()
             channel_name = 'BF_LED_matrix_full'  # Always use brightfield channel
-            
+
             # Use parameters similar to the simulation camera
             pixel_size_um = 0.333  # Default pixel size used in simulation
-            
+
             # Get scale factor based on scale level
             scale_factors = {0: 1, 1: 4, 2: 16}  # scale0=1x, scale1=1/4x, scale2=1/16x
             scale_factor = scale_factors.get(scale_level, 4)  # Default to scale1
-            
+
             # Convert microscope coordinates (mm) to pixel coordinates
             pixel_x = int((x_mm / pixel_size_um) * 1000 / scale_factor)
             pixel_y = int((y_mm / pixel_size_um) * 1000 / scale_factor)
-            
+
             # Convert pixel coordinates to chunk coordinates
             chunk_size = 256  # Default chunk size used by ZarrImageManager
             chunk_x = pixel_x // chunk_size
             chunk_y = pixel_y // chunk_size
-            
+
             logger.info(f"Converted coordinates: x={x_mm}mm, y={y_mm}mm to pixel coords: x={pixel_x}, y={pixel_y}, chunk coords: x={chunk_x}, y={chunk_y} (scale{scale_level})")
-            
+
             # Get the single chunk data from ZarrImageManager
             region_data = await self.zarr_image_manager.get_region_np_data(
-                dataset_id, 
-                channel_name, 
+                dataset_id,
+                channel_name,
                 scale_level,
                 chunk_x,  # Chunk X coordinate
                 chunk_y,  # Chunk Y coordinate
@@ -2788,10 +2789,10 @@ class MicroscopeHyphaService:
                 width=chunk_size,
                 height=chunk_size
             )
-            
+
             if region_data is None:
                 raise Exception("Failed to retrieve chunk data from Zarr storage")
-            
+
             # Convert numpy array to base64 encoded PNG for transmission
             try:
                 # Ensure data is in uint8 format
@@ -2805,13 +2806,13 @@ class MicroscopeHyphaService:
                     else:
                         # For other integer types, scale appropriately
                         region_data = (region_data / region_data.max() * 255).astype(np.uint8) if region_data.max() > 0 else region_data.astype(np.uint8)
-                        
+
                 # Convert to PIL Image and then to base64
                 pil_image = Image.fromarray(region_data)
                 buffer = io.BytesIO()
                 pil_image.save(buffer, format="PNG")
                 img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-                
+
                 return {
                     "data": img_base64,
                     "format": "png_base64",
@@ -2819,11 +2820,11 @@ class MicroscopeHyphaService:
                     "stage_location": {"x_mm": x_mm, "y_mm": y_mm},
                     "chunk_coordinates": {"chunk_x": chunk_x, "chunk_y": chunk_y}
                 }
-                
+
             except Exception as e:
                 logger.error(f"Error converting chunk data to base64: {e}")
                 raise e
-                
+
         except Exception as e:
             logger.error(f"Error in get_canvas_chunk: {e}")
             import traceback
@@ -2845,12 +2846,12 @@ class MicroscopeHyphaService:
             
         Returns:
             dict: Status and current velocity settings
-        """        
+        """
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             return self.squidController.set_stage_velocity(
                 velocity_x_mm_per_s=velocity_x_mm_per_s,
                 velocity_y_mm_per_s=velocity_y_mm_per_s
@@ -2859,9 +2860,9 @@ class MicroscopeHyphaService:
             logger.error(f"Error setting stage velocity: {e}")
             raise e
 
-    
+
     @schema_function(skip_self=True)
-    async def upload_zarr_dataset(self, 
+    async def upload_zarr_dataset(self,
                                 experiment_name: str = Field(..., description="Name of the experiment to upload (this becomes the dataset name)"),
                                 description: str = Field("", description="Description of the dataset"),
                                 include_acquisition_settings: bool = Field(True, description="Whether to include current acquisition settings as metadata"),
@@ -2880,46 +2881,46 @@ class MicroscopeHyphaService:
         Returns:
             dict: Upload result information with details about uploaded well canvases
         """
-        
+
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             # Check if experiment manager is initialized
             if not hasattr(self.squidController, 'experiment_manager') or self.squidController.experiment_manager is None:
                 raise Exception("Experiment manager not initialized. Start a scanning operation first to create data.")
-            
+
             # Check if zarr artifact manager is available
             if self.zarr_artifact_manager is None:
                 raise Exception("Zarr artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
-            
+
             # Get experiment information
             experiment_info = self.squidController.experiment_manager.get_experiment_info(experiment_name)
-            
+
             if not experiment_info.get("well_canvases"):
                 raise Exception(f"No well canvases found in experiment '{experiment_name}'. Start a scanning operation first to create data.")
-            
+
 
             logger.info(f"Uploading experiment '{experiment_name}' with {len(experiment_info['well_canvases'])} well canvases to single dataset")
-            
+
             # Prepare acquisition settings if requested
             acquisition_settings = None
             if include_acquisition_settings:
                 # Get settings from the first available well canvas
                 first_well = experiment_info['well_canvases'][0]
                 well_path = Path(first_well['path'])
-                
+
                 # Try to get canvas info from the first well
                 try:
                     # Create a temporary canvas instance to get export info
                     try:
+                        from .control.config import CONFIG, ChannelMapper
                         from .stitching.zarr_canvas import WellZarrCanvas
-                        from .control.config import ChannelMapper, CONFIG
                     except ImportError:
+                        from .control.config import CONFIG, ChannelMapper
                         from .stitching.zarr_canvas import WellZarrCanvas
-                        from .control.config import ChannelMapper, CONFIG
-                    
+
                     # Parse well info from path (e.g., "well_A1_96.zarr" -> A, 1, 96)
                     well_name = well_path.stem  # "well_A1_96"
                     if well_name.startswith("well_"):
@@ -2929,7 +2930,7 @@ class MicroscopeHyphaService:
                             if len(well_part) >= 2:
                                 well_row = well_part[0]
                                 well_column = int(well_part[1:])
-                                
+
                                 # Create temporary canvas to get export info
                                 temp_canvas = WellZarrCanvas(
                                     well_row=well_row,
@@ -2941,11 +2942,11 @@ class MicroscopeHyphaService:
                                     channels=ChannelMapper.get_all_human_names(),
                                     rotation_angle_deg=CONFIG.STITCHING_ROTATION_ANGLE_DEG
                                 )
-                                
+
                                 # Get export info from the temporary canvas
                                 export_info = temp_canvas.get_export_info()
                                 temp_canvas.close()
-                                
+
                                 acquisition_settings = {
                                     "pixel_size_xy_um": export_info.get("canvas_dimensions", {}).get("pixel_size_um"),
                                     "channels": export_info.get("channels", []),
@@ -2964,27 +2965,27 @@ class MicroscopeHyphaService:
                         "total_wells": len(experiment_info['well_canvases']),
                         "total_size_mb": total_size_mb
                     }
-            
+
             # Prepare all well canvases for upload to single dataset
             zarr_files_info = []
             well_info_list = []
-            
+
             for well_info in experiment_info['well_canvases']:
                 well_name = well_info['name']
                 well_path = Path(well_info['path'])
                 well_size_mb = well_info['size_mb']
-                
+
                 logger.info(f"Preparing well canvas: {well_name} ({well_size_mb:.2f} MB)")
-                
+
                 try:
                     # Create a temporary canvas instance to export the well
                     try:
+                        from .control.config import CONFIG, ChannelMapper
                         from .stitching.zarr_canvas import WellZarrCanvas
-                        from .control.config import ChannelMapper, CONFIG
                     except ImportError:
+                        from .control.config import CONFIG, ChannelMapper
                         from .stitching.zarr_canvas import WellZarrCanvas
-                        from .control.config import ChannelMapper, CONFIG
-                    
+
                     # Parse well info from name (e.g., "well_A1_96" -> A, 1, 96)
                     if well_name.startswith("well_"):
                         well_info_part = well_name[5:]  # "A1_96"
@@ -2993,7 +2994,7 @@ class MicroscopeHyphaService:
                             if len(well_part) >= 2:
                                 well_row = well_part[0]
                                 well_column = int(well_part[1:])
-                                
+
                                 # Create temporary canvas for export
                                 temp_canvas = WellZarrCanvas(
                                     well_row=well_row,
@@ -3005,18 +3006,18 @@ class MicroscopeHyphaService:
                                     channels=ChannelMapper.get_all_human_names(),
                                     rotation_angle_deg=CONFIG.STITCHING_ROTATION_ANGLE_DEG
                                 )
-                                
+
                                 # Export the well canvas as zip using asyncio.to_thread to avoid blocking
                                 well_zip_content = await asyncio.to_thread(temp_canvas.export_as_zip)
                                 temp_canvas.close()
-                                
+
                                 # Add to files info for batch upload
                                 zarr_files_info.append({
                                     'name': well_name,
                                     'content': well_zip_content,
                                     'size_mb': well_size_mb
                                 })
-                                
+
                                 well_info_list.append({
                                     "well_name": well_name,
                                     "well_row": well_row,
@@ -3024,31 +3025,31 @@ class MicroscopeHyphaService:
                                     "wellplate_type": wellplate_type,
                                     "size_mb": well_size_mb
                                 })
-                                
+
                                 logger.info(f"Successfully prepared well {well_name}")
-                                
+
                             else:
                                 logger.warning(f"Could not parse well name: {well_name}")
                         else:
                             logger.warning(f"Could not parse well name: {well_name}")
                     else:
                         logger.warning(f"Unexpected well name format: {well_name}")
-                        
+
                 except Exception as e:
                     logger.error(f"Failed to prepare well {well_name}: {e}")
                     # Continue with other wells
                     continue
-            
+
             if not zarr_files_info:
                 raise Exception("No well canvases were successfully prepared for upload")
-            
+
             # Upload all well canvases to a single dataset
             logger.info(f"Uploading {len(zarr_files_info)} well canvases to single dataset...")
-            
+
             # Add well information to acquisition settings
             if acquisition_settings:
                 acquisition_settings["wells"] = well_info_list
-            
+
             upload_result = await self.zarr_artifact_manager.upload_multiple_zarr_files_to_dataset(
                 microscope_service_id=self.service_id,
                 experiment_id=experiment_name,
@@ -3056,9 +3057,9 @@ class MicroscopeHyphaService:
                 acquisition_settings=acquisition_settings,
                 description=description or f"Experiment {experiment_name} with {len(zarr_files_info)} well canvases"
             )
-            
+
             logger.info(f"Successfully uploaded experiment '{experiment_name}' to single dataset")
-            
+
             return {
                 "success": True,
                 "experiment_name": experiment_name,
@@ -3070,11 +3071,11 @@ class MicroscopeHyphaService:
                 "description": description or f"Experiment {experiment_name} with {len(well_info_list)} well canvases",
                 "upload_result": upload_result
             }
-            
+
         except Exception as e:
             logger.error(f"Error uploading experiment dataset: {e}")
             raise e
-    
+
     @schema_function(skip_self=True)
     async def list_microscope_galleries(self, microscope_service_id: str = Field(..., description="Microscope service ID to list galleries for"), context=None):
         """
@@ -3086,22 +3087,22 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             if self.zarr_artifact_manager is None:
                 raise Exception("Zarr artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
 
             # List all collections in the agent-lens workspace (top-level)
             all_collections = await self.zarr_artifact_manager.navigate_collections(parent_id=None)
             galleries = []
-            
+
             # Check if microscope service ID ends with a number
             import re
             number_match = re.search(r'-(\d+)$', microscope_service_id)
-            
+
             for coll in all_collections:
                 manifest = coll.get('manifest', {})
                 alias = coll.get('alias', '')
-                
+
                 # Standard gallery
                 if alias == f"agent-lens/microscope-gallery-{microscope_service_id}":
                     galleries.append(coll)
@@ -3115,7 +3116,7 @@ class MicroscopeHyphaService:
                 # Fallback: check manifest field
                 elif manifest.get('microscope_service_id') == microscope_service_id:
                     galleries.append(coll)
-                    
+
             return {
                 "success": True,
                 "microscope_service_id": microscope_service_id,
@@ -3137,7 +3138,7 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             if self.zarr_artifact_manager is None:
                 raise Exception("Zarr artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
 
@@ -3174,7 +3175,7 @@ class MicroscopeHyphaService:
         return self.set_stage_velocity(config.velocity_x_mm_per_s, config.velocity_y_mm_per_s, context)
 
     @schema_function(skip_self=True)
-    async def normal_scan_with_stitching(self, start_x_mm: float = Field(20, description="Starting X position in millimeters"), 
+    async def normal_scan_with_stitching(self, start_x_mm: float = Field(20, description="Starting X position in millimeters"),
                                        start_y_mm: float = Field(20, description="Starting Y position in millimeters"),
                                        Nx: int = Field(5, description="Number of positions in X direction"),
                                        Ny: int = Field(5, description="Number of positions in Y direction"),
@@ -3220,13 +3221,13 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             # Set default illumination settings if not provided
             if illumination_settings is None:
                 illumination_settings = [{'channel': 'BF LED matrix full', 'intensity': 50, 'exposure_time': 100}]
-            
+
             logger.info(f"Starting normal scan with stitching: {Nx}x{Ny} positions from ({start_x_mm}, {start_y_mm})")
-            
+
             # Check if video buffering is active and stop it during scanning
             video_buffering_was_active = self.frame_acquisition_running
             if video_buffering_was_active:
@@ -3235,10 +3236,10 @@ class MicroscopeHyphaService:
                 # Wait additional time to ensure camera fully settles after stopping video buffering
                 logger.info("Waiting for camera to settle after stopping video buffering...")
                 await asyncio.sleep(0.5)
-            
+
             # Set scanning flag to prevent automatic video buffering restart during scan
             self.scanning_in_progress = True
-            
+
             # Perform the normal scan
             await self.squidController.normal_scan_with_stitching(
                 start_x_mm=start_x_mm,
@@ -3257,7 +3258,7 @@ class MicroscopeHyphaService:
                 wellplate_type=wellplate_type,
                 well_padding_mm=well_padding_mm
             )
-            
+
             # Upload the experiment if uploading is enabled
             upload_result = None
             if uploading:
@@ -3272,10 +3273,10 @@ class MicroscopeHyphaService:
                 except Exception as e:
                     logger.error(f"Failed to upload experiment after normal scan: {e}")
                     # Don't raise the exception - continue with response
-            
+
             return {
                 "success": True,
-                "message": f"Normal scan with stitching completed successfully",
+                "message": "Normal scan with stitching completed successfully",
                 "scan_parameters": {
                     "start_position": {"x_mm": start_x_mm, "y_mm": start_y_mm},
                     "grid_size": {"nx": Nx, "ny": Ny},
@@ -3293,8 +3294,8 @@ class MicroscopeHyphaService:
             # Always reset the scanning flag, regardless of success or failure
             self.scanning_in_progress = False
             logger.info("Normal scanning completed, video buffering auto-start is now re-enabled")
-    
-    
+
+
     @schema_function(skip_self=True)
     def reset_stitching_canvas(self, context=None):
         """
@@ -3309,15 +3310,15 @@ class MicroscopeHyphaService:
             if hasattr(self.squidController, 'zarr_canvas') and self.squidController.zarr_canvas is not None:
                 # Close the existing canvas
                 self.squidController.zarr_canvas.close()
-                
+
                 # Delete the zarr directory
                 import shutil
                 if self.squidController.zarr_canvas.zarr_path.exists():
                     shutil.rmtree(self.squidController.zarr_canvas.zarr_path)
-                
+
                 # Clear the reference
                 self.squidController.zarr_canvas = None
-                
+
                 logger.info("Stitching canvas reset successfully")
                 return {
                     "success": True,
@@ -3377,13 +3378,13 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-           
+
             # Validate exposure time early
             if exposure_time > 30:
                 raise ValueError(f"Quick scan exposure time must not exceed 30ms (got {exposure_time}ms)")
-            
+
             logger.info(f"Starting quick scan with stitching: {wellplate_type} well plate, {n_stripes} stripes × {stripe_width_mm}mm, dy={dy_mm}mm, scan_velocity={velocity_scan_mm_per_s}mm/s, fps={fps_target}")
-            
+
             # Check if video buffering is active and stop it during scanning
             video_buffering_was_active = self.frame_acquisition_running
             if video_buffering_was_active:
@@ -3392,13 +3393,13 @@ class MicroscopeHyphaService:
                 # Wait for camera to settle after stopping video buffering
                 logger.info("Waiting for camera to settle after stopping video buffering...")
                 await asyncio.sleep(0.5)
-            
+
             # Set scanning flag to prevent automatic video buffering restart during scan
             self.scanning_in_progress = True
-            
+
             # Record start time for performance metrics
             start_time = time.time()
-            
+
             # Perform the quick scan
             await self.squidController.quick_scan_with_stitching(
                 wellplate_type=wellplate_type,
@@ -3415,10 +3416,10 @@ class MicroscopeHyphaService:
                 experiment_name=experiment_name,
                 well_padding_mm=well_padding_mm
             )
-            
+
             # Calculate performance metrics
             scan_duration = time.time() - start_time
-            
+
             # Calculate well plate dimensions for area estimation
             wellplate_configs = {
                 '6': {'rows': 2, 'cols': 3},
@@ -3427,13 +3428,13 @@ class MicroscopeHyphaService:
                 '96': {'rows': 8, 'cols': 12},
                 '384': {'rows': 16, 'cols': 24}
             }
-            
+
             # Convert wellplate_type to string to avoid ObjectProxy issues
             wellplate_type_str = str(wellplate_type)
             config = wellplate_configs.get(wellplate_type_str, wellplate_configs['96'])
             total_wells = config['rows'] * config['cols']
             total_stripes = total_wells * n_stripes
-            
+
             # Upload the experiment if uploading is enabled
             upload_result = None
             if uploading:
@@ -3448,10 +3449,10 @@ class MicroscopeHyphaService:
                 except Exception as e:
                     logger.error(f"Failed to upload experiment after quick scan: {e}")
                     # Don't raise the exception - continue with response
-            
+
             return {
                 "success": True,
-                "message": f"Quick scan with stitching completed successfully",
+                "message": "Quick scan with stitching completed successfully",
                 "scan_parameters": {
                     "wellplate_type": wellplate_type_str,
                     "wells_scanned": total_wells,
@@ -3480,7 +3481,7 @@ class MicroscopeHyphaService:
                 },
                 "upload_result": upload_result
             }
-            
+
         except ValueError as e:
             logger.error(f"Validation error in quick scan: {e}")
             raise e
@@ -3505,23 +3506,23 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             logger.info("Stop scan and stitching requested")
-            
+
             # Call the controller's stop method
             result = self.squidController.stop_scan_and_stitching()
-            
+
             # Also reset the scanning flag at service level
             if hasattr(self, 'scanning_in_progress'):
                 self.scanning_in_progress = False
                 logger.info("Service scanning flag reset")
-            
+
             return {
                 "success": True,
                 "message": "Scan stop requested - ongoing scans will be interrupted",
                 "controller_response": result
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to stop scan and stitching: {e}")
             raise e
@@ -3565,7 +3566,7 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             # Parse channel_name string into a list
             if isinstance(channel_name, str):
                 # Split by comma and strip whitespace, filter out empty strings
@@ -3575,7 +3576,7 @@ class MicroscopeHyphaService:
                 # If it's already a list, use it as is
                 channel_list = list(channel_name)
                 logger.info(f"Using channel list: {channel_list}")
-            
+
             # Validate channel names
             if not channel_list:
                 return {
@@ -3593,7 +3594,7 @@ class MicroscopeHyphaService:
                         "well_padding_mm": well_padding_mm
                     }
                 }
-            
+
             # Get regions for each channel
             channel_regions = []
             for ch_name in channel_list:
@@ -3608,13 +3609,13 @@ class MicroscopeHyphaService:
                     timepoint=timepoint,
                     well_padding_mm=well_padding_mm
                 )
-                
+
                 if region is None:
                     logger.warning(f"No data available for channel '{ch_name}' at ({center_x_mm:.2f}, {center_y_mm:.2f})")
                     continue
-                    
+
                 channel_regions.append((ch_name, region))
-            
+
             if not channel_regions:
                 return {
                     "success": False,
@@ -3631,7 +3632,7 @@ class MicroscopeHyphaService:
                         "well_padding_mm": well_padding_mm
                     }
                 }
-            
+
             # Merge channels if multiple channels are specified
             if len(channel_regions) == 1:
                 # Single channel - return as grayscale
@@ -3641,7 +3642,7 @@ class MicroscopeHyphaService:
                 # Multiple channels - merge into RGB
                 merged_region = self._merge_channels_to_rgb(channel_regions)
                 is_rgb = True
-            
+
             if merged_region is None:
                 return {
                     "success": False,
@@ -3658,14 +3659,15 @@ class MicroscopeHyphaService:
                         "well_padding_mm": well_padding_mm
                     }
                 }
-            
+
             # Process output format
             if output_format == 'base64':
                 # Convert to base64 encoded PNG
                 import base64
-                from PIL import Image
                 import io
-                
+
+                from PIL import Image
+
                 if merged_region.dtype != np.uint8:
                     if is_rgb:
                         # RGB image - normalize each channel independently
@@ -3678,16 +3680,16 @@ class MicroscopeHyphaService:
                     else:
                         # Grayscale image
                         merged_region = (merged_region / merged_region.max() * 255).astype(np.uint8) if merged_region.max() > 0 else merged_region.astype(np.uint8)
-                
+
                 if is_rgb:
                     img = Image.fromarray(merged_region, 'RGB')
                 else:
                     img = Image.fromarray(merged_region, 'L')
-                
+
                 buffer = io.BytesIO()
                 img.save(buffer, format='PNG')
                 img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-                
+
                 return {
                     "success": True,
                     "data": img_base64,
@@ -3729,11 +3731,11 @@ class MicroscopeHyphaService:
                         "well_padding_mm": well_padding_mm
                     }
                 }
-                
+
         except Exception as e:
             logger.error(f"Failed to get stitched region: {e}")
             raise e
-    
+
     def _merge_channels_to_rgb(self, channel_regions):
         """
         Merge multiple channel regions into a single RGB image using the channel color scheme.
@@ -3747,14 +3749,14 @@ class MicroscopeHyphaService:
         try:
             if not channel_regions:
                 return None
-            
+
             # Get the first region to determine dimensions
             first_region = channel_regions[0][1]
             height, width = first_region.shape
-            
+
             # Create RGB output image
             rgb_image = np.zeros((height, width, 3), dtype=np.float32)
-            
+
             # Channel color mapping based on initialize_canvas
             channel_colors = {
                 'BF LED matrix full': [1.0, 1.0, 1.0],      # White
@@ -3764,7 +3766,7 @@ class MicroscopeHyphaService:
                 'Fluorescence 561 nm Ex': [1.0, 1.0, 0.0],   # Yellow
                 'Fluorescence 730 nm Ex': [1.0, 0.0, 1.0],   # Magenta
             }
-            
+
             # Process each channel
             for ch_name, region_data in channel_regions:
                 # Normalize region data to 0-1 range
@@ -3772,25 +3774,25 @@ class MicroscopeHyphaService:
                     normalized_region = region_data.astype(np.float32) / region_data.max()
                 else:
                     normalized_region = region_data.astype(np.float32)
-                
+
                 # Get color for this channel
                 if ch_name in channel_colors:
                     color = channel_colors[ch_name]
                 else:
                     # Default to white for unknown channels
                     color = [1.0, 1.0, 1.0]
-                
+
                 # Add weighted contribution to RGB image
                 for c in range(3):
                     rgb_image[:, :, c] += normalized_region * color[c]
-            
+
             # Clip to 0-1 range and convert to uint8
             rgb_image = np.clip(rgb_image, 0, 1)
             rgb_image = (rgb_image * 255).astype(np.uint8)
-            
+
             logger.info(f"Successfully merged {len(channel_regions)} channels into RGB image")
             return rgb_image
-            
+
         except Exception as e:
             logger.error(f"Error merging channels to RGB: {e}")
             return None
@@ -3810,7 +3812,7 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             result = self.squidController.create_experiment(experiment_name)
             logger.info(f"Created experiment: {experiment_name}")
             return result
@@ -3830,7 +3832,7 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             result = self.squidController.list_experiments()
             logger.info(f"Listed experiments: {result['total_count']} found")
             return result
@@ -3853,7 +3855,7 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             result = self.squidController.set_active_experiment(experiment_name)
             logger.info(f"Set active experiment: {experiment_name}")
             return result
@@ -3876,7 +3878,7 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             result = self.squidController.remove_experiment(experiment_name)
             logger.info(f"Removed experiment: {experiment_name}")
             return result
@@ -3899,7 +3901,7 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             result = self.squidController.reset_experiment(experiment_name)
             logger.info(f"Reset experiment: {experiment_name}")
             return result
@@ -3922,7 +3924,7 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             result = self.squidController.get_experiment_info(experiment_name)
             logger.info(f"Retrieved experiment info: {experiment_name}")
             return result
@@ -3937,7 +3939,7 @@ _microscope_instance = None
 def signal_handler(sig, frame):
     global _microscope_instance
     logger.info('Signal received, shutting down gracefully...')
-    
+
     # Stop video buffering
     if _microscope_instance and hasattr(_microscope_instance, 'frame_acquisition_running') and _microscope_instance.frame_acquisition_running:
         logger.info('Stopping video buffering...')
@@ -3949,7 +3951,7 @@ def signal_handler(sig, frame):
                 loop.run_until_complete(_microscope_instance.stop_video_buffering())
         except Exception as e:
             logger.error(f'Error stopping video buffering: {e}')
-    
+
     if _microscope_instance and hasattr(_microscope_instance, 'squidController'):
         _microscope_instance.squidController.close()
     sys.exit(0)
@@ -3961,7 +3963,7 @@ signal.signal(signal.SIGTERM, signal_handler)
 def main():
     """Main entry point for the microscope service"""
     global _microscope_instance
-    
+
     parser = argparse.ArgumentParser(
         description="Squid microscope control services for Hypha."
     )

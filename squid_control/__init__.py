@@ -32,8 +32,8 @@ __author__ = "Cephla Inc."
 def _import_main_classes():
     """Lazy import to avoid import errors during installation"""
     try:
-        from .start_hypha_service import MicroscopeHyphaService
         from .squid_controller import SquidController
+        from .start_hypha_service import MicroscopeHyphaService
         return MicroscopeHyphaService, SquidController
     except ImportError:
         return None, None
@@ -41,7 +41,7 @@ def _import_main_classes():
 def _import_mirror_services():
     """Lazy import of mirror services"""
     try:
-        from .services.mirror import MirrorMicroscopeService, MicroscopeVideoTrack
+        from .services.mirror import MicroscopeVideoTrack, MirrorMicroscopeService
         return MirrorMicroscopeService, MicroscopeVideoTrack, True
     except ImportError:
         return None, None, False

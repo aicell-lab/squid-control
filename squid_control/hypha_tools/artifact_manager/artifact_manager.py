@@ -4,30 +4,26 @@ It includes methods for creating vector collections, adding vectors, searching v
 and handling file uploads and downloads.
 """
 
-import httpx
-from hypha_rpc.rpc import RemoteException
 import asyncio
-import os
-import io
-import dotenv
-from hypha_rpc import connect_to_server
-from PIL import Image
-import numpy as np
 import base64
-import numcodecs
-import blosc
-import aiohttp
-from collections import deque
-import zarr
-import time
-import json
-import uuid
+import io
 import math
+import time
+import uuid
 
-dotenv.load_dotenv()  
-ENV_FILE = dotenv.find_dotenv()  
-if ENV_FILE:  
-    dotenv.load_dotenv(ENV_FILE)  
+import aiohttp
+import dotenv
+import httpx
+import numcodecs
+import numpy as np
+from hypha_rpc import connect_to_server
+from hypha_rpc.rpc import RemoteException
+from PIL import Image
+
+dotenv.load_dotenv()
+ENV_FILE = dotenv.find_dotenv()
+if ENV_FILE:
+    dotenv.load_dotenv(ENV_FILE)
 
 class SquidArtifactManager:
     """
@@ -295,12 +291,12 @@ class SquidArtifactManager:
             dict: The gallery artifact information
         """
         workspace = "agent-lens"
-        
+
         # Determine gallery naming based on microscope service ID
         # Check if microscope service ID ends with a number (e.g., '-1', '-2', etc.)
         import re
         number_match = re.search(r'-(\d+)$', microscope_service_id)
-        
+
         if number_match:
             # Special case: microscope ID ends with a number, use experiment-based gallery
             if experiment_id is None:
@@ -310,7 +306,7 @@ class SquidArtifactManager:
         else:
             # Standard case: use microscope-based gallery
             gallery_alias = f"microscope-gallery-{microscope_service_id}"
-        
+
         try:
             # Try to get existing gallery
             gallery = await self._svc.read(artifact_id=f"{workspace}/{gallery_alias}")
@@ -319,13 +315,13 @@ class SquidArtifactManager:
         except Exception as e:
             # Handle both RemoteException and RemoteError, and check for various error patterns
             error_str = str(e).lower()
-            if ("not found" in error_str or 
-                "does not exist" in error_str or 
+            if ("not found" in error_str or
+                "does not exist" in error_str or
                 "keyerror" in error_str or
                 "artifact with id" in error_str):
                 # Gallery doesn't exist, create it
                 print(f"Creating new gallery: {gallery_alias}")
-                
+
                 # Determine gallery name and description based on type
                 if number_match:
                     gallery_name = f"Experiment Gallery - {experiment_id}"
@@ -335,7 +331,7 @@ class SquidArtifactManager:
                     gallery_name = f"Microscope Gallery - {microscope_service_id}"
                     gallery_description = f"Dataset collection for microscope service {microscope_service_id}"
                     gallery_type = "microscope-gallery"
-                
+
                 gallery_manifest = {
                     "name": gallery_name,
                     "description": gallery_description,
@@ -344,7 +340,7 @@ class SquidArtifactManager:
                     "created_by": "squid-control-system",
                     "type": gallery_type
                 }
-                
+
                 gallery_config = {
                     "permissions": {"*": "r", "@": "r+"},
                     "collection_schema": {
@@ -361,7 +357,7 @@ class SquidArtifactManager:
                         "required": ["name", "description", "record_type"]
                     }
                 }
-                
+
                 gallery = await self._svc.create(
                     alias=f"{workspace}/{gallery_alias}",
                     type="collection",
@@ -373,8 +369,8 @@ class SquidArtifactManager:
             else:
                 raise e
 
-    async def upload_multiple_zarr_files_to_dataset(self, microscope_service_id, experiment_id, 
-                                                   zarr_files_info, acquisition_settings=None, 
+    async def upload_multiple_zarr_files_to_dataset(self, microscope_service_id, experiment_id,
+                                                   zarr_files_info, acquisition_settings=None,
                                                    description=None):
         """
         Upload multiple zarr files to a single dataset within a gallery.
@@ -390,23 +386,23 @@ class SquidArtifactManager:
             dict: Information about the uploaded dataset
         """
         workspace = "agent-lens"
-        
+
         # Generate dataset name with timestamp
         import time
         timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
         dataset_name = f"{experiment_id}-{timestamp}"
-        
+
         # Validate all ZIP files in parallel to avoid blocking asyncio loop
         total_size_mb = 0
         validation_tasks = []
         for file_info in zarr_files_info:
             validation_tasks.append(self._validate_zarr_zip_content(file_info['content']))
             total_size_mb += file_info['size_mb']
-        
+
         # Run all validations in parallel
         if validation_tasks:
             await asyncio.gather(*validation_tasks)
-        
+
         # Run detailed ZIP integrity test on first file as representative
         if zarr_files_info:
             first_file = zarr_files_info[0]
@@ -415,18 +411,18 @@ class SquidArtifactManager:
             )
             if not zip_test_results["valid"]:
                 raise ValueError(f"ZIP file integrity test failed: {', '.join(zip_test_results['issues'])}")
-        
+
         # Ensure gallery exists
         gallery = await self.create_or_get_microscope_gallery(microscope_service_id, experiment_id)
-        
+
         # Check name availability
         name_check = await self.check_dataset_name_availability(microscope_service_id, dataset_name)
         if not name_check["available"]:
             raise ValueError(f"Dataset name '{dataset_name}' is not available: {name_check['reason']}")
-        
+
         # Create dataset manifest
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
-        
+
         dataset_manifest = {
             "name": dataset_name,
             "description": description or f"Zarr dataset from microscope {microscope_service_id}",
@@ -441,7 +437,7 @@ class SquidArtifactManager:
             "file_count": len(zarr_files_info),
             "zip_format": "ZIP64-compatible"
         }
-        
+
         # Create dataset in staging mode
         dataset_alias = f"{workspace}/{dataset_name}"
         dataset = await self._svc.create(
@@ -450,37 +446,37 @@ class SquidArtifactManager:
             manifest=dataset_manifest,
             stage=True
         )
-        
+
         uploaded_files = []
-        
+
         try:
             # Upload each zarr zip file with retry logic
             for i, file_info in enumerate(zarr_files_info):
                 file_name = file_info['name']
                 file_content = file_info['content']
                 file_size_mb = file_info['size_mb']
-                
+
                 print(f"Uploading file {i+1}/{len(zarr_files_info)}: {file_name} ({file_size_mb:.2f} MB)")
-                
+
                 # Upload zarr zip file with retry logic
                 await self._upload_large_zip_multipart(
-                    dataset["id"], 
-                    file_content, 
+                    dataset["id"],
+                    file_content,
                     max_retries=3,
                     file_path=f"{file_name}.zip"
                 )
-                
+
                 uploaded_files.append({
                     "name": file_name,
                     "size_mb": file_size_mb,
                     "file_index": i+1
                 })
-                
+
                 print(f"Successfully uploaded file: {file_name}")
-            
+
             # Commit the dataset only after all files are uploaded
             await self._svc.commit(dataset["id"])
-            
+
             print(f"Successfully uploaded zarr dataset: {dataset_name} ({total_size_mb:.2f} MB, {len(uploaded_files)} files)")
             return {
                 "success": True,
@@ -493,7 +489,7 @@ class SquidArtifactManager:
                 "uploaded_files": uploaded_files,
                 "file_count": len(uploaded_files)
             }
-            
+
         except Exception as e:
             # If upload fails, try to clean up the staged dataset
             try:
@@ -501,7 +497,7 @@ class SquidArtifactManager:
             except:
                 pass
             raise e
-    
+
     async def start_upload_worker(self, microscope_service_id, experiment_id, acquisition_settings=None, description=None):
         """
         Start the background upload worker for uploading wells during scanning.
@@ -515,7 +511,7 @@ class SquidArtifactManager:
         if self.upload_worker_running:
             print("Upload worker already running")
             return
-            
+
         # Initialize upload queue
         self.upload_queue = asyncio.Queue()
         self.upload_worker_running = True
@@ -524,14 +520,14 @@ class SquidArtifactManager:
         self.experiment_id = experiment_id
         self.acquisition_settings = acquisition_settings
         self.description = description
-        
+
         # Create dataset for this upload session
         await self._create_upload_dataset()
-        
+
         # Start background worker
         self.upload_worker_task = asyncio.create_task(self._upload_worker_loop())
         print(f"Started upload worker for experiment: {experiment_id}")
-    
+
     async def stop_upload_worker(self):
         """
         Stop the background upload worker and commit the dataset.
@@ -539,10 +535,10 @@ class SquidArtifactManager:
         if not self.upload_worker_running:
             print("Upload worker not running")
             return
-            
+
         print("Stopping upload worker - waiting for queue to empty...")
         self.upload_worker_running = False
-        
+
         # Wait for upload worker to complete and process remaining items
         if self.upload_worker_task:
             try:
@@ -555,7 +551,7 @@ class SquidArtifactManager:
                     await self.upload_worker_task
                 except asyncio.CancelledError:
                     pass
-        
+
         # Commit the dataset if it exists
         if self.current_dataset_id:
             try:
@@ -563,7 +559,7 @@ class SquidArtifactManager:
                 print(f"Committed dataset: {self.current_dataset_id}")
             except Exception as e:
                 print(f"Failed to commit dataset: {e}")
-        
+
         # Reset state
         self.upload_queue = None
         self.upload_worker_task = None
@@ -574,7 +570,7 @@ class SquidArtifactManager:
         self.acquisition_settings = None
         self.description = None
         print("Upload worker stopped")
-    
+
     async def add_well_to_upload_queue(self, well_name, well_zip_content, well_size_mb):
         """
         Add a well to the upload queue for background processing.
@@ -587,7 +583,7 @@ class SquidArtifactManager:
         if not self.upload_worker_running or self.upload_frozen:
             print(f"Upload worker not running or frozen, skipping upload for {well_name}")
             return
-            
+
         try:
             await self.upload_queue.put({
                 'name': well_name,
@@ -597,25 +593,25 @@ class SquidArtifactManager:
             print(f"Added {well_name} to upload queue")
         except Exception as e:
             print(f"Failed to add {well_name} to upload queue: {e}")
-    
+
     async def _create_upload_dataset(self):
         """
         Create a dataset for the current upload session.
         """
         workspace = "agent-lens"
-        
+
         # Generate dataset name with timestamp
         import time
         timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
         dataset_name = f"{self.experiment_id}-{timestamp}"
-        
+
         # Ensure gallery exists
         gallery = await self.create_or_get_microscope_gallery(self.microscope_service_id, self.experiment_id)
         self.current_gallery_id = gallery["id"]
-        
+
         # Create dataset manifest
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
-        
+
         dataset_manifest = {
             "name": dataset_name,
             "description": self.description or f"Zarr dataset from microscope {self.microscope_service_id}",
@@ -628,7 +624,7 @@ class SquidArtifactManager:
             "upload_method": "squid-control-api-background",
             "zip_format": "ZIP64-compatible"
         }
-        
+
         # Create dataset in staging mode
         dataset_alias = f"{workspace}/{dataset_name}"
         dataset = await self._svc.create(
@@ -637,10 +633,10 @@ class SquidArtifactManager:
             manifest=dataset_manifest,
             stage=True
         )
-        
+
         self.current_dataset_id = dataset["id"]
         print(f"Created upload dataset: {dataset_name}")
-    
+
     async def _upload_worker_loop(self):
         """
         Background loop that processes the upload queue.
@@ -649,42 +645,42 @@ class SquidArtifactManager:
             try:
                 # Get well from queue with timeout
                 well_info = await asyncio.wait_for(self.upload_queue.get(), timeout=1.0)
-                
+
                 # Upload with retry logic
                 success = await self._upload_single_well_with_retry(well_info)
-                
+
                 if not success:
                     # Freeze upload queue after 3 failed attempts
                     self.upload_frozen = True
                     print(f"Upload failed after 3 retries for {well_info['name']}, freezing upload queue")
                     break
-                    
+
             except asyncio.TimeoutError:
                 continue
             except Exception as e:
                 print(f"Upload worker error: {e}")
                 # Don't break on general errors, continue processing
                 continue
-        
+
         # Process any remaining items in the queue before stopping
         print("Upload worker stopping - processing remaining items in queue...")
         while not self.upload_queue.empty():
             try:
                 well_info = self.upload_queue.get_nowait()
                 print(f"Processing remaining item: {well_info['name']}")
-                
+
                 # Upload with retry logic
                 success = await self._upload_single_well_with_retry(well_info)
-                
+
                 if not success:
                     print(f"Failed to upload remaining item {well_info['name']}")
-                    
+
             except Exception as e:
                 print(f"Error processing remaining upload item: {e}")
                 break
-        
+
         print("Upload worker loop completed")
-    
+
     async def _upload_single_well_with_retry(self, well_info):
         """
         Upload a single well with retry logic.
@@ -711,9 +707,9 @@ class SquidArtifactManager:
                     wait_time = 2 ** attempt
                     print(f"Waiting {wait_time}s before retry...")
                     await asyncio.sleep(wait_time)
-        
+
         return False
-    
+
     async def check_dataset_name_availability(self, microscope_service_id, dataset_name):
         """
         Check if a dataset name is available in the microscope's gallery.
@@ -728,7 +724,7 @@ class SquidArtifactManager:
         workspace = "agent-lens"
         gallery_alias = f"microscope-gallery-{microscope_service_id}"
         dataset_alias = f"{workspace}/{dataset_name}"
-        
+
         # Validate dataset name format
         import re
         if not re.match(r'^[a-z0-9][a-z0-9\-:]*[a-z0-9]$', dataset_name):
@@ -737,11 +733,11 @@ class SquidArtifactManager:
                 "reason": "Invalid name format. Use lowercase letters, numbers, hyphens, and colons only. Must start and end with alphanumeric character.",
                 "suggestions": []
             }
-        
+
         try:
             # Check if dataset already exists
             existing_dataset = await self._svc.read(artifact_id=dataset_alias)
-            
+
             # Generate alternative suggestions
             suggestions = []
             import time
@@ -752,7 +748,7 @@ class SquidArtifactManager:
                 f"{dataset_name}-copy",
                 f"{dataset_name}-new"
             ]
-            
+
             for suggestion in base_suggestions:
                 try:
                     await self._svc.read(artifact_id=f"{workspace}/{suggestion}")
@@ -760,19 +756,19 @@ class SquidArtifactManager:
                     suggestions.append(suggestion)
                     if len(suggestions) >= 3:
                         break
-            
+
             return {
                 "available": False,
                 "reason": "Dataset name already exists",
                 "existing_dataset": existing_dataset,
                 "suggestions": suggestions
             }
-            
+
         except Exception as e:
             # Handle both RemoteException and RemoteError, and check for various error patterns
             error_str = str(e).lower()
-            if ("not found" in error_str or 
-                "does not exist" in error_str or 
+            if ("not found" in error_str or
+                "does not exist" in error_str or
                 "keyerror" in error_str or
                 "artifact with id" in error_str):
                 return {
@@ -782,8 +778,8 @@ class SquidArtifactManager:
                 }
             else:
                 raise e
-    
-    async def upload_zarr_dataset(self, microscope_service_id, dataset_name, zarr_zip_content, 
+
+    async def upload_zarr_dataset(self, microscope_service_id, dataset_name, zarr_zip_content,
                                  acquisition_settings=None, description=None, experiment_id=None):
         """
         Upload a zarr fileset as a zip file to the microscope's gallery.
@@ -800,34 +796,34 @@ class SquidArtifactManager:
             dict: Information about the uploaded dataset
         """
         workspace = "agent-lens"
-        
+
         # Generate dataset name if experiment_id is provided
         if experiment_id is not None:
             import time
             timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
             dataset_name = f"{experiment_id}-{timestamp}"
-        
+
         # Validate ZIP file before upload
         await self._validate_zarr_zip_content(zarr_zip_content)
-        
+
         # Run detailed ZIP integrity test
         zip_test_results = await self.test_zip_file_integrity(zarr_zip_content, f"Upload: {dataset_name}")
         if not zip_test_results["valid"]:
             raise ValueError(f"ZIP file integrity test failed: {', '.join(zip_test_results['issues'])}")
-        
+
         # Ensure gallery exists
         gallery = await self.create_or_get_microscope_gallery(microscope_service_id, experiment_id)
-        
+
         # Check name availability
         name_check = await self.check_dataset_name_availability(microscope_service_id, dataset_name)
         if not name_check["available"]:
             raise ValueError(f"Dataset name '{dataset_name}' is not available: {name_check['reason']}")
-        
+
         # Create dataset manifest
         import time
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
         zip_size_mb = len(zarr_zip_content) / (1024 * 1024)
-        
+
         dataset_manifest = {
             "name": dataset_name,
             "description": description or f"Zarr dataset from microscope {microscope_service_id}",
@@ -841,7 +837,7 @@ class SquidArtifactManager:
             "zip_size_mb": zip_size_mb,
             "zip_format": "ZIP64-compatible"
         }
-        
+
         # Create dataset in staging mode
         dataset_alias = f"{workspace}/{dataset_name}"
         dataset = await self._svc.create(
@@ -850,14 +846,14 @@ class SquidArtifactManager:
             manifest=dataset_manifest,
             stage=True
         )
-        
+
         try:
             # Upload zarr zip file with retry logic
             await self._upload_large_zip_multipart(dataset["id"], zarr_zip_content, max_retries=3)
-            
+
             # Commit the dataset
             await self._svc.commit(dataset["id"])
-            
+
             print(f"Successfully uploaded zarr dataset: {dataset_name} ({zip_size_mb:.2f} MB)")
             return {
                 "success": True,
@@ -868,7 +864,7 @@ class SquidArtifactManager:
                 "upload_timestamp": timestamp,
                 "zip_size_mb": zip_size_mb
             }
-            
+
         except Exception as e:
             # If upload fails, try to clean up the staged dataset
             try:
@@ -889,21 +885,21 @@ class SquidArtifactManager:
         """
         # Move CPU-intensive ZIP validation to thread pool to avoid blocking asyncio loop
         def _validate_zip_sync(zip_content: bytes) -> None:
-            import zipfile
             import io
-            
+            import zipfile
+
             zip_buffer = io.BytesIO(zip_content)
             with zipfile.ZipFile(zip_buffer, 'r') as zip_file:
                 # Test the ZIP file structure
                 file_list = zip_file.namelist()
                 if not file_list:
                     raise ValueError("ZIP file is empty")
-                
+
                 # Check for expected zarr structure
                 zarr_files = [f for f in file_list if f.startswith('data.zarr/')]
                 if not zarr_files:
                     raise ValueError("ZIP file does not contain expected 'data.zarr/' structure")
-                
+
                 # Test that we can read the ZIP file entries
                 test_count = min(5, len(file_list))
                 for i in range(test_count):
@@ -912,9 +908,9 @@ class SquidArtifactManager:
                             f.read(1024)  # Read a small chunk
                     except Exception as e:
                         raise ValueError(f"Cannot read file {file_list[i]} from ZIP: {e}")
-                
+
                 print(f"ZIP validation passed: {len(file_list)} files, {len(zip_content) / (1024*1024):.2f} MB")
-        
+
         try:
             await asyncio.to_thread(_validate_zip_sync, zarr_zip_content)
         except zipfile.BadZipFile as e:
@@ -934,20 +930,20 @@ class SquidArtifactManager:
         """
         # Target part size: 100MB for optimal performance
         target_part_size = 100 * 1024 * 1024  # 100MB
-        
+
         # Minimum part size required by S3: 5MB
         min_part_size = 5 * 1024 * 1024  # 5MB
-        
+
         # Maximum part count allowed: 10,000
         max_parts = 10000
-        
+
         if file_size_bytes <= target_part_size:
             # Small file: use single part
             return file_size_bytes, 1
-        
+
         # Calculate part count based on target size
         part_count = math.ceil(file_size_bytes / target_part_size)
-        
+
         # Ensure we don't exceed maximum parts
         if part_count > max_parts:
             # Recalculate with larger part size
@@ -956,7 +952,7 @@ class SquidArtifactManager:
             if part_size < min_part_size:
                 raise ValueError(f"File too large for multipart upload: {file_size_bytes / (1024*1024):.1f} MB")
             return part_size, max_parts
-        
+
         # Ensure minimum part size
         actual_part_size = math.ceil(file_size_bytes / part_count)
         if actual_part_size < min_part_size:
@@ -965,7 +961,7 @@ class SquidArtifactManager:
             if part_count > max_parts:
                 raise ValueError(f"File too large for multipart upload: {file_size_bytes / (1024*1024):.1f} MB")
             return min_part_size, part_count
-        
+
         return target_part_size, part_count
 
     async def _upload_large_zip_multipart(self, dataset_id: str, zarr_zip_content: bytes, max_retries: int = 3, file_path: str = "zarr_dataset.zip") -> None:
@@ -982,21 +978,21 @@ class SquidArtifactManager:
             Exception: If upload fails after all retries
         """
         zip_size_mb = len(zarr_zip_content) / (1024 * 1024)
-        
+
         # Calculate optimal part size and count
         try:
             part_size_bytes, part_count = self._calculate_optimal_part_size(len(zarr_zip_content))
         except ValueError as e:
             raise Exception(f"Cannot upload file: {e}")
-        
+
         # Calculate timeout based on file size (minimum 5 minutes, add 1 minute per 50MB)
         timeout_seconds = max(300, int(zip_size_mb / 50) * 60 + 300)
-        
+
         for attempt in range(max_retries):
             try:
                 print(f"Multipart upload attempt {attempt + 1}/{max_retries} for {zip_size_mb:.2f} MB ZIP file to {file_path}")
                 print(f"  Using {part_count} parts, {part_size_bytes / (1024*1024):.1f} MB per part, timeout: {timeout_seconds}s")
-                
+
                 # Step 1: Start multipart upload
                 multipart_info = await self._svc.put_file_start_multipart(
                     artifact_id=dataset_id,
@@ -1004,28 +1000,28 @@ class SquidArtifactManager:
                     part_count=part_count,
                     expires_in=3600  # 1 hour expiration
                 )
-                
+
                 upload_id = multipart_info["upload_id"]
                 part_urls = multipart_info["parts"]
-                
+
                 print(f"  Started multipart upload with ID: {upload_id}")
-                
+
                 # Step 2: Upload all parts concurrently
                 async def upload_part(part_info):
                     part_number = part_info["part_number"]
                     url = part_info["url"]
-                    
+
                     # Calculate start and end positions for this part
                     start_pos = (part_number - 1) * part_size_bytes
                     end_pos = min(start_pos + part_size_bytes, len(zarr_zip_content))
-                    
+
                     # Extract the specific part from the ZIP content
                     part_data = zarr_zip_content[start_pos:end_pos]
-                    
+
                     # Upload the part with appropriate timeout
                     async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds)) as client:
                         response = await client.put(
-                            url, 
+                            url,
                             content=part_data,
                             headers={
                                 'Content-Type': 'application/octet-stream',
@@ -1033,52 +1029,52 @@ class SquidArtifactManager:
                             }
                         )
                         response.raise_for_status()
-                        
+
                         return {
                             "part_number": part_number,
                             "etag": response.headers["ETag"].strip('"')
                         }
-                
+
                 # Upload parts with controlled concurrency (max 5 concurrent uploads)
                 semaphore = asyncio.Semaphore(5)
-                
+
                 async def upload_with_semaphore(part_info):
                     async with semaphore:
                         return await upload_part(part_info)
-                
+
                 print(f"  Uploading {len(part_urls)} parts with controlled concurrency...")
                 uploaded_parts = await asyncio.gather(*[
                     upload_with_semaphore(part) for part in part_urls
                 ])
-                
-                print(f"  All parts uploaded successfully")
-                
+
+                print("  All parts uploaded successfully")
+
                 # Step 3: Complete multipart upload
                 try:
                     # Validate that we have all parts before completing
                     if len(uploaded_parts) != part_count:
                         raise Exception(f"Expected {part_count} parts but got {len(uploaded_parts)}")
-                    
+
                     # Sort parts by part number to ensure correct order
                     uploaded_parts.sort(key=lambda x: x["part_number"])
-                    
+
                     # Verify part numbers are sequential
                     for i, part in enumerate(uploaded_parts):
                         if part["part_number"] != i + 1:
                             raise Exception(f"Missing or out-of-order part: expected {i + 1}, got {part['part_number']}")
-                    
+
                     result = await self._svc.put_file_complete_multipart(
                         artifact_id=dataset_id,
                         upload_id=upload_id,
                         parts=uploaded_parts
                     )
-                    
+
                     if result["success"]:
                         print(f"Multipart upload completed successfully on attempt {attempt + 1}")
                         return
                     else:
                         raise Exception(f"Multipart upload completion failed: {result['message']}")
-                        
+
                 except Exception as completion_error:
                     print(f"Error completing multipart upload: {completion_error}")
                     # Try to abort the multipart upload to clean up
@@ -1087,15 +1083,15 @@ class SquidArtifactManager:
                         print(f"Multipart upload {upload_id} failed, parts may need manual cleanup")
                     except Exception as abort_error:
                         print(f"Could not abort multipart upload: {abort_error}")
-                    
+
                     # Re-raise the completion error to trigger retry
                     raise completion_error
-                
+
             except httpx.TimeoutException as e:
                 print(f"Upload timeout on attempt {attempt + 1}: {e}")
                 if attempt == max_retries - 1:
                     raise Exception(f"Upload failed after {max_retries} attempts due to timeout")
-                
+
             except httpx.HTTPStatusError as e:
                 print(f"Upload HTTP error on attempt {attempt + 1}: {e.response.status_code} - {e.response.text}")
                 if e.response.status_code == 413:  # Payload too large
@@ -1105,12 +1101,12 @@ class SquidArtifactManager:
                         raise Exception(f"Server error after {max_retries} attempts: {e}")
                 else:  # Client errors - don't retry
                     raise Exception(f"Upload failed with HTTP {e.response.status_code}: {e.response.text}")
-                
+
             except Exception as e:
                 print(f"Upload error on attempt {attempt + 1}: {e}")
                 if attempt == max_retries - 1:
                     raise Exception(f"Upload failed after {max_retries} attempts: {e}")
-                
+
             # Wait before retry (exponential backoff)
             if attempt < max_retries - 1:
                 wait_time = 2 ** attempt
@@ -1130,9 +1126,9 @@ class SquidArtifactManager:
         """
         # Move CPU-intensive ZIP integrity testing to thread pool to avoid blocking asyncio loop
         def _test_zip_integrity_sync(zip_content: bytes, description: str) -> dict:
-            import zipfile
             import io
-            
+            import zipfile
+
             results = {
                 "valid": False,
                 "size_mb": len(zip_content) / (1024 * 1024),
@@ -1143,42 +1139,42 @@ class SquidArtifactManager:
                 "issues": [],
                 "sample_files": []
             }
-            
+
             try:
                 zip_buffer = io.BytesIO(zip_content)
-                
+
                 # Test basic ZIP file opening
                 with zipfile.ZipFile(zip_buffer, 'r') as zip_file:
                     file_list = zip_file.namelist()
                     results["file_count"] = len(file_list)
-                    
+
                     if not file_list:
                         results["issues"].append("ZIP file is empty")
                         return results
-                    
+
                     # Check if ZIP64 is required based on size and file count
                     results["zip64_required"] = results["size_mb"] > 200 or results["file_count"] > 65535
-                    
+
                     # Test central directory access
                     try:
                         info_list = zip_file.infolist()
-                        
+
                         # Check for ZIP64 format indicators
                         zip64_indicators = []
-                        
+
                         # Check for large individual files (>= 4GB)
                         large_files = any(info.file_size >= 0xFFFFFFFF or info.compress_size >= 0xFFFFFFFF for info in info_list)
                         if large_files:
                             zip64_indicators.append("large_files")
-                        
+
                         # Check total archive size vs ZIP32 limits (>= 4GB)
                         if results["size_mb"] * 1024 * 1024 >= 0xFFFFFFFF:
                             zip64_indicators.append("archive_size")
-                        
+
                         # Check file count vs ZIP32 limits (>= 65535 files)
                         if results["file_count"] >= 0xFFFF:
                             zip64_indicators.append("file_count")
-                        
+
                         # For large files, check if ZIP64 format is actually being used
                         # The key insight: if ZIP64 is required but the file can be read successfully,
                         # then ZIP64 format is likely being used correctly
@@ -1192,11 +1188,11 @@ class SquidArtifactManager:
                                     if info_list[i].file_size > 0:
                                         with zip_file.open(info_list[i]) as f:
                                             f.read(1)  # Read just one byte to test access
-                                
+
                                 # If we can successfully read files from a large ZIP, ZIP64 is working
                                 results["zip64_enabled"] = True
                                 zip64_indicators.append("successful_access")
-                                
+
                             except Exception as e:
                                 # If we can't read files from a large ZIP, ZIP64 might not be working
                                 results["zip64_enabled"] = False
@@ -1204,17 +1200,17 @@ class SquidArtifactManager:
                         else:
                             # For smaller files, ZIP64 is not required
                             results["zip64_enabled"] = False
-                        
+
                         results["zip64_indicators"] = zip64_indicators
-                        
+
                         # Get compression method from first file
                         if info_list:
                             results["compression_method"] = info_list[0].compress_type
-                            
+
                     except Exception as e:
                         results["issues"].append(f"Cannot access central directory: {e}")
                         return results
-                    
+
                     # Test reading sample files
                     sample_count = min(5, len(file_list))
                     for i in range(sample_count):
@@ -1235,19 +1231,19 @@ class SquidArtifactManager:
                                 "readable": False,
                                 "error": str(e)
                             })
-                    
+
                     # Final validation: if ZIP64 is required but not enabled, that's an issue
                     if results["zip64_required"] and not results["zip64_enabled"]:
                         results["issues"].append("Large file requires ZIP64 format but ZIP64 is not enabled")
-                    
+
                     # Mark as valid if no issues found
                     results["valid"] = len(results["issues"]) == 0
-                    
+
             except zipfile.BadZipFile as e:
                 results["issues"].append(f"Invalid ZIP file format: {e}")
             except Exception as e:
                 results["issues"].append(f"ZIP file test failed: {e}")
-            
+
             # Log results
             status = "VALID" if results["valid"] else "INVALID"
             print(f"ZIP Test [{description}]: {status}")
@@ -1256,12 +1252,12 @@ class SquidArtifactManager:
             if "zip64_indicators" in results and results["zip64_indicators"]:
                 print(f"  ZIP64 Indicators: {', '.join(results['zip64_indicators'])}")
             print(f"  Compression: {results['compression_method']}")
-            
+
             if results["issues"]:
                 print(f"  Issues: {', '.join(results['issues'])}")
-            
+
             return results
-        
+
         return await asyncio.to_thread(_test_zip_integrity_sync, zip_content, description)
 
 # Constants
@@ -1287,7 +1283,7 @@ class ZarrImageManager:
         self.session = None
         self.default_timestamp = "20250506-scan-time-lapse-2025-05-06_17-56-38"  # Set a default timestamp
         self.scale_key = 'scale0'
-        
+
         # New attributes for HTTP-based access
         self.metadata_cache = {}  # Cache for .zarray and .zgroup metadata
         self.metadata_cache_lock = asyncio.Lock()
@@ -1335,7 +1331,7 @@ class ZarrImageManager:
 
         try:
             print(f"Fetching metadata: dataset_alias='{dataset_alias}', path='{metadata_path_in_dataset}'")
-            
+
             metadata_content_bytes = await self.artifact_manager.get_file(
                 self.workspace,
                 dataset_alias.split('/')[-1],  # Extract artifact name from full path
@@ -1344,7 +1340,7 @@ class ZarrImageManager:
             metadata_str = metadata_content_bytes.decode('utf-8')
             import json
             metadata = json.loads(metadata_str)
-            
+
             async with self.metadata_cache_lock:
                 self.metadata_cache[cache_key] = metadata
             print(f"Fetched and cached metadata for {cache_key}")
@@ -1364,16 +1360,16 @@ class ZarrImageManager:
                 "client_id": f"zarr-image-client-for-squid-{uuid.uuid4()}",
                 "server_url": server_url,
             })
-            
+
             self.artifact_manager = SquidArtifactManager()
             await self.artifact_manager.connect_server(self.artifact_manager_server)
-            
+
             # Initialize aiohttp session
             await self._get_http_session()  # Ensures session is created
-            
+
             # Prime metadata for a default dataset if needed, or remove if priming is dynamic
             # Example: await self.prime_metadata("agent-lens/20250506-scan-time-lapse-2025-05-06_17-56-38", self.channels[0], scale=0)
-            
+
             print("ZarrImageManager connected successfully")
             return True
         except Exception as e:
@@ -1385,19 +1381,19 @@ class ZarrImageManager:
     async def close(self):
         """Close the image manager and cleanup resources"""
         self.is_running = False
-        
+
         # Clear all caches
         self.processed_tile_cache.clear()
         async with self.metadata_cache_lock:
             self.metadata_cache.clear()
         self.empty_regions_cache.clear()
-        
+
         # Close the aiohttp session
         async with self.http_session_lock:
             if self.session and not self.session.closed:
                 await self.session.close()
                 self.session = None
-        
+
         # Disconnect from the server
         if self.artifact_manager_server:
             await self.artifact_manager_server.disconnect()
@@ -1408,7 +1404,7 @@ class ZarrImageManager:
         """Add a region key to the empty regions cache."""
         # Add to cache
         self.empty_regions_cache[key] = True # Store True instead of expiry_time
-        
+
         # Basic FIFO size control if cache exceeds max size
         if len(self.empty_regions_cache) > self.empty_regions_cache_size:
             try:
@@ -1479,7 +1475,7 @@ class ZarrImageManager:
             print(f"Chunk coordinates ({x}, {y}) out of bounds for {dataset_id}/{channel}/scale{scale} (max: {num_chunks_x_total-1}, {num_chunks_y_total-1})")
             self._add_to_empty_regions_cache(tile_cache_key)
             return None
-        
+
         # Determine path to the zip file and the chunk name within that zip
         # Interpretation: {y}.zip contains a row of chunks, chunk file is named {x}
         zip_file_path_in_dataset = f"{channel}/scale{scale}/{y}.zip"
@@ -1490,9 +1486,9 @@ class ZarrImageManager:
         # self.workspace is "agent-lens"
         artifact_name_only = dataset_id.split('/')[-1]
         chunk_download_url = f"{self.server_url}/{self.workspace}/artifacts/{artifact_name_only}/zip-files/{zip_file_path_in_dataset}?path={chunk_name_in_zip}"
-        
+
         print(f"Attempting to fetch chunk: {chunk_download_url}")
-        
+
         http_session = await self._get_http_session()
         raw_chunk_bytes = None
         try:
@@ -1534,22 +1530,22 @@ class ZarrImageManager:
             else:
                 codec = numcodecs.get_codec(z_compressor_meta)  # Handles filters too if defined in compressor object
                 decompressed_data = codec.decode(raw_chunk_bytes)
-            
+
             # Convert to NumPy array and reshape. Chunk shape from .zarray is [height, width]
             chunk_data = np.frombuffer(decompressed_data, dtype=z_dtype).reshape(z_chunks)
-            
+
             # The Zarr chunk might be smaller than self.chunk_size if it's a partial edge chunk.
             # Or it could be larger if .zarray chunks are not self.chunk_size.
             # We need to return a tile of self.chunk_size.
-            
-            final_tile_data = np.full((self.chunk_size, self.chunk_size), 
-                                       z_fill_value if z_fill_value is not None else 0, 
+
+            final_tile_data = np.full((self.chunk_size, self.chunk_size),
+                                       z_fill_value if z_fill_value is not None else 0,
                                        dtype=z_dtype)
-            
+
             # Determine the slice to copy from chunk_data and where to place it in final_tile_data
             copy_height = min(chunk_data.shape[0], self.chunk_size)
             copy_width = min(chunk_data.shape[1], self.chunk_size)
-            
+
             final_tile_data[:copy_height, :copy_width] = chunk_data[:copy_height, :copy_width]
 
         except Exception as e:
@@ -1561,7 +1557,7 @@ class ZarrImageManager:
 
         # 5. Check if tile is effectively empty (e.g., all fill_value or zeros)
         # Use a small threshold for non-zero values if fill_value is 0 or not defined
-        is_empty_threshold = 10 
+        is_empty_threshold = 10
         if z_fill_value is not None:
             if np.all(final_tile_data == z_fill_value):
                 print(f"Tile data is all fill_value ({z_fill_value}), treating as empty: {tile_cache_key}")
@@ -1577,17 +1573,16 @@ class ZarrImageManager:
             'data': final_tile_data,
             'timestamp': time.time()
         }
-        
+
         total_time = time.time() - start_time
         print(f"Total tile processing time for {tile_cache_key}: {total_time:.3f}s, size: {final_tile_data.nbytes/1024:.1f}KB")
-        
+
         return final_tile_data
 
     # Legacy methods for backward compatibility - now use chunk-based access
     async def get_zarr_group(self, dataset_id, channel):
         """Legacy method - now returns None as we use direct chunk access instead. Timestamp is ignored."""
         print("Warning: get_zarr_group is deprecated, using direct chunk access instead. Timestamp parameter is ignored.")
-        return None
 
     async def prime_metadata(self, dataset_alias, channel_name, scale, use_cache=True):
         """Pre-fetch .zarray metadata for a given dataset, channel, and scale."""
@@ -1629,62 +1624,62 @@ class ZarrImageManager:
             # Determine the output dimensions
             output_width = width if width is not None else self.chunk_size
             output_height = height if height is not None else self.chunk_size
-            
+
             # For direct region access, we need to fetch multiple chunks and stitch them together
             if direct_region is not None:
                 y_start, y_end, x_start, x_end = direct_region
-                
+
                 # Get metadata to determine chunk size
                 # dataset_id is now the full path like "agent-lens/20250506-scan-time-lapse-..."
                 zarray_path_in_dataset = f"{channel}/scale{scale}/.zarray"
                 zarray_metadata = await self._fetch_zarr_metadata(dataset_id, zarray_path_in_dataset)
-                
+
                 if not zarray_metadata:
-                    print(f"Failed to get .zarray metadata for direct region access")
+                    print("Failed to get .zarray metadata for direct region access")
                     return np.zeros((output_height, output_width), dtype=np.uint8)
-                
+
                 z_chunks = zarray_metadata["chunks"]  # [chunk_height, chunk_width]
                 z_dtype = np.dtype(zarray_metadata["dtype"])
-                
+
                 # Calculate which chunks we need
                 chunk_y_start = y_start // z_chunks[0]
                 chunk_y_end = (y_end - 1) // z_chunks[0] + 1
                 chunk_x_start = x_start // z_chunks[1]
                 chunk_x_end = (x_end - 1) // z_chunks[1] + 1
-                
+
                 # Create result array
                 result_height = y_end - y_start
                 result_width = x_end - x_start
                 result = np.zeros((result_height, result_width), dtype=z_dtype)
-                
+
                 # Fetch and stitch chunks
                 for chunk_y in range(chunk_y_start, chunk_y_end):
                     for chunk_x in range(chunk_x_start, chunk_x_end):
                         chunk_data = await self.get_chunk_np_data(dataset_id, channel, scale, chunk_x, chunk_y)
-                        
+
                         if chunk_data is not None:
                             # Calculate where this chunk fits in the result
                             chunk_y_offset = chunk_y * z_chunks[0]
                             chunk_x_offset = chunk_x * z_chunks[1]
-                            
+
                             # Calculate the slice within the chunk
                             chunk_y_slice_start = max(0, y_start - chunk_y_offset)
                             chunk_y_slice_end = min(z_chunks[0], y_end - chunk_y_offset)
                             chunk_x_slice_start = max(0, x_start - chunk_x_offset)
                             chunk_x_slice_end = min(z_chunks[1], x_end - chunk_x_offset)
-                            
+
                             # Calculate the slice within the result
                             result_y_slice_start = max(0, chunk_y_offset - y_start + chunk_y_slice_start)
                             result_y_slice_end = result_y_slice_start + (chunk_y_slice_end - chunk_y_slice_start)
                             result_x_slice_start = max(0, chunk_x_offset - x_start + chunk_x_slice_start)
                             result_x_slice_end = result_x_slice_start + (chunk_x_slice_end - chunk_x_slice_start)
-                            
+
                             # Copy the data
                             if (chunk_y_slice_end > chunk_y_slice_start and chunk_x_slice_end > chunk_x_slice_start and
                                 result_y_slice_end > result_y_slice_start and result_x_slice_end > result_x_slice_start):
                                 result[result_y_slice_start:result_y_slice_end, result_x_slice_start:result_x_slice_end] = \
                                     chunk_data[chunk_y_slice_start:chunk_y_slice_end, chunk_x_slice_start:chunk_x_slice_end]
-                
+
                 # Resize to requested dimensions if needed
                 if width is not None or height is not None:
                     final_result = np.zeros((output_height, output_width), dtype=result.dtype)
@@ -1692,7 +1687,7 @@ class ZarrImageManager:
                     copy_width = min(result.shape[1], output_width)
                     final_result[:copy_height, :copy_width] = result[:copy_height, :copy_width]
                     result = final_result
-                
+
                 # Ensure data is in the right format (uint8)
                 if result.dtype != np.uint8:
                     if result.dtype == np.float32 or result.dtype == np.float64:
@@ -1704,17 +1699,17 @@ class ZarrImageManager:
                     else:
                         # For other integer types, scale appropriately
                         result = result.astype(np.uint8)
-                
+
                 return result
-            
+
             else:
                 # Single chunk access
                 # dataset_id is the full path like "agent-lens/20250506-scan-time-lapse-..."
                 chunk_data = await self.get_chunk_np_data(dataset_id, channel, scale, x, y)
-                
+
                 if chunk_data is None:
                     return np.zeros((output_height, output_width), dtype=np.uint8)
-                
+
                 # Resize to requested dimensions if needed
                 if width is not None or height is not None:
                     result = np.zeros((output_height, output_width), dtype=chunk_data.dtype)
@@ -1722,7 +1717,7 @@ class ZarrImageManager:
                     copy_width = min(chunk_data.shape[1], output_width)
                     result[:copy_height, :copy_width] = chunk_data[:copy_height, :copy_width]
                     chunk_data = result
-                
+
                 # Ensure data is in the right format (uint8)
                 if chunk_data.dtype != np.uint8:
                     if chunk_data.dtype == np.float32 or chunk_data.dtype == np.float64:
@@ -1734,9 +1729,9 @@ class ZarrImageManager:
                     else:
                         # For other integer types, scale appropriately
                         chunk_data = chunk_data.astype(np.uint8)
-                
+
                 return chunk_data
-                
+
         except Exception as e:
             print(f"Error getting region data: {e}")
             import traceback
@@ -1748,11 +1743,11 @@ class ZarrImageManager:
         try:
             # Get region data as numpy array
             region_data = await self.get_region_np_data(dataset_id, channel, scale, x, y)
-            
+
             if region_data is None:
                 print(f"No numpy data for region {dataset_id}/{channel}/{scale}/{x}/{y}, returning blank image.")
                 # Create a blank image
-                pil_image = Image.new("L", (self.chunk_size, self.chunk_size), color=0) 
+                pil_image = Image.new("L", (self.chunk_size, self.chunk_size), color=0)
             else:
                 try:
                     # Ensure data is in a suitable range for image conversion if necessary
@@ -1773,7 +1768,7 @@ class ZarrImageManager:
                 except Exception as e:
                     print(f"Error converting numpy region to PIL Image: {e}. Data type: {region_data.dtype}, shape: {region_data.shape}")
                     pil_image = Image.new("L", (self.chunk_size, self.chunk_size), color=0) # Fallback to blank
-            
+
             buffer = io.BytesIO()
             pil_image.save(buffer, format="PNG") # Default PNG compression
             return buffer.getvalue()
@@ -1806,33 +1801,33 @@ class ZarrImageManager:
             # Use default values if not provided
             dataset_id = dataset_id or "agent-lens/20250506-scan-time-lapse-2025-05-06_17-56-38"
             channel = channel or "BF_LED_matrix_full"
-            
+
             print(f"Testing Zarr chunk access for dataset: {dataset_id}, channel: {channel}, bypass_cache: {bypass_cache}")
-            
+
             scale = 0 # Typically testing scale0
             print(f"Attempting to prime metadata for dataset: {dataset_id}, channel: {channel}, scale: {scale}")
             # Pass use_cache=!bypass_cache
             metadata_primed = await self.prime_metadata(dataset_id, channel, scale, use_cache=not bypass_cache)
-            
+
             if not metadata_primed: # prime_metadata now returns True/False
                 return {
-                    "status": "error", 
-                    "success": False, 
+                    "status": "error",
+                    "success": False,
                     "message": "Failed to prime metadata for test chunk."
                 }
-            
+
             return {
                 "status": "ok",
                 "success": True,
                 "message": f"Successfully primed metadata for test chunk (bypass_cache={bypass_cache})."
             }
-            
+
         except Exception as e:
             import traceback
             error_traceback = traceback.format_exc()
             print(f"Error in test_zarr_access: {str(e)}")
             print(error_traceback)
-            
+
             return {
                 "status": "error",
                 "success": False,

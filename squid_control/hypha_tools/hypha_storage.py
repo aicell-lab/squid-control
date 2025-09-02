@@ -1,7 +1,7 @@
 import json
-import uuid
 import mimetypes
 import os
+import uuid
 from urllib.parse import parse_qs
 
 

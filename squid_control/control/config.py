@@ -1,15 +1,14 @@
-from configparser import ConfigParser
-import os
 import glob
-import numpy as np
+import json
+import os
+from configparser import ConfigParser
+from enum import Enum
 from pathlib import Path
+from typing import List, Literal, Optional
+
 from pydantic import BaseModel
 
-from enum import Enum
-from typing import Optional, Literal, List
 from squid_control.control.camera import TriggerModeSetting
-
-import json
 
 
 def conf_attribute_reader(string_value):
@@ -119,7 +118,7 @@ class ILLUMINATION_CODE(Enum):
 
 class ChannelInfo:
     """Channel information container with all naming variants."""
-    def __init__(self, channel_id: int, human_name: str, zarr_name: str, 
+    def __init__(self, channel_id: int, human_name: str, zarr_name: str,
                  example_image: str, param_name: str, description: str = ""):
         self.channel_id = channel_id
         self.human_name = human_name  # Human-readable name used in UI
@@ -130,13 +129,13 @@ class ChannelInfo:
 
 class ChannelMapper:
     """Centralized channel mapping system for the microscope control system."""
-    
+
     # Define all channels with consistent naming
     CHANNELS = {
         0: ChannelInfo(
             channel_id=0,
             human_name="BF LED matrix full",
-            zarr_name="BF_LED_matrix_full", 
+            zarr_name="BF_LED_matrix_full",
             example_image="BF_LED_matrix_full.bmp",
             param_name="BF_intensity_exposure",
             description="Bright field LED matrix full illumination"
@@ -182,14 +181,14 @@ class ChannelMapper:
             description="730nm fluorescence excitation"
         ),
     }
-    
+
     @classmethod
     def get_channel_info(cls, channel_id: int) -> ChannelInfo:
         """Get channel info by ID."""
         if channel_id not in cls.CHANNELS:
             raise ValueError(f"Unknown channel ID: {channel_id}")
         return cls.CHANNELS[channel_id]
-    
+
     @classmethod
     def get_channel_by_human_name(cls, human_name: str) -> ChannelInfo:
         """Get channel info by human-readable name."""
@@ -197,7 +196,7 @@ class ChannelMapper:
             if channel.human_name == human_name:
                 return channel
         raise ValueError(f"Unknown channel name: {human_name}")
-    
+
     @classmethod
     def get_channel_by_zarr_name(cls, zarr_name: str) -> ChannelInfo:
         """Get channel info by Zarr storage name."""
@@ -205,77 +204,77 @@ class ChannelMapper:
             if channel.zarr_name == zarr_name:
                 return channel
         raise ValueError(f"Unknown Zarr channel name: {zarr_name}")
-    
+
     @classmethod
     def get_all_channel_ids(cls) -> List[int]:
         """Get all available channel IDs."""
         return list(cls.CHANNELS.keys())
-    
+
     @classmethod
     def get_all_human_names(cls) -> List[str]:
         """Get all human-readable channel names."""
         return [channel.human_name for channel in cls.CHANNELS.values()]
-    
+
     @classmethod
     def get_all_zarr_names(cls) -> List[str]:
         """Get all Zarr storage channel names."""
         return [channel.zarr_name for channel in cls.CHANNELS.values()]
-    
+
     @classmethod
     def human_name_to_id(cls, human_name: str) -> int:
         """Convert human name to channel ID."""
         return cls.get_channel_by_human_name(human_name).channel_id
-    
+
     @classmethod
     def id_to_human_name(cls, channel_id: int) -> str:
         """Convert channel ID to human name."""
         return cls.get_channel_info(channel_id).human_name
-    
+
     @classmethod
     def id_to_zarr_name(cls, channel_id: int) -> str:
-        """Convert channel ID to Zarr name.""" 
+        """Convert channel ID to Zarr name."""
         return cls.get_channel_info(channel_id).zarr_name
-    
+
     @classmethod
     def zarr_name_to_id(cls, zarr_name: str) -> int:
         """Convert Zarr name to channel ID."""
         return cls.get_channel_by_zarr_name(zarr_name).channel_id
-    
+
     @classmethod
     def id_to_param_name(cls, channel_id: int) -> str:
         """Convert channel ID to parameter name."""
         return cls.get_channel_info(channel_id).param_name
-    
+
     @classmethod
     def id_to_example_image(cls, channel_id: int) -> str:
         """Convert channel ID to example image filename."""
         return cls.get_channel_info(channel_id).example_image
-    
+
     @classmethod
     def get_human_to_id_map(cls) -> dict:
         """Get mapping from human names to channel IDs."""
         return {channel.human_name: channel.channel_id for channel in cls.CHANNELS.values()}
-    
+
     @classmethod
     def get_id_to_zarr_map(cls) -> dict:
         """Get mapping from channel IDs to Zarr names."""
         return {channel.channel_id: channel.zarr_name for channel in cls.CHANNELS.values()}
-    
+
     @classmethod
     def get_id_to_param_map(cls) -> dict:
         """Get mapping from channel IDs to parameter names."""
         return {channel.channel_id: channel.param_name for channel in cls.CHANNELS.values()}
-    
+
     @classmethod
     def get_id_to_example_image_map(cls) -> dict:
         """Get mapping from channel IDs to example image filenames."""
         return {channel.channel_id: channel.example_image for channel in cls.CHANNELS.values()}
-    
+
     @classmethod
     def get_fluorescence_channels(cls) -> List[ChannelInfo]:
         """Get all fluorescence channels (ID >= 11)."""
         return [channel for channel in cls.CHANNELS.values() if channel.channel_id >= 11]
-    
+
     @classmethod
     def get_brightfield_channels(cls) -> List[ChannelInfo]:
         """Get all bright field channels (ID < 11)."""
@@ -393,7 +392,7 @@ class BaseConfig(BaseModel):
     #### machine specific configurations - to be overridden ###
     ###########################################################
     ROTATE_IMAGE_ANGLE: Optional[float] = None
-    FLIP_IMAGE: Optional[FlipImageSetting] = None  #
+    FLIP_IMAGE: Optional[FlipImageSetting] = None
 
     CAMERA_REVERSE_X: bool = False
     CAMERA_REVERSE_Y: bool = False
@@ -703,7 +702,7 @@ class BaseConfig(BaseModel):
         cached_config_file_path = None
 
         try:
-            with open(self.CACHE_CONFIG_FILE_PATH, "r") as file:
+            with open(self.CACHE_CONFIG_FILE_PATH) as file:
                 for line in file:
                     cached_config_file_path = line.strip()
                     break
@@ -785,7 +784,7 @@ def load_config(config_path, multipoint_function):
         config_path = current_dir / (
             "../configurations/configuration_" + str(config_path) + ".ini"
         )
-    
+
     # Convert Path object to string if needed
     config_path = str(config_path)
 
@@ -797,9 +796,9 @@ def load_config(config_path, multipoint_function):
     # Check if configuration file exists
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Configuration file {config_path} not found.")
-    
+
     print(f"Reading configuration from: {config_path}")
-    
+
     cf_editor_parser = ConfigParser()
     cached_config_file_path = CONFIG.read_config(config_path)
     CONFIG.STAGE_POS_SIGN_X = CONFIG.STAGE_MOVEMENT_SIGN_X
@@ -854,7 +853,7 @@ def load_config(config_path, multipoint_function):
         print(f"Applying wellplate offset X: {CONFIG.WELLPLATE_OFFSET_X_MM}")
         if CONFIG.WELLPLATE_FORMAT in [384, 96, 24, 12, 6]:
             CONFIG.A1_X_MM += CONFIG.WELLPLATE_OFFSET_X_MM
-    
+
     if hasattr(CONFIG, 'WELLPLATE_OFFSET_Y_MM'):
         print(f"Applying wellplate offset Y: {CONFIG.WELLPLATE_OFFSET_Y_MM}")
         if CONFIG.WELLPLATE_FORMAT in [384, 96, 24, 12, 6]:
@@ -870,7 +869,7 @@ def load_config(config_path, multipoint_function):
     except Exception as e:
         print(f"Error reading cached config: {e}")
         return False
-    
+
     return True
 
 
@@ -938,10 +937,10 @@ def get_microscope_configuration_data(config_section="all", include_defaults=Tru
         dict: Configuration data as a dictionary
     """
     import time
-    
+
     # Get current configuration
     config_data = {}
-    
+
     if config_section.lower() == "all" or config_section.lower() == "camera":
         config_data["camera"] = {
             "camera_type": getattr(CONFIG, 'CAMERA_TYPE', 'Default'),
@@ -960,7 +959,7 @@ def get_microscope_configuration_data(config_section="all", include_defaults=Tru
                 "roi_height_default": getattr(CONFIG.CAMERA_CONFIG, 'ROI_HEIGHT_DEFAULT', 2084),
             }
         }
-    
+
     if config_section.lower() == "all" or config_section.lower() == "stage":
         config_data["stage"] = {
             "movement_signs": {
@@ -1002,7 +1001,7 @@ def get_microscope_configuration_data(config_section="all", include_defaults=Tru
                 "z": getattr(CONFIG, 'HOMING_ENABLED_Z', False),
             }
         }
-    
+
     if config_section.lower() == "all" or config_section.lower() == "illumination":
         config_data["illumination"] = {
             "led_matrix_factors": {
@@ -1021,7 +1020,7 @@ def get_microscope_configuration_data(config_section="all", include_defaults=Tru
                 "af_laser": getattr(CONFIG.MCU_PINS, 'AF_LASER', 15),
             }
         }
-    
+
     if config_section.lower() == "all" or config_section.lower() == "acquisition":
         config_data["acquisition"] = {
             "crop_width": getattr(CONFIG.Acquisition, 'CROP_WIDTH', 3000),
@@ -1041,7 +1040,7 @@ def get_microscope_configuration_data(config_section="all", include_defaults=Tru
             "default_saving_path": getattr(CONFIG, 'DEFAULT_SAVING_PATH', '/home/tao/remote_harddisk/u2os-treatment/'),
             "stitching_rotation_angle_deg": getattr(CONFIG, 'STITCHING_ROTATION_ANGLE_DEG', 0.0),
         }
-    
+
     if config_section.lower() == "all" or config_section.lower() == "limits":
         config_data["limits"] = {
             "software_pos_limit": {
@@ -1058,7 +1057,7 @@ def get_microscope_configuration_data(config_section="all", include_defaults=Tru
                 "z": getattr(CONFIG, 'SCAN_STABILIZATION_TIME_MS_Z', 20),
             }
         }
-    
+
     if config_section.lower() == "all" or config_section.lower() == "hardware":
         config_data["hardware"] = {
             "controller_version": getattr(CONFIG, 'CONTROLLER_VERSION', 'Teensy'),
@@ -1074,7 +1073,7 @@ def get_microscope_configuration_data(config_section="all", include_defaults=Tru
             "objective_retracted_pos_mm": getattr(CONFIG, 'OBJECTIVE_RETRACTED_POS_MM', 0.1),
             "use_separate_mcu_for_dac": getattr(CONFIG, 'USE_SEPARATE_MCU_FOR_DAC', False),
         }
-    
+
     # Add wellplate configurations
     if config_section.lower() == "all" or config_section.lower() == "wellplate":
         config_data["wellplate"] = {
@@ -1098,7 +1097,7 @@ def get_microscope_configuration_data(config_section="all", include_defaults=Tru
                 }
             }
         }
-    
+
     # Add objectives configuration
     if config_section.lower() == "all" or config_section.lower() == "optics":
         config_data["optics"] = {
@@ -1115,7 +1114,7 @@ def get_microscope_configuration_data(config_section="all", include_defaults=Tru
                 config_data["optics"]["calculated_pixel_size_mm"] = pixel_size_um / 1000.0
             except Exception as e:
                 config_data["optics"]["calculated_pixel_size_mm"] = f"Error: {e}"
-    
+
     # Add autofocus configuration
     if config_section.lower() == "all" or config_section.lower() == "autofocus":
         config_data["autofocus"] = {
@@ -1138,7 +1137,7 @@ def get_microscope_configuration_data(config_section="all", include_defaults=Tru
                 "use_glass_top": getattr(CONFIG, 'USE_GLASS_TOP', True),
             }
         }
-    
+
     # Add metadata
     config_data["metadata"] = {
         "simulation_mode": is_simulation,
@@ -1149,7 +1148,7 @@ def get_microscope_configuration_data(config_section="all", include_defaults=Tru
         "config_file_path": getattr(CONFIG, 'CACHE_CONFIG_FILE_PATH', None),
         "channel_configurations_path": getattr(CONFIG, 'CHANNEL_CONFIGURATIONS_PATH', os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "u2os_fucci_illumination_configurations.xml")),
     }
-    
+
     return {
         "success": True,
         "configuration": config_data,

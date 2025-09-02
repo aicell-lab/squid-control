@@ -1,40 +1,40 @@
+import asyncio
+import importlib.util
+import json
+import math
 import os
 import threading
 import time
+from datetime import datetime
+from importlib import import_module
+from pathlib import Path
+from queue import Queue
+from typing import Callable
+
+import cv2
+import imageio as iio
 import numpy as np
+import pandas as pd
 import scipy
 import scipy.signal
-import cv2
-from datetime import datetime
-from queue import Queue
 from lxml import etree as ET
-from pathlib import Path
-import math
-import json
-import pandas as pd
-import imageio as iio
-import importlib.util
-from importlib import import_module
-import asyncio
-from typing import Callable, Optional, Any
 
-from squid_control.control.processing_handler import ProcessingHandler
-import squid_control.control.utils as utils
-from squid_control.control.config import CONFIG
+from squid_control.control import utils, utils_config
 from squid_control.control.camera import TriggerModeSetting
-import squid_control.control.utils_config as utils_config
+from squid_control.control.config import CONFIG
 from squid_control.control.microcontroller import LIMIT_CODE
+from squid_control.control.processing_handler import ProcessingHandler
 
 
 class EventEmitter:
     def __init__(self):
         self._callbacks = {}
-    
+
     def connect(self, event_name: str, callback: Callable):
         if event_name not in self._callbacks:
             self._callbacks[event_name] = []
         self._callbacks[event_name].append(callback)
-    
+
     def emit(self, event_name: str, *args, **kwargs):
         if event_name in self._callbacks:
             for callback in self._callbacks[event_name]:
@@ -42,7 +42,7 @@ class EventEmitter:
                     callback(*args, **kwargs)
                 except Exception as e:
                     print(f"Error in callback for {event_name}: {e}")
-    
+
     def disconnect(self, event_name: str, callback: Callable = None):
         if event_name in self._callbacks:
             if callback:
@@ -169,7 +169,7 @@ class StreamHandler:
     def set_webrtc_frame_callback(self, callback):
         """Set a direct callback for WebRTC frame handling"""
         self.webrtc_frame_callback = callback
-    
+
     def remove_webrtc_frame_callback(self):
         """Remove the WebRTC frame callback"""
         self.webrtc_frame_callback = None
@@ -604,10 +604,10 @@ class LiveController:
             if self.control_illumination and self.illumination_on == False:
                 self.turn_on_illumination()
             self.trigger_ID = self.trigger_ID + 1
-            
+
             # Handle camera trigger: schedule if async (simulation), call directly if sync (real camera)
             if asyncio.iscoroutinefunction(self.camera.send_trigger):
-                asyncio.create_task(self.camera.send_trigger()) 
+                asyncio.create_task(self.camera.send_trigger())
             else:
                 self.camera.send_trigger()
 
@@ -781,10 +781,8 @@ class NavigationController:
                 try:
                     pixel_binning_x = highest_res[0] / resolution[0]
                     pixel_binning_y = highest_res[1] / resolution[1]
-                    if pixel_binning_x < 1:
-                        pixel_binning_x = 1
-                    if pixel_binning_y < 1:
-                        pixel_binning_y = 1
+                    pixel_binning_x = max(pixel_binning_x, 1)
+                    pixel_binning_y = max(pixel_binning_y, 1)
                 except:
                     pixel_binning_x = 1
                     pixel_binning_y = 1
@@ -823,7 +821,7 @@ class NavigationController:
     def move_to_cached_position(self):
         if not os.path.isfile(CONFIG.LAST_COORDS_PATH):
             return
-        with open(CONFIG.LAST_COORDS_PATH, "r") as f:
+        with open(CONFIG.LAST_COORDS_PATH) as f:
             for line in f:
                 try:
                     x, y, z = line.strip("\n").strip().split(",")
@@ -967,7 +965,7 @@ class NavigationController:
             ),
             velocity_mm_s
         )
-        
+
     def move_y_to_limited(self, delta):
         self.microcontroller.move_y_to_usteps_limited(
             CONFIG.STAGE_MOVEMENT_SIGN_Y
@@ -1073,7 +1071,7 @@ class NavigationController:
                 self.signal_joystick_button_pressed()
             print("joystick button pressed")
             microcontroller.signal_joystick_button_pressed_event = False
-    
+
         return self.x_pos_mm, self.y_pos_mm, self.z_pos_mm, self.theta_pos_rad
 
     def home_x(self):
@@ -1378,66 +1376,65 @@ class SlidePositionControlWorker:
             self.navigationController.set_y_limit_neg_mm(
                 CONFIG.SOFTWARE_POS_LIMIT.Y_NEGATIVE
             )
-        else:
 
-            # for glass slide
-            if (
-                self.slidePositionController.homing_done == False
-                or CONFIG.SLIDE_POTISION_SWITCHING_HOME_EVERYTIME
-            ):
-                if self.home_x_and_y_separately:
-                    timestamp_start = time.time()
-                    self.navigationController.home_x()
-                    self.wait_till_operation_is_completed(
-                        timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
-                    )
-                    self.navigationController.zero_x()
-                    self.navigationController.move_x(CONFIG.SLIDE_POSITION.LOADING_X_MM)
-                    self.wait_till_operation_is_completed(
-                        timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
-                    )
-                    self.navigationController.home_y()
-                    self.wait_till_operation_is_completed(
-                        timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
-                    )
-                    self.navigationController.zero_y()
-                    self.navigationController.move_y(CONFIG.SLIDE_POSITION.LOADING_Y_MM)
-                    self.wait_till_operation_is_completed(
-                        timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
-                    )
-                else:
-                    timestamp_start = time.time()
-                    self.navigationController.home_xy()
-                    self.wait_till_operation_is_completed(
-                        timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
-                    )
-                    self.navigationController.zero_x()
-                    self.navigationController.zero_y()
-                    self.navigationController.move_x(CONFIG.SLIDE_POSITION.LOADING_X_MM)
-                    self.wait_till_operation_is_completed(
-                        timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
-                    )
-                    self.navigationController.move_y(CONFIG.SLIDE_POSITION.LOADING_Y_MM)
-                    self.wait_till_operation_is_completed(
-                        timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
-                    )
-                self.slidePositionController.homing_done = True
+        # for glass slide
+        elif (
+            self.slidePositionController.homing_done == False
+            or CONFIG.SLIDE_POTISION_SWITCHING_HOME_EVERYTIME
+        ):
+            if self.home_x_and_y_separately:
+                timestamp_start = time.time()
+                self.navigationController.home_x()
+                self.wait_till_operation_is_completed(
+                    timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
+                )
+                self.navigationController.zero_x()
+                self.navigationController.move_x(CONFIG.SLIDE_POSITION.LOADING_X_MM)
+                self.wait_till_operation_is_completed(
+                    timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
+                )
+                self.navigationController.home_y()
+                self.wait_till_operation_is_completed(
+                    timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
+                )
+                self.navigationController.zero_y()
+                self.navigationController.move_y(CONFIG.SLIDE_POSITION.LOADING_Y_MM)
+                self.wait_till_operation_is_completed(
+                    timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
+                )
             else:
                 timestamp_start = time.time()
-                self.navigationController.move_y(
-                    CONFIG.SLIDE_POSITION.LOADING_Y_MM
-                    - self.navigationController.y_pos_mm
-                )
+                self.navigationController.home_xy()
                 self.wait_till_operation_is_completed(
                     timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
                 )
-                self.navigationController.move_x(
-                    CONFIG.SLIDE_POSITION.LOADING_X_MM
-                    - self.navigationController.x_pos_mm
-                )
+                self.navigationController.zero_x()
+                self.navigationController.zero_y()
+                self.navigationController.move_x(CONFIG.SLIDE_POSITION.LOADING_X_MM)
                 self.wait_till_operation_is_completed(
                     timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
                 )
+                self.navigationController.move_y(CONFIG.SLIDE_POSITION.LOADING_Y_MM)
+                self.wait_till_operation_is_completed(
+                    timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
+                )
+            self.slidePositionController.homing_done = True
+        else:
+            timestamp_start = time.time()
+            self.navigationController.move_y(
+                CONFIG.SLIDE_POSITION.LOADING_Y_MM
+                - self.navigationController.y_pos_mm
+            )
+            self.wait_till_operation_is_completed(
+                timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
+            )
+            self.navigationController.move_x(
+                CONFIG.SLIDE_POSITION.LOADING_X_MM
+                - self.navigationController.x_pos_mm
+            )
+            self.wait_till_operation_is_completed(
+                timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
+            )
 
         if was_live:
             self.signal_resume_live()
@@ -1495,72 +1492,71 @@ class SlidePositionControlWorker:
                 self.wait_till_operation_is_completed(
                     timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
                 )
-        else:
-            if (
-                self.slidePositionController.homing_done == False
-                or CONFIG.SLIDE_POTISION_SWITCHING_HOME_EVERYTIME
-            ):
-                if self.home_x_and_y_separately:
-                    timestamp_start = time.time()
-                    self.navigationController.home_y()
-                    self.wait_till_operation_is_completed(
-                        timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
-                    )
-                    self.navigationController.zero_y()
-                    self.navigationController.move_y(
-                        CONFIG.SLIDE_POSITION.SCANNING_Y_MM
-                    )
-                    self.wait_till_operation_is_completed(
-                        timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
-                    )
-                    self.navigationController.home_x()
-                    self.wait_till_operation_is_completed(
-                        timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
-                    )
-                    self.navigationController.zero_x()
-                    self.navigationController.move_x(
-                        CONFIG.SLIDE_POSITION.SCANNING_X_MM
-                    )
-                    self.wait_till_operation_is_completed(
-                        timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
-                    )
-                else:
-                    timestamp_start = time.time()
-                    self.navigationController.home_xy()
-                    self.wait_till_operation_is_completed(
-                        timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
-                    )
-                    self.navigationController.zero_x()
-                    self.navigationController.zero_y()
-                    self.navigationController.move_y(
-                        CONFIG.SLIDE_POSITION.SCANNING_Y_MM
-                    )
-                    self.wait_till_operation_is_completed(
-                        timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
-                    )
-                    self.navigationController.move_x(
-                        CONFIG.SLIDE_POSITION.SCANNING_X_MM
-                    )
-                    self.wait_till_operation_is_completed(
-                        timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
-                    )
-                self.slidePositionController.homing_done = True
-            else:
+        elif (
+            self.slidePositionController.homing_done == False
+            or CONFIG.SLIDE_POTISION_SWITCHING_HOME_EVERYTIME
+        ):
+            if self.home_x_and_y_separately:
                 timestamp_start = time.time()
+                self.navigationController.home_y()
+                self.wait_till_operation_is_completed(
+                    timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
+                )
+                self.navigationController.zero_y()
                 self.navigationController.move_y(
                     CONFIG.SLIDE_POSITION.SCANNING_Y_MM
-                    - self.navigationController.y_pos_mm
+                )
+                self.wait_till_operation_is_completed(
+                    timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
+                )
+                self.navigationController.home_x()
+                self.wait_till_operation_is_completed(
+                    timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
+                )
+                self.navigationController.zero_x()
+                self.navigationController.move_x(
+                    CONFIG.SLIDE_POSITION.SCANNING_X_MM
+                )
+                self.wait_till_operation_is_completed(
+                    timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
+                )
+            else:
+                timestamp_start = time.time()
+                self.navigationController.home_xy()
+                self.wait_till_operation_is_completed(
+                    timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
+                )
+                self.navigationController.zero_x()
+                self.navigationController.zero_y()
+                self.navigationController.move_y(
+                    CONFIG.SLIDE_POSITION.SCANNING_Y_MM
                 )
                 self.wait_till_operation_is_completed(
                     timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
                 )
                 self.navigationController.move_x(
                     CONFIG.SLIDE_POSITION.SCANNING_X_MM
-                    - self.navigationController.x_pos_mm
                 )
                 self.wait_till_operation_is_completed(
                     timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
                 )
+            self.slidePositionController.homing_done = True
+        else:
+            timestamp_start = time.time()
+            self.navigationController.move_y(
+                CONFIG.SLIDE_POSITION.SCANNING_Y_MM
+                - self.navigationController.y_pos_mm
+            )
+            self.wait_till_operation_is_completed(
+                timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
+            )
+            self.navigationController.move_x(
+                CONFIG.SLIDE_POSITION.SCANNING_X_MM
+                - self.navigationController.x_pos_mm
+            )
+            self.wait_till_operation_is_completed(
+                timestamp_start, CONFIG.SLIDE_POTISION_SWITCHING_TIMEOUT_LIMIT_S
+            )
 
         # restore z
         if self.slidePositionController.objective_retracted:
@@ -1708,7 +1704,7 @@ class AutofocusWorker:
         if illumination_on:
             self.liveController.turn_off_illumination()
             self.wait_till_operation_is_completed()
-            
+
         steps_moved = 0
         for i in range(self.N):
             self.navigationController.move_z_usteps(self.deltaZ_usteps)
@@ -1857,7 +1853,7 @@ class AutoFocusController:
             self.callback_was_enabled_before_autofocus = False
 
         self.autofocus_in_progress = True
-        
+
         try:
             if hasattr(self, 'thread') and self.thread and self.thread.is_alive():
                 print('*** autofocus thread is still running ***')
@@ -1866,15 +1862,15 @@ class AutoFocusController:
                 print('*** autofocus threaded manually stopped ***')
         except:
             pass
-        
+
         # create a worker object
         self.autofocusWorker = AutofocusWorker(self)
 
         self.autofocusWorker.run()
         self._on_autofocus_completed()
-        
 
- 
+
+
 
 
     def _on_autofocus_completed(self):
@@ -2138,7 +2134,7 @@ class MultiPointWorker:
         #self.processingHandler.upload_queue.join()
         elapsed_time = time.perf_counter_ns() - self.start_time
         print("Time taken for acquisition/processing: " + str(elapsed_time / 10**9))
-        
+
     def wait_till_operation_is_completed(self):
         while self.microcontroller.is_busy():
             time.sleep(CONFIG.SLEEP_TIME_S)
@@ -2273,11 +2269,11 @@ class MultiPointWorker:
                                     CONFIG.MULTIPOINT_AUTOFOCUS_CHANNEL
                                 )
                                 config_AF = next(
-                                    (
+
                                         config
                                         for config in self.configurationManager.configurations
                                         if config.name == configuration_name_AF
-                                    )
+
                                 )
                                 self.autofocusController.set_microscope_mode(config_AF)
                                 print(f"autofocus at {coordiante_name}{i}_{j}, configuration: {configuration_name_AF},{config_AF}")
@@ -2301,74 +2297,73 @@ class MultiPointWorker:
                                         )
                                     except:
                                         pass
-                        else:
-                            # initialize laser autofocus if it has not been done
-                            if (
-                                self.microscope.laserAutofocusController.is_initialized
-                                == False
+                        # initialize laser autofocus if it has not been done
+                        elif (
+                            self.microscope.laserAutofocusController.is_initialized
+                            == False
+                        ):
+                            # initialize the reflection CONFIG.AF
+                            self.microscope.laserAutofocusController.initialize_auto()
+                            # do contrast CONFIG.AF for the first FOV (if contrast CONFIG.AF box is checked)
+                            if self.do_autofocus and (
+                                (self.NZ == 1)
+                                or CONFIG.Z_STACKING_CONFIG == "FROM CENTER"
                             ):
-                                # initialize the reflection CONFIG.AF
-                                self.microscope.laserAutofocusController.initialize_auto()
-                                # do contrast CONFIG.AF for the first FOV (if contrast CONFIG.AF box is checked)
-                                if self.do_autofocus and (
-                                    (self.NZ == 1)
-                                    or CONFIG.Z_STACKING_CONFIG == "FROM CENTER"
+                                configuration_name_AF = (
+                                    CONFIG.MULTIPOINT_AUTOFOCUS_CHANNEL
+                                )
+                                config_AF = next(
+
+                                        config
+                                        for config in self.configurationManager.configurations
+                                        if config.name == configuration_name_AF
+
+                                )
+                                self.autofocusController.set_microscope_mode(config_AF)
+                                self.autofocusController.autofocus()
+                                self.autofocusController.wait_till_autofocus_has_completed()
+                            # set the current plane as reference
+                            self.microscope.laserAutofocusController.set_reference()
+                        else:
+                            try:
+                                if (
+                                    self.navigationController.get_pid_control_flag(
+                                        2
+                                    )
+                                    is False
                                 ):
-                                    configuration_name_AF = (
-                                        CONFIG.MULTIPOINT_AUTOFOCUS_CHANNEL
+                                    self.microscope.laserAutofocusController.move_to_target(
+                                        0
                                     )
-                                    config_AF = next(
-                                        (
-                                            config
-                                            for config in self.configurationManager.configurations
-                                            if config.name == configuration_name_AF
-                                        )
+                                    self.microscope.laserAutofocusController.move_to_target(
+                                        0
+                                    )  # for stepper in open loop mode, repeat the operation to counter backlash
+                                else:
+                                    self.microscope.laserAutofocusController.move_to_target(
+                                        0
                                     )
-                                    self.autofocusController.set_microscope_mode(config_AF)
-                                    self.autofocusController.autofocus()
-                                    self.autofocusController.wait_till_autofocus_has_completed()
-                                # set the current plane as reference
-                                self.microscope.laserAutofocusController.set_reference()
-                            else:
-                                try:
-                                    if (
-                                        self.navigationController.get_pid_control_flag(
-                                            2
-                                        )
-                                        is False
-                                    ):
-                                        self.microscope.laserAutofocusController.move_to_target(
-                                            0
-                                        )
-                                        self.microscope.laserAutofocusController.move_to_target(
-                                            0
-                                        )  # for stepper in open loop mode, repeat the operation to counter backlash
-                                    else:
-                                        self.microscope.laserAutofocusController.move_to_target(
-                                            0
-                                        )
-                                except:
-                                    file_ID = (
-                                        coordiante_name
-                                        + str(i)
-                                        + "_"
-                                        + str(
-                                            j
-                                            if self.x_scan_direction == 1
-                                            else self.NX - 1 - j
-                                        )
+                            except:
+                                file_ID = (
+                                    coordiante_name
+                                    + str(i)
+                                    + "_"
+                                    + str(
+                                        j
+                                        if self.x_scan_direction == 1
+                                        else self.NX - 1 - j
                                     )
-                                    saving_path = os.path.join(
-                                        current_path, file_ID + "_focus_camera.bmp"
-                                    )
-                                    iio.imwrite(
-                                        saving_path,
-                                        self.microscope.laserAutofocusController.image,
-                                    )
-                                    print(
-                                        "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! laser CONFIG.AF failed !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                                )
+                                saving_path = os.path.join(
+                                    current_path, file_ID + "_focus_camera.bmp"
+                                )
+                                iio.imwrite(
+                                    saving_path,
+                                    self.microscope.laserAutofocusController.image,
+                                )
+                                print(
+                                    "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! laser CONFIG.AF failed !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
                                     #raise Exception("laser CONFIG.AF failed")
-                                    
+
 
                         if self.NZ > 1:
                             # move to bottom of the z stack
@@ -2571,20 +2566,19 @@ class MultiPointWorker:
 
                                     current_round_images[config.name] = np.copy(image)
 
-                                else:
-                                    if self.usb_spectrometer != None:
-                                        for l in range(CONFIG.N_SPECTRUM_PER_POINT):
-                                            data = self.usb_spectrometer.read_spectrum()
-                                            saving_path = os.path.join(
-                                                current_path,
-                                                file_ID
-                                                + "_"
-                                                + str(config.name).replace(" ", "_")
-                                                + "_"
-                                                + str(l)
-                                                + ".csv",
-                                            )
-                                            np.savetxt(saving_path, data, delimiter=",")
+                                elif self.usb_spectrometer != None:
+                                    for l in range(CONFIG.N_SPECTRUM_PER_POINT):
+                                        data = self.usb_spectrometer.read_spectrum()
+                                        saving_path = os.path.join(
+                                            current_path,
+                                            file_ID
+                                            + "_"
+                                            + str(config.name).replace(" ", "_")
+                                            + "_"
+                                            + str(l)
+                                            + ".csv",
+                                        )
+                                        np.savetxt(saving_path, data, delimiter=",")
 
                                 if config.z_offset is not None:  # undo Z offset
                                     # assume z_offset is in um
@@ -2817,7 +2811,7 @@ class MultiPointWorker:
         print(time.time())
         print(time.time() - start)
         return
-        
+
 class MultiPointController:
 
     acquisitionFinished = None
@@ -3014,11 +3008,11 @@ class MultiPointController:
         for configuration_name in selected_configurations_name:
             self.selected_configurations.append(
                 next(
-                    (
+
                         config
                         for config in self.configurationManager.configurations
                         if config.name == configuration_name
-                    )
+
                 )
             )
 
@@ -3035,48 +3029,48 @@ class MultiPointController:
                 - 'exposure_time': Exposure time in ms (float)
         """
         self.selected_configurations = []
-        
+
         for setting in illumination_settings:
             channel_name = setting['channel']
             intensity = setting['intensity']
             exposure_time = setting['exposure_time']
-            
+
             # Find the original configuration by name
             original_config = None
             for cfg in self.configurationManager.configurations:
                 if cfg.name == channel_name:
                     original_config = cfg
                     break
-            
+
             if original_config is None:
                 print(f"Warning: Configuration '{channel_name}' not found, skipping...")
                 continue
-            
+
             # UPDATE the original configuration directly with new settings
             # This ensures the custom values will be saved in the experiment metadata
             original_config.illumination_intensity = float(intensity)
             original_config.exposure_time = float(exposure_time)
-            
+
             # Add the updated configuration to selected configurations
             self.selected_configurations.append(original_config)
-            
+
             print(f"Updated configuration '{channel_name}': intensity={intensity}, exposure_time={exposure_time}")
-        
+
         print(f"Selected {len(self.selected_configurations)} configurations with custom settings")
 
-    def run_acquisition(self, location_list=None): 
+    def run_acquisition(self, location_list=None):
         print('start acquisition')
         self.tile_stitchers = {}
         print(str(self.Nt) + '_' + str(self.NX) + '_' + str(self.NY) + '_' + str(self.NZ))
         if location_list is not None:
             self.location_list = location_list
-        
+
 
         self.abort_acqusition_requested = False
 
         # Store current configuration to restore later
         self.configuration_before_running_multipoint = self.liveController.currentConfiguration
-        
+
         # Stop live view if active
         if self.liveController.is_live:
             self.liveController_was_live_before_multipoint = True
@@ -3108,17 +3102,17 @@ class MultiPointController:
                 self.parent.recordTabWidget.setCurrentWidget(self.parent.statsDisplayWidget)
             except:
                 pass
-        
+
         # Start acquisition
         self.timestamp_acquisition_started = time.time()
-        
+
         # Start processing
         #self.processingHandler.start_processing()
         #self.processingHandler.start_uploading()
 
         # Create worker but run directly without thread
         self.multiPointWorker = MultiPointWorker(self)
-        
+
         # Connect signals directly - they'll still work for direct method calls
         #self.multiPointWorker.signal_detection_stats.connect(self.slot_detection_stats)
         #self.multiPointWorker.image_to_display.connect(self.slot_image_to_display)
@@ -3126,7 +3120,7 @@ class MultiPointController:
         #self.multiPointWorker.spectrum_to_display.connect(self.slot_spectrum_to_display)
         #self.multiPointWorker.signal_current_configuration.connect(self.slot_current_configuration)
         #self.multiPointWorker.signal_register_current_fov.connect(self.slot_register_current_fov)
-        
+
         try:
             # Run the acquisition directly without threading
             self.multiPointWorker.run()
@@ -3185,7 +3179,7 @@ class ConfigurationManager:
             self.config_filename = os.path.join(package_dir, os.path.basename(filename))
         else:
             self.config_filename = filename
-            
+
         print(f"Illumination configurations file: {self.config_filename}")
         self.configurations = []
         self.read_configurations()
@@ -3487,10 +3481,14 @@ class ScanCoordinates:
         """
         # Import wellplate format classes
         from squid_control.control.config import (
-            WELLPLATE_FORMAT_6, WELLPLATE_FORMAT_12, WELLPLATE_FORMAT_24,
-            WELLPLATE_FORMAT_96, WELLPLATE_FORMAT_384, CONFIG
+            CONFIG,
+            WELLPLATE_FORMAT_6,
+            WELLPLATE_FORMAT_12,
+            WELLPLATE_FORMAT_24,
+            WELLPLATE_FORMAT_96,
+            WELLPLATE_FORMAT_384,
         )
-        
+
         # Get well plate format configuration - same logic as move_to_well
         if wellplate_type == '6':
             wellplate_format = WELLPLATE_FORMAT_6
@@ -3505,7 +3503,7 @@ class ScanCoordinates:
         else:
             # Default to 96-well plate if unsupported type is provided
             wellplate_format = WELLPLATE_FORMAT_96
-        
+
         # get selected wells from the widget
         selected_wells = self.well_selector.get_selected_wells()
         selected_wells = np.array(selected_wells)
@@ -3529,7 +3527,7 @@ class ScanCoordinates:
                 else:
                     x_mm = wellplate_format.A1_X_MM + column * wellplate_format.WELL_SPACING_MM + CONFIG.WELLPLATE_OFFSET_X_MM
                     y_mm = wellplate_format.A1_Y_MM + row * wellplate_format.WELL_SPACING_MM + CONFIG.WELLPLATE_OFFSET_Y_MM
-                
+
                 self.coordinates_mm.append((x_mm, y_mm))
                 self.name.append(chr(ord("A") + row) + str(column + 1))
             _increasing = not _increasing
@@ -3576,7 +3574,7 @@ class LaserAutofocusController:
         if look_for_cache:
             cache_path = "cache/laser_af_reference_plane.txt"
             try:
-                with open(cache_path, "r") as cache_file:
+                with open(cache_path) as cache_file:
                     for line in cache_file:
                         value_list = line.split(",")
                         x_offset = float(value_list[0])
@@ -3721,7 +3719,7 @@ class LaserAutofocusController:
                 height = None
                 pixel_to_um = None
                 x_reference = None
-                with open(cache_path, "r") as cache_file:
+                with open(cache_path) as cache_file:
                     for line in cache_file:
                         value_list = line.split(",")
                         x_offset = float(value_list[0])

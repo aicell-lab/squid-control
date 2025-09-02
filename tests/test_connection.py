@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 
-import os
 import asyncio
+import os
+
 import pytest
 from hypha_rpc import connect_to_server
+
 
 @pytest.mark.asyncio
 @pytest.mark.integration
@@ -12,7 +14,7 @@ async def test_connection():
     if not token:
         print('❌ No AGENT_LENS_WORKSPACE_TOKEN found in environment')
         return False
-    
+
     print('🔗 Attempting to connect to Hypha server...')
     try:
         server = await connect_to_server({
@@ -30,4 +32,4 @@ async def test_connection():
 
 if __name__ == "__main__":
     result = asyncio.run(test_connection())
-    exit(0 if result else 1) 
+    exit(0 if result else 1)

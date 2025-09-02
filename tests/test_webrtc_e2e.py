@@ -1,20 +1,22 @@
-import pytest
-import pytest_asyncio
 import asyncio
+import json
 import os
+import socket
+import tempfile
+import threading
 import time
 import uuid
-import json
-import threading
-import socket
-from pathlib import Path
-from hypha_rpc import connect_to_server, register_rtc_service
-from squid_control.start_hypha_service import MicroscopeHyphaService, MicroscopeVideoTrack
 from http.server import HTTPServer, SimpleHTTPRequestHandler
-import tempfile
-import webbrowser
-import subprocess
-import signal
+from pathlib import Path
+
+import pytest
+import pytest_asyncio
+from hypha_rpc import connect_to_server
+
+from squid_control.start_hypha_service import (
+    MicroscopeHyphaService,
+    MicroscopeVideoTrack,
+)
 
 # Mark all tests in this module as asyncio and integration tests
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
@@ -26,11 +28,11 @@ TEST_TIMEOUT = 180  # 3 minutes for WebRTC tests
 
 class TestHTTPHandler(SimpleHTTPRequestHandler):
     """Custom HTTP handler for serving test files."""
-    
+
     def __init__(self, *args, test_directory=None, **kwargs):
         self.test_directory = test_directory
         super().__init__(*args, directory=test_directory, **kwargs)
-    
+
     def end_headers(self):
         # Add CORS headers for local testing
         self.send_header('Access-Control-Allow-Origin', '*')
@@ -335,7 +337,7 @@ def create_data_channel_test_html(service_id, webrtc_service_id, server_url, wor
     </script>
 </body>
 </html>'''
-    
+
     return html_content
 
 def create_webrtc_test_html(service_id, webrtc_service_id, server_url, workspace, token):
@@ -1032,7 +1034,7 @@ def create_webrtc_test_html(service_id, webrtc_service_id, server_url, workspace
     </script>
 </body>
 </html>'''
-    
+
     return html_content
 
 @pytest_asyncio.fixture(scope="function")
@@ -1042,13 +1044,13 @@ async def webrtc_test_services():
     token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
     if not token:
         pytest.skip("AGENT_LENS_WORKSPACE_TOKEN not set in environment")
-    
-    print(f"🔗 Setting up WebRTC test services...")
-    
+
+    print("🔗 Setting up WebRTC test services...")
+
     server = None
     microscope = None
     webrtc_service_id = None
-    
+
     try:
         # Use context manager for proper connection handling
         async with connect_to_server({
@@ -1058,27 +1060,27 @@ async def webrtc_test_services():
             "ping_interval": None
         }) as server:
             print("✅ Connected to Hypha server")
-            
+
             # Create unique service IDs for this test
             test_id = f"test-webrtc-microscope-{uuid.uuid4().hex[:8]}"
             webrtc_service_id = f"video-track-{test_id}"
-            
+
             print(f"Creating microscope service: {test_id}")
             print(f"Creating WebRTC service: {webrtc_service_id}")
-            
+
             # Create microscope instance in simulation mode
             print("🔬 Creating Microscope instance...")
             microscope = MicroscopeHyphaService(is_simulation=True, is_local=False)
             microscope.service_id = test_id
             microscope.login_required = False  # Disable auth for tests
             microscope.authorized_emails = None
-            
+
             # Create a simple datastore for testing
             class SimpleTestDataStore:
                 def __init__(self):
                     self.storage = {}
                     self.counter = 0
-                
+
                 def put(self, file_type, data, filename, description=""):
                     self.counter += 1
                     file_id = f"test_file_{self.counter}"
@@ -1089,37 +1091,37 @@ async def webrtc_test_services():
                         'description': description
                     }
                     return file_id
-                
+
                 def get_url(self, file_id):
                     if file_id in self.storage:
                         return f"https://test-storage.example.com/{file_id}"
                     return None
-            
+
             microscope.datastore = SimpleTestDataStore()
             microscope.similarity_search_svc = None
-            
+
             # Override setup method
             async def mock_setup():
                 pass
             microscope.setup = mock_setup
-            
+
             # Register the microscope service
             print("📝 Registering microscope service...")
             await microscope.start_hypha_service(server, test_id)
             print("✅ Microscope service registered")
-            
+
             # Register WebRTC service following the actual implementation pattern
             print("📹 Registering WebRTC service...")
             await microscope.start_webrtc_service(server, webrtc_service_id)
             print("✅ WebRTC service registered")
-            
+
             # Verify services are accessible
             print("🔍 Verifying services...")
             microscope_svc = await server.get_service(test_id)
             ping_result = await microscope_svc.ping()
             assert ping_result == "pong"
             print("✅ Services verified and ready")
-            
+
             try:
                 yield {
                     'microscope': microscope,
@@ -1131,7 +1133,7 @@ async def webrtc_test_services():
             finally:
                 # Cleanup
                 print("🧹 Cleaning up WebRTC test services...")
-                
+
                 # Stop video buffering
                 if microscope and hasattr(microscope, 'stop_video_buffering'):
                     try:
@@ -1152,7 +1154,7 @@ async def webrtc_test_services():
                         print("✅ Video buffering force stopped")
                     except Exception as e:
                         print(f"Error stopping video buffering: {e}")
-                
+
                 # Close SquidController
                 if microscope and hasattr(microscope, 'squidController'):
                     try:
@@ -1169,27 +1171,27 @@ async def webrtc_test_services():
                                     print("⚠️ Zarr cleanup timed out in WebRTC test, skipping...")
                                 except Exception as e:
                                     print(f"Camera cleanup error: {e}")
-                        
+
                         microscope.squidController.close()
                         print("✅ SquidController closed")
                     except Exception as e:
                         print(f"Error closing SquidController: {e}")
-                
+
                 print("✅ WebRTC test cleanup completed")
-        
+
     except Exception as e:
         pytest.fail(f"Failed to create WebRTC test services: {e}")
 
 async def test_webrtc_end_to_end(webrtc_test_services):
     """Test WebRTC functionality end-to-end with a web browser."""
     services = webrtc_test_services
-    
+
     print("🧪 Starting WebRTC end-to-end test...")
-    
+
     # Create temporary directory for test files
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
-        
+
         # Create HTML test file
         html_content = create_webrtc_test_html(
             service_id=services['microscope_service_id'],
@@ -1198,30 +1200,30 @@ async def test_webrtc_end_to_end(webrtc_test_services):
             workspace=TEST_WORKSPACE,
             token=services['token']
         )
-        
+
         html_file = temp_path / "webrtc_test.html"
         html_file.write_text(html_content)
-        
+
         print(f"📄 Created test HTML file: {html_file}")
-        
+
         # Find free port and start HTTP server
         port = find_free_port()
         server_address = ('', port)
-        
+
         # Create custom handler with the test directory
         def handler(*args, **kwargs):
             return TestHTTPHandler(*args, test_directory=str(temp_path), **kwargs)
-        
+
         httpd = HTTPServer(server_address, handler)
-        
+
         # Start server in background thread
         server_thread = threading.Thread(target=httpd.serve_forever)
         server_thread.daemon = True
         server_thread.start()
-        
+
         test_url = f"http://localhost:{port}/webrtc_test.html"
         print(f"🌐 Test server running at: {test_url}")
-        
+
         try:
             # Test 1: Verify services are running
             print("1. Verifying services are running...")
@@ -1229,16 +1231,16 @@ async def test_webrtc_end_to_end(webrtc_test_services):
             status = await microscope_svc.get_status()
             assert isinstance(status, dict)
             print("✅ Microscope service is responsive")
-            
+
             # Test 2: Test video buffering functionality
             print("2. Testing video buffering...")
             buffer_result = await microscope_svc.start_video_buffering()
             assert buffer_result['success'] == True
             print("✅ Video buffering started")
-            
+
             # Wait for buffer to fill
             await asyncio.sleep(2)
-            
+
             # Test getting video frames
             frame_data = await microscope_svc.get_video_frame(frame_width=320, frame_height=240)
             assert frame_data is not None
@@ -1246,7 +1248,7 @@ async def test_webrtc_end_to_end(webrtc_test_services):
             assert 'format' in frame_data
             assert 'data' in frame_data
             print("✅ Video frames are being generated")
-            
+
             # Test 3: Test metadata functionality
             print("3. Testing frame metadata...")
             # Test multiple frames to check for metadata
@@ -1254,60 +1256,60 @@ async def test_webrtc_end_to_end(webrtc_test_services):
                 frame_data = await microscope_svc.get_video_frame(frame_width=320, frame_height=240)
                 assert frame_data is not None
                 print(f"   Frame {i+1}: format={frame_data.get('format')}, size={len(frame_data.get('data', ''))}")
-                
+
                 # Check if metadata is present (it may or may not be, depending on implementation)
                 if 'metadata' in frame_data:
                     print(f"   Metadata found: {frame_data['metadata']}")
                 else:
-                    print(f"   No explicit metadata, but frame data is valid")
-                
+                    print("   No explicit metadata, but frame data is valid")
+
                 await asyncio.sleep(0.5)
-            
+
             print("✅ Frame metadata test completed")
-            
+
             # Test 4: Test microscope controls through WebRTC
             print("4. Testing microscope controls...")
-            
+
             # Test movement
             move_result = await microscope_svc.move_by_distance(x=10, y=10, z=0.0)
             assert isinstance(move_result, dict)
             print("✅ Movement control works")
-            
+
             # Test illumination
             illum_result = await microscope_svc.set_illumination(channel=0, intensity=50)
             assert "intensity" in illum_result.lower()
             print("✅ Illumination control works")
-            
+
             # Test frame capture
             frame = await microscope_svc.one_new_frame()
             assert frame is not None
             print("✅ Frame capture works")
-            
+
             # Test 5: Stop video buffering
             print("5. Stopping video buffering...")
             stop_result = await microscope_svc.stop_video_buffering()
             assert stop_result['success'] == True
             print("✅ Video buffering stopped")
-            
+
             # Test 6: Manual browser test (optional - commented out for CI)
             print("6. Browser test information:")
             print(f"   📄 HTML test file created: {html_file}")
             print(f"   🌐 Test URL: {test_url}")
-            print(f"   🔧 Services configured:")
+            print("   🔧 Services configured:")
             print(f"      - Microscope: {services['microscope_service_id']}")
             print(f"      - WebRTC: {services['webrtc_service_id']}")
-            print(f"   📋 To manually test:")
+            print("   📋 To manually test:")
             print(f"      1. Open {test_url} in a browser")
-            print(f"      2. Click 'Run Full Automated Test'")
-            print(f"      3. Verify video stream and metadata")
-            
+            print("      2. Click 'Run Full Automated Test'")
+            print("      3. Verify video stream and metadata")
+
             # Note: In a CI environment, we would need a headless browser
             # For now, we'll just verify the HTML file was created correctly
             assert html_file.exists()
             assert html_file.stat().st_size > 1000  # Should be a substantial file
-            
+
             print("✅ WebRTC end-to-end test completed successfully!")
-            
+
         finally:
             # Cleanup HTTP server
             print("🧹 Shutting down test server...")
@@ -1319,27 +1321,27 @@ async def test_webrtc_end_to_end(webrtc_test_services):
 async def test_webrtc_service_api_endpoints(webrtc_test_services):
     """Test WebRTC-specific API endpoints."""
     services = webrtc_test_services
-    
+
     print("🧪 Testing WebRTC API endpoints...")
-    
+
     microscope_svc = await services['server'].get_service(services['microscope_service_id'])
-    
+
     # Test video buffering endpoints
     print("1. Testing video buffering API...")
-    
+
     # Start buffering
     start_result = await microscope_svc.start_video_buffering()
     assert isinstance(start_result, dict)
     assert start_result['success'] == True
     print("✅ start_video_buffering works")
-    
+
     # Get buffering status
     status = await microscope_svc.get_video_buffering_status()
     assert isinstance(status, dict)
     assert 'buffering_active' in status
     assert status['buffering_active'] == True
     print("✅ get_video_buffering_status works")
-    
+
     # Get video frames
     for i in range(3):
         frame_data = await microscope_svc.get_video_frame(frame_width=640, frame_height=480)
@@ -1349,50 +1351,50 @@ async def test_webrtc_service_api_endpoints(webrtc_test_services):
         assert frame_data['height'] == 480
         assert 'data' in frame_data
         print(f"✅ get_video_frame {i+1} works")
-    
+
     # Stop buffering
     stop_result = await microscope_svc.stop_video_buffering()
     assert isinstance(stop_result, dict)
     assert stop_result['success'] == True
     print("✅ stop_video_buffering works")
-    
+
     # Verify buffering stopped
     status = await microscope_svc.get_video_buffering_status()
     assert status['buffering_active'] == False
     print("✅ Buffering properly stopped")
-    
+
     print("✅ All WebRTC API endpoints working correctly!")
 
 async def test_webrtc_metadata_extraction(webrtc_test_services):
     """Test metadata extraction from video frames."""
     services = webrtc_test_services
-    
+
     print("🧪 Testing metadata extraction...")
-    
+
     microscope_svc = await services['server'].get_service(services['microscope_service_id'])
-    
+
     # Start video buffering
     await microscope_svc.start_video_buffering()
     await asyncio.sleep(1)  # Let buffer fill
-    
+
     try:
         # Test metadata consistency across frames
         print("1. Testing metadata consistency...")
-        
+
         frames_with_metadata = 0
         total_frames = 5
-        
+
         for i in range(total_frames):
             # Change microscope parameters to generate different metadata
             await microscope_svc.set_illumination(channel=i % 2, intensity=30 + i * 10)
-            
+
             # Get frame
             frame_data = await microscope_svc.get_video_frame(frame_width=320, frame_height=240)
-            
+
             assert frame_data is not None
             assert 'format' in frame_data
             assert 'data' in frame_data
-            
+
             # Check for metadata (may be in different formats)
             metadata_found = False
             if 'metadata' in frame_data:
@@ -1410,66 +1412,66 @@ async def test_webrtc_metadata_extraction(webrtc_test_services):
                 print(f"   Frame {i+1}: Implicit metadata: {implicit_metadata}")
                 metadata_found = True
                 frames_with_metadata += 1
-            
+
             assert metadata_found, f"No metadata found for frame {i+1}"
-            
+
             await asyncio.sleep(0.2)  # Small delay between frames
-        
+
         print(f"✅ Metadata extracted from {frames_with_metadata}/{total_frames} frames")
-        
+
         # Test metadata during different microscope states
         print("2. Testing metadata during state changes...")
-        
+
         # Change to fluorescence channel
         await microscope_svc.set_illumination(channel=11, intensity=60)
         await microscope_svc.set_camera_exposure(channel=11, exposure_time=150)
-        
+
         frame_data = await microscope_svc.get_video_frame(frame_width=160, frame_height=120)
         assert frame_data is not None
         print(f"   Fluorescence frame: {frame_data.get('width')}x{frame_data.get('height')}")
-        
+
         # Change back to brightfield
         await microscope_svc.set_illumination(channel=0, intensity=40)
-        
+
         frame_data = await microscope_svc.get_video_frame(frame_width=160, frame_height=120)
         assert frame_data is not None
         print(f"   Brightfield frame: {frame_data.get('width')}x{frame_data.get('height')}")
-        
+
         print("✅ Metadata extraction test completed successfully!")
-        
+
     finally:
         await microscope_svc.stop_video_buffering()
 
 async def test_webrtc_data_channel_metadata(webrtc_test_services):
     """Test that WebRTC data channels can send JSON metadata alongside video stream using real WebRTC connection."""
     services = webrtc_test_services
-    
+
     print("🧪 Testing WebRTC Data Channel JSON metadata with real connection...")
-    
+
     # Get services
     microscope_svc = await services['server'].get_service(services['microscope_service_id'])
-    
+
     # Start video buffering
     await microscope_svc.start_video_buffering()
-    
+
     try:
         # Test 1: Verify that MicroscopeVideoTrack generates proper metadata
         print("1. Testing MicroscopeVideoTrack metadata generation...")
-        
+
         microscope_instance = services['microscope']
-        
+
         # Create a real data channel simulation that captures sent metadata
         class RealDataChannelSimulation:
             def __init__(self):
                 self.readyState = 'open'
                 self.sent_messages = []
                 self.is_connected = True
-            
+
             def send(self, message):
                 if self.is_connected:
                     self.sent_messages.append(message)
                     print(f"     📤 Data channel sent: {len(message)} bytes")
-                    
+
                     # Verify it's valid JSON
                     try:
                         metadata = json.loads(message)
@@ -1479,80 +1481,80 @@ async def test_webrtc_data_channel_metadata(webrtc_test_services):
                         print(f"     ❌ Invalid JSON: {e}")
                         return False
                 else:
-                    print(f"     ⚠ Data channel not connected, message not sent")
+                    print("     ⚠ Data channel not connected, message not sent")
                     return False
-        
+
         # Set up the real data channel simulation
         real_data_channel = RealDataChannelSimulation()
         microscope_instance.metadata_data_channel = real_data_channel
         microscope_instance.webrtc_connected = True  # Mark as connected
-        
+
         # Create MicroscopeVideoTrack
         video_track = MicroscopeVideoTrack(microscope_instance)
-        
+
         # Test multiple frames with different microscope settings
         test_scenarios = [
             {'channel': 0, 'intensity': 30, 'move': (0.1, 0.0, 0.0), 'name': 'Brightfield low intensity'},
             {'channel': 11, 'intensity': 60, 'move': (0.0, 0.1, 0.0), 'name': 'Fluorescence 405nm'},
             {'channel': 12, 'intensity': 80, 'move': (0.0, 0.0, 0.1), 'name': 'Fluorescence 488nm'},
         ]
-        
+
         metadata_messages = []
-        
+
         for i, scenario in enumerate(test_scenarios):
             print(f"   Testing scenario {i+1}: {scenario['name']}")
-            
+
             # Change microscope settings to generate different metadata
             await microscope_svc.set_illumination(channel=scenario['channel'], intensity=scenario['intensity'])
             await microscope_svc.move_by_distance(
-                x=scenario['move'][0], 
-                y=scenario['move'][1], 
+                x=scenario['move'][0],
+                y=scenario['move'][1],
                 z=scenario['move'][2]
             )
-            
+
             # Wait for settings to propagate
             await asyncio.sleep(0.5)
-            
+
             # Get video frame from track (this should trigger metadata sending)
             video_frame = await video_track.recv()
-            
+
             # Verify frame was generated
             assert video_frame is not None
-            print(f"     ✓ Video frame generated successfully")
-            
+            print("     ✓ Video frame generated successfully")
+
             # Wait for async metadata sending
             await asyncio.sleep(0.2)
-            
+
             # Check if new metadata was sent
             new_messages = real_data_channel.sent_messages[len(metadata_messages):]
             metadata_messages.extend(new_messages)
-            
+
             if new_messages:
                 for msg in new_messages:
                     try:
                         metadata = json.loads(msg)
-                        
+
                         # Verify metadata structure
                         assert 'stage_position' in metadata, "Missing stage_position"
                         assert 'timestamp' in metadata, "Missing timestamp"
                         assert 'channel' in metadata, "Missing channel"
                         assert 'intensity' in metadata, "Missing intensity"
                         assert 'exposure_time_ms' in metadata, "Missing exposure_time_ms"
-                        
+
                         # Check if gray level stats are included
                         if 'gray_level_stats' in metadata and metadata['gray_level_stats'] is not None:
                             gray_stats = metadata['gray_level_stats']
                             assert 'mean_percent' in gray_stats, "Missing mean_percent"
                             assert 'histogram' in gray_stats, "Missing histogram"
                             print(f"     ✓ Gray level stats: mean={gray_stats['mean_percent']:.1f}%")
-                        
+
                         # Verify data types
                         stage_pos = metadata['stage_position']
                         assert isinstance(stage_pos.get('x_mm'), (int, float, type(None)))
                         assert isinstance(stage_pos.get('y_mm'), (int, float, type(None)))
                         assert isinstance(stage_pos.get('z_mm'), (int, float, type(None)))
                         assert isinstance(metadata['timestamp'], (int, float))
-                        
+
                         # Log current values
                         x_mm = stage_pos.get('x_mm')
                         y_mm = stage_pos.get('y_mm')
@@ -1560,55 +1562,55 @@ async def test_webrtc_data_channel_metadata(webrtc_test_services):
                         x_str = f"{x_mm:.2f}" if x_mm is not None else "None"
                         y_str = f"{y_mm:.2f}" if y_mm is not None else "None"
                         z_str = f"{z_mm:.2f}" if z_mm is not None else "None"
-                        
+
                         print(f"     ✓ Metadata: stage=({x_str}, {y_str}, {z_str}), "
                               f"channel={metadata.get('channel')}, "
                               f"intensity={metadata.get('intensity')}")
-                        
+
                     except json.JSONDecodeError as e:
                         print(f"     ❌ Invalid JSON in metadata: {e}")
                         raise AssertionError(f"Invalid JSON in data channel metadata: {e}")
                     except KeyError as e:
                         print(f"     ❌ Missing required metadata field: {e}")
                         raise AssertionError(f"Missing required metadata field: {e}")
-                
+
                 print(f"     ✓ Scenario {i+1} sent {len(new_messages)} metadata message(s)")
             else:
                 print(f"     ⚠ Scenario {i+1}: No metadata sent (may be due to buffering)")
-        
+
         # Stop the video track
         video_track.stop()
-        
+
         print(f"✅ Tested {len(test_scenarios)} scenarios, captured {len(metadata_messages)} metadata messages")
-        
+
         # Test 2: Verify WebRTC connection state affects metadata sending
         print("2. Testing WebRTC connection state effects...")
-        
+
         # Test with disconnected state
         microscope_instance.webrtc_connected = False
         real_data_channel.is_connected = False
-        
+
         video_track2 = MicroscopeVideoTrack(microscope_instance)
         messages_before_disconnect = len(real_data_channel.sent_messages)
-        
+
         # Try to get a frame when disconnected
         video_frame = await video_track2.recv()
         assert video_frame is not None
         await asyncio.sleep(0.2)
-        
+
         messages_after_disconnect = len(real_data_channel.sent_messages)
         print(f"     ✓ When disconnected: {messages_after_disconnect - messages_before_disconnect} messages sent")
-        
+
         video_track2.stop()
-        
+
         # Test 3: Verify data channel error handling
         print("3. Testing data channel error handling...")
-        
+
         class ErrorDataChannel:
             def __init__(self):
                 self.readyState = 'open'
                 self.call_count = 0
-            
+
             def send(self, message):
                 self.call_count += 1
                 if self.call_count <= 2:
@@ -1617,13 +1619,13 @@ async def test_webrtc_data_channel_metadata(webrtc_test_services):
                 else:
                     # Later calls fail
                     raise Exception("Simulated data channel error")
-        
+
         error_channel = ErrorDataChannel()
         microscope_instance.metadata_data_channel = error_channel
         microscope_instance.webrtc_connected = True
-        
+
         video_track3 = MicroscopeVideoTrack(microscope_instance)
-        
+
         # Test a few frames - some should succeed, some should fail gracefully
         for i in range(4):
             try:
@@ -1633,17 +1635,17 @@ async def test_webrtc_data_channel_metadata(webrtc_test_services):
                 print(f"     ✓ Frame {i+1} processed (send attempt #{error_channel.call_count})")
             except Exception as e:
                 print(f"     ⚠ Frame {i+1} failed: {e}")
-        
+
         video_track3.stop()
-        
+
         print("✅ Data channel error handling test completed")
-        
+
         # Final assertion
         assert len(metadata_messages) > 0, "No metadata messages were captured via data channel"
-        
+
         print("✅ WebRTC Data Channel metadata test completed successfully!")
         print(f"📊 Total metadata messages captured: {len(metadata_messages)}")
-        
+
     finally:
         # Cleanup
         await microscope_svc.stop_video_buffering()
@@ -1652,4 +1654,4 @@ async def test_webrtc_data_channel_metadata(webrtc_test_services):
 if __name__ == "__main__":
     # Allow running this test file directly for debugging
     import sys
-    pytest.main([__file__, "-v", "-s"] + sys.argv[1:]) 
+    pytest.main([__file__, "-v", "-s"] + sys.argv[1:])

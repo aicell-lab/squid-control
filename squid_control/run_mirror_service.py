@@ -9,8 +9,8 @@ Usage:
     python run_mirror_service.py --cloud-service-id "mirror-microscope-control-squid-2" --local-service-id "microscope-control-squid-2"
 """
 
-import sys
 import os
+import sys
 
 # Add the current directory to the Python path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

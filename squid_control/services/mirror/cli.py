@@ -8,7 +8,6 @@ with command-line arguments.
 import argparse
 import asyncio
 import traceback
-from typing import Optional
 
 from .mirror_service import MirrorMicroscopeService
 
@@ -34,49 +33,49 @@ Examples:
     --local-service-id "microscope-control-squid-1"
         """
     )
-    
+
     parser.add_argument(
         "--cloud-service-id",
         default="mirror-microscope-control-squid-1",
         help="ID for the cloud service (default: mirror-microscope-control-squid-1)"
     )
-    
+
     parser.add_argument(
         "--local-service-id",
         default="microscope-control-squid-1",
         help="ID for the local service (default: microscope-control-squid-1)"
     )
-    
+
     parser.add_argument(
         "--cloud-server-url",
         default="https://hypha.aicell.io",
         help="Cloud server URL (default: https://hypha.aicell.io)"
     )
-    
+
     parser.add_argument(
         "--cloud-workspace",
         default="reef-imaging",
         help="Cloud workspace name (default: reef-imaging)"
     )
-    
+
     parser.add_argument(
         "--local-server-url",
         default="http://reef.dyn.scilifelab.se:9527",
         help="Local server URL (default: http://reef.dyn.scilifelab.se:9527)"
     )
-    
+
     parser.add_argument(
         "--log-file",
         default="mirror_squid_control_service.log",
         help="Log file path (default: mirror_squid_control_service.log)"
     )
-    
+
     parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Enable verbose logging"
     )
-    
+
     return parser
 
 
@@ -84,23 +83,23 @@ def main():
     """Main entry point for the mirror service"""
     parser = create_parser()
     args = parser.parse_args()
-    
+
     # Create and configure the mirror service
     mirror_service = MirrorMicroscopeService()
-    
+
     # Override configuration with command-line arguments
     mirror_service.cloud_service_id = args.cloud_service_id
     mirror_service.local_service_id = args.local_service_id
     mirror_service.cloud_server_url = args.cloud_server_url
     mirror_service.cloud_workspace = args.cloud_workspace
     mirror_service.local_server_url = args.local_server_url
-    
+
     # Set up logging
     if args.verbose:
         import logging
         logging.getLogger().setLevel(logging.DEBUG)
-    
-    print(f"Starting mirror service:")
+
+    print("Starting mirror service:")
     print(f"  Cloud Service ID: {mirror_service.cloud_service_id}")
     print(f"  Local Service ID: {mirror_service.local_service_id}")
     print(f"  Cloud Server: {mirror_service.cloud_server_url}")
@@ -108,22 +107,22 @@ def main():
     print(f"  Local Server: {mirror_service.local_server_url}")
     print(f"  Log File: {args.log_file}")
     print()
-    
+
     # Run the service
     loop = asyncio.get_event_loop()
-    
+
     async def run_service():
         try:
             mirror_service.setup_task = asyncio.create_task(mirror_service.setup())
             await mirror_service.setup_task
-            
+
             # Start the health check task
             asyncio.create_task(mirror_service.check_service_health())
-            
+
             # Keep the service running
             while True:
                 await asyncio.sleep(1)
-                
+
         except KeyboardInterrupt:
             print("\nShutting down mirror service...")
         except Exception as e:
@@ -140,7 +139,7 @@ def main():
                     await mirror_service.local_server.disconnect()
             except Exception as cleanup_error:
                 print(f"Error during cleanup: {cleanup_error}")
-    
+
     try:
         loop.run_until_complete(run_service())
     except KeyboardInterrupt:

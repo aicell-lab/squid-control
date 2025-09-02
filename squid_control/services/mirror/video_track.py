@@ -10,7 +10,6 @@ import fractions
 import json
 import logging
 import time
-from typing import Optional, Dict, Any
 
 import cv2
 import numpy as np
@@ -206,8 +205,8 @@ class MicroscopeVideoTrack(MediaStreamTrack):
     async def _send_metadata_via_datachannel(self, metadata_json):
         """Send metadata via WebRTC data channel"""
         try:
-            if (self.parent_service and 
-                hasattr(self.parent_service, 'metadata_data_channel') and 
+            if (self.parent_service and
+                hasattr(self.parent_service, 'metadata_data_channel') and
                 self.parent_service.metadata_data_channel):
                 if self.parent_service.metadata_data_channel.readyState == 'open':
                     self.parent_service.metadata_data_channel.send(metadata_json)

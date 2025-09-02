@@ -1,12 +1,14 @@
+import base64
 import os  # Add os import
+from io import BytesIO
+
 import dotenv  # Add dotenv import
+import httpx
+import matplotlib.pyplot as plt
+
 # Initialize chatpt vision
 from openai import AsyncOpenAI
-import base64
-import httpx
 from PIL import Image
-from io import BytesIO
-import matplotlib.pyplot as plt
 
 dotenv.load_dotenv() # Load environment variables from .env file
 
