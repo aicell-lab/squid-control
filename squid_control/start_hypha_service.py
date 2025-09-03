@@ -375,6 +375,13 @@ class MicroscopeHyphaService:
         # Scanning control attributes
         self.scanning_in_progress = False  # Flag to prevent video buffering during scans
 
+        # Initialize coverage tracking if in test mode
+        if os.environ.get('SQUID_TEST_MODE'):
+            self.coverage_enabled = True
+            print("✅ Service coverage tracking enabled")
+        else:
+            self.coverage_enabled = False
+
     def load_authorized_emails(self):
         """Load authorized user emails from environment variable.
 
@@ -1049,6 +1056,10 @@ class MicroscopeHyphaService:
                             logger.warning("ZarrImageManager cleanup timed out")
                         except Exception as e:
                             logger.warning(f"ZarrImageManager cleanup error: {e}")
+
+            # Log coverage tracking status
+            if hasattr(self, 'coverage_enabled') and self.coverage_enabled:
+                logger.info("Service coverage tracking was active during test")
         except Exception as e:
             logger.error(f"Error during test cleanup: {e}")
 
@@ -2959,6 +2970,7 @@ class MicroscopeHyphaService:
                 except Exception as e:
                     logger.warning(f"Could not get detailed acquisition settings: {e}")
                     # Fallback to basic settings
+                    total_size_mb = sum(well['size_mb'] for well in experiment_info['well_canvases'])
                     acquisition_settings = {
                         "microscope_service_id": self.service_id,
                         "experiment_name": experiment_name,

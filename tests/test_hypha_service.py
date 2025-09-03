@@ -45,6 +45,9 @@ class SimpleTestDataStore:
 @pytest_asyncio.fixture(scope="function")
 async def test_microscope_service():
     """Create a real microscope service for testing."""
+    # Enable service coverage tracking
+    os.environ['SQUID_TEST_MODE'] = 'true'
+    
     # Check for token first
     token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
     if not token:
@@ -159,6 +162,9 @@ async def test_microscope_service():
                 # Give time for all cleanup operations to complete
                 await asyncio.sleep(0.1)
                 print("✅ Cleanup completed")
+                
+                # Clean up environment variable
+                os.environ.pop('SQUID_TEST_MODE', None)
 
     except Exception as e:
         pytest.fail(f"Failed to create test service: {e}")
