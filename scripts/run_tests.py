@@ -5,9 +5,9 @@ Supports different test types and coverage reporting.
 """
 
 import argparse
+import os
 import subprocess
 import sys
-import os
 from pathlib import Path
 
 
@@ -69,16 +69,16 @@ def main():
         action="store_true",
         help="Run only WebRTC integration tests (requires network access and tokens)"
     )
-    
+
     args = parser.parse_args()
 
     # Base pytest command
     cmd = ["python", "-m", "pytest"]
-    
+
     # Add verbosity
     if args.verbose:
         cmd.append("-v")
-    
+
     # Select test files and markers
     if args.unit_only:
         cmd.append("tests/test_squid_controller.py")
@@ -100,17 +100,17 @@ def main():
             print("⚠️  WARNING: AGENT_LENS_WORKSPACE_TOKEN not set - WebRTC tests may fail")
             print("   Set the token with: export AGENT_LENS_WORKSPACE_TOKEN=your_token")
     elif args.skip_integration:
-        cmd.extend(["-m", "not integration"]) 
+        cmd.extend(["-m", "not integration"])
         cmd.append("tests/")
         print("🧪 Running ALL TESTS except integration tests")
     else:
         cmd.append("tests/")
         print("🔄 Running ALL TESTS (including integration tests)")
-    
+
     # Add simulation marker if requested
     if args.simulation:
         cmd.extend(["-m", "simulation"])
-    
+
     # Add coverage options if requested
     if args.coverage:
         cmd.extend([
@@ -121,17 +121,17 @@ def main():
             "--cov-report=html:htmlcov",
             "--cov-report=term-missing"
         ])
-    
+
     # Always add junit XML output for CI/CD
     cmd.extend(["--junitxml=pytest-results.xml"])
-    
+
     # Set environment
     env = os.environ.copy()
     env["PYTHONPATH"] = "."
-    
+
     # Run tests
     return_code = run_command(cmd, env=env)
-    
+
     # Open HTML coverage report if requested
     if args.coverage and args.html and args.open_html and return_code == 0:
         html_path = Path("htmlcov/index.html")
@@ -141,18 +141,18 @@ def main():
                 subprocess.run(["xdg-open", str(html_path)], check=False)
             except FileNotFoundError:
                 print("Could not open browser. Please open htmlcov/index.html manually.")
-    
+
     # Print coverage info
     if args.coverage and return_code == 0:
         print("\nCoverage report generated:")
         print("- XML: coverage.xml")
         print("- HTML: htmlcov/index.html")
         print("- Terminal: shown above")
-    
+
     print("\nTest results saved to: pytest-results.xml")
-    
+
     return return_code
 
 
 if __name__ == "__main__":
-    sys.exit(main()) 
+    sys.exit(main())

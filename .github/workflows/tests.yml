@@ -38,20 +38,20 @@ jobs:
         echo "🧪 Running UNIT TESTS (without integration tests)"
         echo "🔧 Hardware modules excluded in simulation mode"
         echo "⚡ Fast feedback - unit tests run first"
+        echo "📊 Coverage report will be generated"
         echo ""
         python scripts/run_tests.py --skip-integration --coverage --verbose
 
     - name: Upload coverage reports to Codecov
       if: always() && matrix.python-version == '3.11'
-      uses: codecov/codecov-action@v3
+      uses: codecov/codecov-action@v4
       with:
         file: ./coverage.xml
         flags: unittests
         name: codecov-umbrella
         fail_ci_if_error: false
         verbose: true
-      env:
-        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        token: ${{ secrets.CODECOV_TOKEN }}
 
     - name: Upload coverage HTML report as artifact
       if: always() && matrix.python-version == '3.11'
@@ -108,9 +108,16 @@ jobs:
         echo "🌐 Running INTEGRATION TESTS (Hypha RPC services, excluding WebRTC)"
         echo "🔗 Requires network access and workspace token"
         echo "📹 WebRTC tests run separately in webrtc-integration-tests job"
+        echo "📊 Coverage report will be generated for integration tests"
         echo "💡 To run locally: python scripts/run_tests.py --integration-only"
         echo ""
-        python -m pytest tests/ -m "integration" --ignore=tests/test_webrtc_e2e.py --verbose --junitxml=pytest-results.xml
+        python -m pytest tests/ -m "integration" --ignore=tests/test_webrtc_e2e.py \
+          --cov=squid_control \
+          --cov-config=pyproject.toml \
+          --cov-report=xml:coverage-integration.xml \
+          --cov-report=html:htmlcov-integration \
+          --cov-report=term-missing \
+          --verbose --junitxml=pytest-results.xml
 
     - name: Upload integration test results
       if: always()
@@ -118,6 +125,16 @@ jobs:
       with:
         name: integration-test-results-${{ matrix.python-version }}
         path: pytest-results.xml
+        retention-days: 30
+
+    - name: Upload integration test coverage
+      if: always() && matrix.python-version == '3.11'
+      uses: actions/upload-artifact@v4
+      with:
+        name: integration-coverage-${{ matrix.python-version }}
+        path: |
+          coverage-integration.xml
+          htmlcov-integration/
         retention-days: 30
 
     - name: Run WebRTC integration tests
@@ -158,6 +175,22 @@ jobs:
     if: always()
     
     steps:
+    - uses: actions/checkout@v4
+    
+    - name: Download unit test coverage
+      uses: actions/download-artifact@v4
+      with:
+        name: coverage-html-report-unit-tests
+        path: htmlcov-unit/
+      continue-on-error: true
+    
+    - name: Download integration test coverage
+      uses: actions/download-artifact@v4
+      with:
+        name: integration-coverage-3.11
+        path: htmlcov-integration/
+      continue-on-error: true
+    
     - name: Coverage comment
       if: github.event_name == 'pull_request'
       uses: py-cov-action/python-coverage-comment-action@v3
