@@ -1855,6 +1855,8 @@ class MicroscopeHyphaService:
             "upload_zarr_dataset": self.upload_zarr_dataset,
             "list_microscope_galleries": self.list_microscope_galleries,
             "list_gallery_datasets": self.list_gallery_datasets,
+            # Offline processing functions
+            "offline_stitch_and_upload_timelapse": self.offline_stitch_and_upload_timelapse,
         }
 
         # Only register get_canvas_chunk when not in local mode
@@ -3942,6 +3944,53 @@ class MicroscopeHyphaService:
             return result
         except Exception as e:
             logger.error(f"Failed to get experiment info: {e}")
+            raise e
+
+    @schema_function(skip_self=True)
+    async def offline_stitch_and_upload_timelapse(self,
+        experiment_id: str = Field(..., description="Experiment ID to process (prefix match for folder names)"),
+        upload_immediately: bool = Field(True, description="Upload each experiment run after stitching"),
+        cleanup_temp_files: bool = Field(True, description="Delete temporary zarr files after upload"),
+        context=None):
+        """
+        Process time-lapse experiment data offline: stitch images and upload to gallery.
+        
+        Finds all experiment run folders starting with experiment_id (e.g., 'test-drug-20250822T...'),
+        processes each run separately, and uploads each run as a dataset to a gallery
+        named 'experiment-{experiment_id}'.
+        
+        Each experiment run folder contains a single '0' subfolder with all the data that
+        is stitched together into well canvases and uploaded as one dataset.
+        
+        Args:
+            experiment_id: Experiment ID to search for (e.g., 'test-drug')
+            upload_immediately: Whether to upload each run after stitching
+            cleanup_temp_files: Whether to delete temporary files after upload
+        
+        Returns:
+            dict: Processing results with gallery and dataset information
+        """
+        try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+
+            # Check if zarr artifact manager is available
+            if self.zarr_artifact_manager is None:
+                raise Exception("Zarr artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
+
+            logger.info(f"Starting offline processing for experiment ID: {experiment_id}")
+
+            # Run the offline processing
+            result = await self.squidController.offline_stitch_and_upload_timelapse(
+                experiment_id, upload_immediately, cleanup_temp_files
+            )
+            
+            logger.info(f"Offline processing completed: {result.get('total_datasets', 0)} datasets processed")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in offline stitching and upload: {e}")
             raise e
 
 # Global variable to hold the microscope instance

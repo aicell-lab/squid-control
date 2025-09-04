@@ -2688,6 +2688,37 @@ class SquidController:
         self._restore_original_velocity(CONFIG.MAX_VELOCITY_X_MM, CONFIG.MAX_VELOCITY_Y_MM)
         return {"success": True, "message": "Scan stop requested"}
 
+    async def offline_stitch_and_upload_timelapse(self, experiment_id: str,
+                                                upload_immediately: bool = True,
+                                                cleanup_temp_files: bool = True):
+        """
+        Offline stitching and uploading of time-lapse experiment data.
+        
+        Processes all experiment runs matching experiment_id prefix, where each run
+        becomes a separate dataset in a gallery named 'experiment-{experiment_id}'.
+        
+        Args:
+            experiment_id: Experiment ID to search for (prefix match)
+            upload_immediately: If True, upload each run after stitching
+            cleanup_temp_files: If True, delete temporary zarr files after upload
+        
+        Returns:
+            dict: Processing results with upload information
+        """
+        # Import the offline processor
+        from squid_control.offline_processing import OfflineProcessor
+
+        processor = OfflineProcessor(self)
+
+        # Use asyncio.to_thread for CPU-intensive operations to avoid blocking
+        result = await processor.stitch_and_upload_timelapse(
+            experiment_id,
+            upload_immediately,
+            cleanup_temp_files
+        )
+
+        return result
+
 async def try_microscope():
     squid_controller = SquidController(is_simulation=False)
 
