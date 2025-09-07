@@ -499,7 +499,7 @@ class BaseConfig(BaseModel):
     LED_MATRIX_G_FACTOR: float = 0
     LED_MATRIX_B_FACTOR: float = 1
 
-    DEFAULT_SAVING_PATH: str = "/home/tao/remote_harddisk/u2os-treatment/"
+    DEFAULT_SAVING_PATH: str = ""
 
     DEFAULT_PIXEL_FORMAT: str = "MONO8"
 
@@ -1037,7 +1037,7 @@ def get_microscope_configuration_data(config_section="all", include_defaults=Tru
                 "ny": getattr(CONFIG.Acquisition, 'NY', 1),
             },
             "default_trigger_mode": str(getattr(CONFIG, 'DEFAULT_TRIGGER_MODE', 'SOFTWARE')),
-            "default_saving_path": getattr(CONFIG, 'DEFAULT_SAVING_PATH', '/home/tao/remote_harddisk/u2os-treatment/'),
+            "default_saving_path": getattr(CONFIG, 'DEFAULT_SAVING_PATH', ''),
             "stitching_rotation_angle_deg": getattr(CONFIG, 'STITCHING_ROTATION_ANGLE_DEG', 0.0),
         }
 

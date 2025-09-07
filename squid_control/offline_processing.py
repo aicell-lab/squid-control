@@ -19,15 +19,45 @@ from typing import List
 import cv2
 import pandas as pd
 
+# Use print statements for debugging since logger configuration seems problematic
 logger = logging.getLogger(__name__)
 
 
 class OfflineProcessor:
     """Handles offline stitching and uploading of time-lapse data."""
 
-    def __init__(self, squid_controller):
+    def __init__(self, squid_controller, zarr_artifact_manager=None, service_id=None):
+        print("🔧 OfflineProcessor.__init__ called")
         self.squid_controller = squid_controller
+        self.zarr_artifact_manager = zarr_artifact_manager
+        self.service_id = service_id
         self.logger = logger
+        
+        # Ensure configuration is loaded
+        from squid_control.control.config import CONFIG
+        self._ensure_config_loaded()
+
+    def _ensure_config_loaded(self):
+        """Ensure the configuration is properly loaded."""
+        from squid_control.control.config import CONFIG, load_config
+        import os
+        
+        # Check if DEFAULT_SAVING_PATH is already loaded
+        if not CONFIG.DEFAULT_SAVING_PATH:
+            print("Configuration not loaded, attempting to load HCS_v2 config...")
+            try:
+                # Try to load the config file
+                current_dir = Path(__file__).parent
+                config_path = current_dir / "config" / "configuration_HCS_v2.ini"
+                if config_path.exists():
+                    load_config(str(config_path), None)
+                    print(f"Configuration loaded: DEFAULT_SAVING_PATH = {CONFIG.DEFAULT_SAVING_PATH}")
+                else:
+                    print(f"Config file not found at {config_path}")
+            except Exception as e:
+                print(f"Failed to load configuration: {e}")
+        else:
+            print(f"Configuration already loaded: DEFAULT_SAVING_PATH = {CONFIG.DEFAULT_SAVING_PATH}")
 
     def find_experiment_folders(self, experiment_id: str) -> List[Path]:
         """
@@ -42,29 +72,38 @@ class OfflineProcessor:
         """
 
         from squid_control.control.config import CONFIG
+        print(f"CONFIG.DEFAULT_SAVING_PATH = {CONFIG.DEFAULT_SAVING_PATH}")
         base_path = Path(CONFIG.DEFAULT_SAVING_PATH)
+        print(f"Searching in base path: {base_path}")
         if not base_path.exists():
             raise FileNotFoundError(f"Base path does not exist: {base_path}")
 
         pattern = f"{experiment_id}-*"
+        print(f"Using pattern: {pattern}")
         folders = sorted(base_path.glob(pattern))
+        print(f"Found {len(folders)} folders matching pattern: {[f.name for f in folders]}")
 
         # Filter to only directories that contain a '0' subfolder
         valid_folders = []
         for folder in folders:
+            print(f"Checking folder: {folder.name}")
             if folder.is_dir():
                 zero_folder = folder / "0"
+                print(f"  Looking for '0' subfolder: {zero_folder}")
                 if zero_folder.exists() and zero_folder.is_dir():
                     valid_folders.append(folder)
+                    print(f"  ✓ Valid folder: {folder.name}")
                 else:
-                    self.logger.warning(f"Skipping {folder.name}: no '0' subfolder found")
+                    print(f"  ✗ Skipping {folder.name}: no '0' subfolder found")
+            else:
+                print(f"  ✗ Skipping {folder.name}: not a directory")
 
-        self.logger.info(f"Found {len(valid_folders)} valid experiment folders for '{experiment_id}'")
+        print(f"Found {len(valid_folders)} valid experiment folders for '{experiment_id}': {[f.name for f in valid_folders]}")
         return valid_folders
 
     def parse_acquisition_parameters(self, experiment_folder: Path) -> dict:
         """
-        Parse acquisition parameters.json from the '0' folder.
+        Parse acquisition parameters.json from the experiment folder.
         
         Args:
             experiment_folder: Path to experiment folder (e.g., test-drug-20250822T143055)
@@ -72,14 +111,18 @@ class OfflineProcessor:
         Returns:
             Dictionary with acquisition parameters
         """
-        json_file = experiment_folder / "0" / "acquisition parameters.json"
+        # Try the main experiment folder first
+        json_file = experiment_folder / "acquisition parameters.json"
         if not json_file.exists():
-            raise FileNotFoundError(f"No acquisition parameters.json found in {experiment_folder}/0/")
+            # Fallback to the '0' subfolder
+            json_file = experiment_folder / "0" / "acquisition parameters.json"
+            if not json_file.exists():
+                raise FileNotFoundError(f"No acquisition parameters.json found in {experiment_folder}/ or {experiment_folder}/0/")
 
         with open(json_file) as f:
             params = json.load(f)
 
-        self.logger.info(f"Loaded acquisition parameters: Nx={params.get('Nx')}, Ny={params.get('Ny')}, dx={params.get('dx(mm)')}, dy={params.get('dy(mm)')}")
+        self.logger.info(f"Loaded acquisition parameters from {json_file}: Nx={params.get('Nx')}, Ny={params.get('Ny')}, dx={params.get('dx(mm)')}, dy={params.get('dy(mm)')}")
         return params
 
     def parse_configurations_xml(self, experiment_folder: Path) -> dict:
@@ -92,9 +135,13 @@ class OfflineProcessor:
         Returns:
             Dictionary with channel configurations
         """
-        xml_file = experiment_folder / "0" / "configurations.xml"
+        # Try the main experiment folder first
+        xml_file = experiment_folder / "configurations.xml"
         if not xml_file.exists():
-            raise FileNotFoundError(f"No configurations.xml found in {experiment_folder}/0/")
+            # Fallback to the '0' subfolder
+            xml_file = experiment_folder / "0" / "configurations.xml"
+            if not xml_file.exists():
+                raise FileNotFoundError(f"No configurations.xml found in {experiment_folder}/ or {experiment_folder}/0/")
 
         return self._parse_xml_channels(xml_file)
 
@@ -150,31 +197,26 @@ class OfflineProcessor:
 
     def create_xml_to_channel_mapping(self, xml_channels: dict) -> dict:
         """
-        Create mapping from XML channel names to ChannelMapper names.
+        Create mapping from filename channel names to ChannelMapper human names.
         
         Args:
             xml_channels: Dictionary of channel configurations from XML
             
         Returns:
-            Dictionary mapping XML names to ChannelMapper names
+            Dictionary mapping filename channel names (zarr format) to human names (expected by canvas)
         """
 
         from squid_control.control.config import ChannelMapper
-        channel_mapper_names = ChannelMapper.get_all_human_names()
-        mapping = {}
-
-        for xml_name in xml_channels.keys():
-            # Try exact match first
-            if xml_name in channel_mapper_names:
-                mapping[xml_name] = xml_name
-                self.logger.debug(f"Exact match: '{xml_name}' -> '{xml_name}'")
-            else:
-                # Try to find closest match or use fallback
-                # For now, use the same name as fallback
-                mapping[xml_name] = xml_name
-                self.logger.warning(f"No exact match for '{xml_name}', using as-is")
-
-        return mapping
+        
+        # Create mapping from zarr names (used in filenames) to human names (expected by canvas)
+        filename_to_human_mapping = {}
+        
+        # Get all channel info and create zarr_name -> human_name mapping
+        for channel_info in ChannelMapper.CHANNELS.values():
+            filename_to_human_mapping[channel_info.zarr_name] = channel_info.human_name
+        
+        print(f"Filename to human name mapping: {filename_to_human_mapping}")
+        return filename_to_human_mapping
 
     def create_temp_experiment_manager(self, temp_path: str):
         """
@@ -214,7 +256,9 @@ class OfflineProcessor:
 
         # Get available channels for this canvas
         available_channels = list(canvas.channel_to_zarr_index.keys())
+        print(f"Available channels for canvas: {available_channels}")
 
+        images_added = 0
         for coord_record in well_data:
             i = int(coord_record['i'])
             j = int(coord_record['j'])
@@ -230,16 +274,17 @@ class OfflineProcessor:
             # Find all image files for this position
             pattern = f"{well_id}_{i}_{j}_{k}_*.bmp"
             image_files = list(data_folder.glob(pattern))
+            print(f"Well {well_id} position ({i},{j},{k}): found {len(image_files)} images with pattern {pattern}")
 
             for img_file in image_files:
                 # Extract channel name from filename
                 # Format: G9_2_1_0_Fluorescence_488_nm_Ex.bmp
                 filename_parts = img_file.stem.split('_')
                 if len(filename_parts) >= 5:
-                    # Channel name is everything after the position indices
+                    # Channel name is everything after the position indices (in zarr format)
                     channel_name = '_'.join(filename_parts[4:])
 
-                    # Map XML channel name to ChannelMapper name
+                    # Map zarr channel name to human name (expected by canvas)
                     mapped_channel_name = channel_mapping.get(channel_name, channel_name)
 
                     # Check if this channel is available in the canvas
@@ -250,16 +295,20 @@ class OfflineProcessor:
                             # Get zarr channel index
                             zarr_channel_idx = canvas.get_zarr_channel_index(mapped_channel_name)
 
-                            # Add image to canvas using absolute coordinates
-                            await canvas.add_image_from_absolute_coords_async(
-                                image, x_mm, y_mm, zarr_channel_idx, 0, 0  # timepoint=0
+                            # Add image to canvas using async stitching (same as normal_scan_with_stitching)
+                            await canvas.add_image_async(
+                                image, x_mm - canvas.well_center_x, y_mm - canvas.well_center_y,
+                                zarr_channel_idx, 0, 0  # z_idx=0, timepoint=0
                             )
 
-                            self.logger.debug(f"Added image {img_file.name} to canvas at ({x_mm:.2f}, {y_mm:.2f})")
+                            images_added += 1
+                            print(f"✓ Added image {img_file.name} to canvas at ({x_mm:.2f}, {y_mm:.2f}) - channel {mapped_channel_name} (idx {zarr_channel_idx})")
                         else:
-                            self.logger.warning(f"Failed to load image: {img_file}")
+                            print(f"✗ Failed to load image: {img_file}")
                     else:
-                        self.logger.debug(f"Channel '{mapped_channel_name}' not available in canvas, skipping {img_file.name}")
+                        print(f"✗ Channel '{mapped_channel_name}' not available in canvas, skipping {img_file.name}")
+        
+        print(f"Total images added to canvas: {images_added}")
 
     def extract_timestamp_from_folder(self, folder_path: Path) -> str:
         """
@@ -305,7 +354,18 @@ class OfflineProcessor:
             coordinates_data = self.parse_coordinates_csv(experiment_folder)
 
             # 2. Create temporary experiment for this run
-            temp_path = Path(tempfile.mkdtemp(prefix=f"offline_stitch_{experiment_folder.name}_"))
+            # Use CONFIG.DEFAULT_SAVING_PATH if available, otherwise fall back to system temp
+            from squid_control.control.config import CONFIG
+            
+            if CONFIG.DEFAULT_SAVING_PATH and Path(CONFIG.DEFAULT_SAVING_PATH).exists():
+                base_temp_path = Path(CONFIG.DEFAULT_SAVING_PATH)
+                temp_path = base_temp_path / f"offline_stitch_{experiment_folder.name}_{int(time.time())}"
+                temp_path.mkdir(parents=True, exist_ok=True)
+                print(f"Using configured saving path for temporary stitching: {temp_path}")
+            else:
+                temp_path = Path(tempfile.mkdtemp(prefix=f"offline_stitch_{experiment_folder.name}_"))
+                print(f"Using system temp directory for stitching: {temp_path}")
+                
             temp_exp_manager = self.create_temp_experiment_manager(str(temp_path))
 
             # 3. Process each well
@@ -326,9 +386,10 @@ class OfflineProcessor:
                     self.logger.warning(f"Invalid well ID format: {well_id}")
                     continue
 
-                # Create well canvas
+                # Create well canvas using the standard approach (same as normal_scan_with_stitching)
+                # Use very large padding to accommodate absolute coordinates
                 canvas = temp_exp_manager.get_well_canvas(
-                    well_row, well_column, '96', 1.0  # Default to 96-well
+                    well_row, well_column, '96', 100.0  # Very large padding for absolute coordinates
                 )
 
                 # Start stitching
@@ -381,8 +442,8 @@ class OfflineProcessor:
                 self.logger.info(f"Raw data backup created: {len(raw_data_zip_content)/(1024*1024):.2f} MB")
 
                 # 4b. Upload all files (well zarrs + raw data backup) using multipart upload
-                upload_result = await self.squid_controller.zarr_artifact_manager.upload_multiple_zarr_files_to_dataset(
-                    microscope_service_id=self.squid_controller.service_id,
+                upload_result = await self.zarr_artifact_manager.upload_multiple_zarr_files_to_dataset(
+                    microscope_service_id=self.service_id,
                     experiment_id=dataset_name,
                     zarr_files_info=zarr_files_info_with_backup,
                     acquisition_settings={
@@ -391,7 +452,7 @@ class OfflineProcessor:
                         "experiment_run": experiment_folder.name,
                         "well_count": len(zarr_files_info),
                         "raw_data_backup_included": True,
-                        "microscope_service_id": self.squid_controller.service_id,
+                        "microscope_service_id": self.service_id,
                         "pixel_size_xy_um": self.squid_controller.pixel_size_xy
                     },
                     description=f"Offline processed experiment run: {experiment_folder.name} (includes raw data backup)"
@@ -447,7 +508,13 @@ class OfflineProcessor:
         }
 
         try:
+            print("=" * 60)
+            print(f"OFFLINE PROCESSING STARTED for experiment_id: {experiment_id}")
+            print(f"Parameters: upload_immediately={upload_immediately}, cleanup_temp_files={cleanup_temp_files}")
+            print("=" * 60)
+            
             # Find all experiment folders
+            print("Searching for experiment folders...")
             experiment_folders = self.find_experiment_folders(experiment_id)
 
             if not experiment_folders:
@@ -505,27 +572,30 @@ class OfflineProcessor:
             Gallery ID
         """
         try:
-            # Try to create a new gallery - this will fail if it already exists
-            gallery_result = await self.squid_controller.zarr_artifact_manager.create_gallery(
-                self.squid_controller.service_id, gallery_name
+            # Use the correct method from SquidArtifactManager
+            gallery_result = await self.zarr_artifact_manager.create_or_get_microscope_gallery(
+                self.service_id, gallery_name
             )
-            gallery_id = gallery_result["gallery_id"]
-            self.logger.info(f"Created new gallery: {gallery_name}")
+            gallery_id = gallery_result["id"]
+            self.logger.info(f"Created or found gallery: {gallery_name} (ID: {gallery_id})")
 
         except Exception as e:
-            # Gallery likely already exists, try to find it
-            self.logger.info(f"Gallery creation failed (likely exists): {e}")
-
-            # For now, create a unique gallery name with timestamp
+            # If that fails, try with a unique gallery name with timestamp
+            self.logger.warning(f"Gallery creation failed: {e}")
+            
             import datetime
             timestamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
             unique_gallery_name = f"{gallery_name}-{timestamp}"
 
-            gallery_result = await self.squid_controller.zarr_artifact_manager.create_gallery(
-                self.squid_controller.service_id, unique_gallery_name
-            )
-            gallery_id = gallery_result["gallery_id"]
-            self.logger.info(f"Created unique gallery: {unique_gallery_name}")
+            try:
+                gallery_result = await self.zarr_artifact_manager.create_or_get_microscope_gallery(
+                    self.service_id, unique_gallery_name
+                )
+                gallery_id = gallery_result["id"]
+                self.logger.info(f"Created unique gallery: {unique_gallery_name} (ID: {gallery_id})")
+            except Exception as e2:
+                self.logger.error(f"Failed to create gallery even with unique name: {e2}")
+                raise e2
 
         return gallery_id
 

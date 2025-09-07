@@ -568,6 +568,13 @@ class WellZarrCanvasBase:
         Returns:
             Tuple of (x_pixel, y_pixel) coordinates
         """
+        # Debug logging for coordinate conversion (only in debug mode)
+        if logger.level <= 10:  # DEBUG level
+            logger.debug(f"COORD_CONVERSION: Input coordinates ({x_mm:.2f}, {y_mm:.2f}) mm, scale {scale}")
+            logger.debug(f"COORD_CONVERSION: Stage limits: {self.stage_limits}")
+            logger.debug(f"COORD_CONVERSION: Canvas size: {self.canvas_width_px}x{self.canvas_height_px} px")
+            logger.debug(f"COORD_CONVERSION: Pixel size: {self.pixel_size_xy_um} um")
+        
         # Offset to make all coordinates positive
         x_offset_mm = -self.stage_limits['x_negative']
         y_offset_mm = -self.stage_limits['y_negative']
@@ -591,6 +598,9 @@ class WellZarrCanvasBase:
         x_px //= scale_factor
         y_px //= scale_factor
 
+        if logger.level <= 10:  # DEBUG level
+            logger.debug(f"COORD_CONVERSION: Final pixel coordinates: ({x_px}, {y_px}) for scale {scale}")
+        
         return x_px, y_px
 
     def _rotate_and_crop_image(self, image: np.ndarray) -> np.ndarray:

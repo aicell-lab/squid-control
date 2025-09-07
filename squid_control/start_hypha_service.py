@@ -3980,13 +3980,25 @@ class MicroscopeHyphaService:
                 raise Exception("Zarr artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
 
             logger.info(f"Starting offline processing for experiment ID: {experiment_id}")
+            logger.info(f"Parameters: upload_immediately={upload_immediately}, cleanup_temp_files={cleanup_temp_files}")
+
+            # Import and create the offline processor directly
+            from .offline_processing import OfflineProcessor
+            processor = OfflineProcessor(
+                self.squidController, 
+                self.zarr_artifact_manager, 
+                self.service_id
+            )
+            logger.info("OfflineProcessor created successfully")
 
             # Run the offline processing
-            result = await self.squidController.offline_stitch_and_upload_timelapse(
+            logger.info("Calling processor.stitch_and_upload_timelapse...")
+            result = await processor.stitch_and_upload_timelapse(
                 experiment_id, upload_immediately, cleanup_temp_files
             )
             
             logger.info(f"Offline processing completed: {result.get('total_datasets', 0)} datasets processed")
+            logger.info(f"Processing result: {result}")
             return result
             
         except Exception as e:
