@@ -451,7 +451,11 @@ class OfflineProcessor:
             experiment_folders = self.find_experiment_folders(experiment_id)
 
             if not experiment_folders:
-                raise ValueError(f"No experiment folders found for ID: {experiment_id}")
+                results["success"] = False
+                results["message"] = f"No experiment folders found for ID: {experiment_id}"
+                results["processing_time_seconds"] = time.time() - results["start_time"]
+                self.logger.warning(f"No experiment folders found for ID: {experiment_id}")
+                return results
 
             # Create gallery once if uploading
             gallery_id = None
