@@ -737,17 +737,14 @@ class OfflineProcessor:
                 
                 try:
                     # Prepare zarr_files_info for upload_multiple_zip_files_to_dataset
+                    # Use file_path instead of content to prevent memory exhaustion
                     zarr_files_info = []
                     
-                    # Add all well ZIP files
+                    # Add all well ZIP files with file paths (streaming upload)
                     for well_info in well_zip_files:
-                        # Read the well ZIP file content
-                        with open(well_info['file_path'], 'rb') as f:
-                            well_zip_content = f.read()
-                        
                         zarr_files_info.append({
                             'name': well_info['name'],  # e.g., "well_A1_96"
-                            'content': well_zip_content,
+                            'file_path': well_info['file_path'],  # Use file path instead of content
                             'size_mb': well_info['size_mb']
                         })
                     
@@ -944,17 +941,14 @@ class OfflineProcessor:
                 
                 try:
                     # Prepare zarr_files_info for upload_multiple_zip_files_to_dataset
+                    # Use file_path instead of content to prevent memory exhaustion
                     zarr_files_info = []
                     
-                    # Add all well ZIP files
+                    # Add all well ZIP files with file paths (streaming upload)
                     for well_info in well_zip_files:
-                        # Read the well ZIP file content
-                        with open(well_info['file_path'], 'rb') as f:
-                            well_zip_content = f.read()
-                        
                         zarr_files_info.append({
                             'name': well_info['name'],  # e.g., "well_A1_96"
-                            'content': well_zip_content,
+                            'file_path': well_info['file_path'],  # Use file path instead of content
                             'size_mb': well_info['size_mb']
                         })
                     

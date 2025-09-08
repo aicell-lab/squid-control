@@ -3021,14 +3021,15 @@ class MicroscopeHyphaService:
                                     rotation_angle_deg=CONFIG.STITCHING_ROTATION_ANGLE_DEG
                                 )
 
-                                # Export the well canvas as zip using asyncio.to_thread to avoid blocking
-                                well_zip_content = await asyncio.to_thread(temp_canvas.export_as_zip)
+                                # Export the well canvas as zip file using asyncio.to_thread to avoid blocking
+                                # Use export_as_zip_file() to get file path instead of loading into memory
+                                well_zip_path = await asyncio.to_thread(temp_canvas.export_as_zip_file)
                                 temp_canvas.close()
 
-                                # Add to files info for batch upload
+                                # Add to files info for batch upload using file path (streaming upload)
                                 zarr_files_info.append({
                                     'name': well_name,
-                                    'content': well_zip_content,
+                                    'file_path': well_zip_path,  # Use file path instead of content
                                     'size_mb': well_size_mb
                                 })
 
@@ -3073,6 +3074,16 @@ class MicroscopeHyphaService:
             )
 
             logger.info(f"Successfully uploaded experiment '{experiment_name}' to single dataset")
+
+            # Clean up temporary ZIP files after successful upload
+            for file_info in zarr_files_info:
+                if 'file_path' in file_info:
+                    try:
+                        import os
+                        os.unlink(file_info['file_path'])
+                        logger.debug(f"Cleaned up temporary ZIP file: {file_info['file_path']}")
+                    except Exception as e:
+                        logger.warning(f"Failed to cleanup temporary ZIP file {file_info['file_path']}: {e}")
 
             return {
                 "success": True,

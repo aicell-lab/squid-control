@@ -380,7 +380,9 @@ class SquidArtifactManager:
         Args:
             microscope_service_id (str): The hypha service ID of the microscope
             experiment_id (str): The experiment ID for gallery naming
-            zarr_files_info (list): List of dicts with 'name', 'content', 'size_mb' for each file
+            zarr_files_info (list): List of dicts with 'name', 'content'/'file_path', 'size_mb' for each file
+                                   - 'content': file data in memory (original behavior)
+                                   - 'file_path': path to file on disk (new streaming behavior)
             acquisition_settings (dict, optional): Acquisition settings metadata
             description (str, optional): Description of the dataset
             dataset_name (str, optional): Custom dataset name. If None, uses experiment_id-timestamp
@@ -399,7 +401,15 @@ class SquidArtifactManager:
         total_size_mb = 0
         validation_tasks = []
         for file_info in zarr_files_info:
-            validation_tasks.append(self._validate_zarr_zip_content(file_info['content']))
+            # Handle both file_path and content for validation
+            if 'file_path' in file_info:
+                # Read file content for validation only
+                with open(file_info['file_path'], 'rb') as f:
+                    file_content = f.read()
+                validation_tasks.append(self._validate_zarr_zip_content(file_content))
+            else:
+                # Original behavior with content in memory
+                validation_tasks.append(self._validate_zarr_zip_content(file_info['content']))
             total_size_mb += file_info['size_mb']
 
         # Run all validations in parallel
@@ -409,9 +419,18 @@ class SquidArtifactManager:
         # Run detailed ZIP integrity test on first file as representative
         if zarr_files_info:
             first_file = zarr_files_info[0]
-            zip_test_results = await self.test_zip_file_integrity(
-                first_file['content'], f"Upload: {dataset_name} (first file)"
-            )
+            if 'file_path' in first_file:
+                # Read file content for integrity test only
+                with open(first_file['file_path'], 'rb') as f:
+                    file_content = f.read()
+                zip_test_results = await self.test_zip_file_integrity(
+                    file_content, f"Upload: {dataset_name} (first file)"
+                )
+            else:
+                # Original behavior with content in memory
+                zip_test_results = await self.test_zip_file_integrity(
+                    first_file['content'], f"Upload: {dataset_name} (first file)"
+                )
             if not zip_test_results["valid"]:
                 raise ValueError(f"ZIP file integrity test failed: {', '.join(zip_test_results['issues'])}")
 
@@ -456,10 +475,19 @@ class SquidArtifactManager:
             # Upload each zarr zip file with retry logic
             for i, file_info in enumerate(zarr_files_info):
                 file_name = file_info['name']
-                file_content = file_info['content']
                 file_size_mb = file_info['size_mb']
 
                 print(f"Uploading file {i+1}/{len(zarr_files_info)}: {file_name} ({file_size_mb:.2f} MB)")
+
+                # Handle both file_path and content for upload
+                if 'file_path' in file_info:
+                    # Streaming upload: read file content one at a time
+                    with open(file_info['file_path'], 'rb') as f:
+                        file_content = f.read()
+                    print(f"  📁 Read file from disk: {file_info['file_path']}")
+                else:
+                    # Original behavior: content already in memory
+                    file_content = file_info['content']
 
                 # Upload zarr zip file with retry logic
                 await self._upload_large_zip_multipart(
@@ -468,6 +496,11 @@ class SquidArtifactManager:
                     max_retries=3,
                     file_path=f"{file_name}.zip"
                 )
+                
+                # Clear file content from memory immediately after upload (for streaming)
+                if 'file_path' in file_info:
+                    del file_content
+                    print(f"  🧹 Cleared file content from memory")
 
                 uploaded_files.append({
                     "name": file_name,
