@@ -3064,7 +3064,7 @@ class MicroscopeHyphaService:
             if acquisition_settings:
                 acquisition_settings["wells"] = well_info_list
 
-            upload_result = await self.zarr_artifact_manager.upload_multiple_zarr_files_to_dataset(
+            upload_result = await self.zarr_artifact_manager.upload_multiple_zip_files_to_dataset(
                 microscope_service_id=self.service_id,
                 experiment_id=experiment_name,
                 zarr_files_info=zarr_files_info,
@@ -3951,6 +3951,7 @@ class MicroscopeHyphaService:
         experiment_id: str = Field(..., description="Experiment ID to process (prefix match for folder names)"),
         upload_immediately: bool = Field(True, description="Upload each experiment run after stitching"),
         cleanup_temp_files: bool = Field(True, description="Delete temporary zarr files after upload"),
+        use_parallel_wells: bool = Field(True, description="Process 3 wells in parallel (faster) or sequentially"),
         context=None):
         """
         Process time-lapse experiment data offline: stitch images and upload to gallery.
@@ -3962,10 +3963,14 @@ class MicroscopeHyphaService:
         Each experiment run folder contains a single '0' subfolder with all the data that
         is stitched together into well canvases and uploaded as one dataset.
         
+        By default, processes 3 wells in parallel for faster processing. Upload only happens
+        after ALL wells in a folder are processed.
+        
         Args:
             experiment_id: Experiment ID to search for (e.g., 'test-drug')
             upload_immediately: Whether to upload each run after stitching
             cleanup_temp_files: Whether to delete temporary files after upload
+            use_parallel_wells: Whether to process 3 wells in parallel (faster) or sequentially
         
         Returns:
             dict: Processing results with gallery and dataset information
@@ -3980,7 +3985,7 @@ class MicroscopeHyphaService:
                 raise Exception("Zarr artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
 
             logger.info(f"Starting offline processing for experiment ID: {experiment_id}")
-            logger.info(f"Parameters: upload_immediately={upload_immediately}, cleanup_temp_files={cleanup_temp_files}")
+            logger.info(f"Parameters: upload_immediately={upload_immediately}, cleanup_temp_files={cleanup_temp_files}, use_parallel_wells={use_parallel_wells}")
 
             # Import and create the offline processor directly
             from .offline_processing import OfflineProcessor
@@ -3991,13 +3996,14 @@ class MicroscopeHyphaService:
             )
             logger.info("OfflineProcessor created successfully")
 
-            # Run the offline processing
+            # Run the offline processing with parallel wells enabled by default
             logger.info("Calling processor.stitch_and_upload_timelapse...")
             result = await processor.stitch_and_upload_timelapse(
-                experiment_id, upload_immediately, cleanup_temp_files
+                experiment_id, upload_immediately, cleanup_temp_files, use_parallel_wells=use_parallel_wells
             )
             
             logger.info(f"Offline processing completed: {result.get('total_datasets', 0)} datasets processed")
+            logger.info(f"Processing mode: {result.get('processing_mode', 'unknown')}")
             logger.info(f"Processing result: {result}")
             return result
             

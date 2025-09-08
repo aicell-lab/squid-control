@@ -10,7 +10,7 @@ import io
 import math
 import time
 import uuid
-
+import zipfile
 import aiohttp
 import dotenv
 import httpx
@@ -302,6 +302,8 @@ class SquidArtifactManager:
             if experiment_id is None:
                 raise ValueError("experiment_id is required when microscope_service_id ends with a number")
             gallery_number = number_match.group(1)
+            # FIXED: Always use the base experiment_id for gallery naming, not folder-specific names
+            # This ensures all datasets from the same experiment go into the same gallery
             gallery_alias = f"{gallery_number}-{experiment_id}"
         else:
             # Standard case: use microscope-based gallery
@@ -369,28 +371,29 @@ class SquidArtifactManager:
             else:
                 raise e
 
-    async def upload_multiple_zarr_files_to_dataset(self, microscope_service_id, experiment_id,
+    async def upload_multiple_zip_files_to_dataset(self, microscope_service_id, experiment_id,
                                                    zarr_files_info, acquisition_settings=None,
-                                                   description=None):
+                                                   description=None, dataset_name=None):
         """
         Upload multiple zarr files to a single dataset within a gallery.
         
         Args:
             microscope_service_id (str): The hypha service ID of the microscope
-            experiment_id (str): The experiment ID for dataset naming
+            experiment_id (str): The experiment ID for gallery naming
             zarr_files_info (list): List of dicts with 'name', 'content', 'size_mb' for each file
             acquisition_settings (dict, optional): Acquisition settings metadata
             description (str, optional): Description of the dataset
+            dataset_name (str, optional): Custom dataset name. If None, uses experiment_id-timestamp
             
         Returns:
             dict: Information about the uploaded dataset
         """
         workspace = "agent-lens"
 
-        # Generate dataset name with timestamp
-        import time
-        timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
-        dataset_name = f"{experiment_id}-{timestamp}"
+        # Generate dataset name with timestamp if not provided
+        if dataset_name is None:
+            timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+            dataset_name = f"{experiment_id}-{timestamp}"
 
         # Validate all ZIP files in parallel to avoid blocking asyncio loop
         total_size_mb = 0
@@ -601,7 +604,6 @@ class SquidArtifactManager:
         workspace = "agent-lens"
 
         # Generate dataset name with timestamp
-        import time
         timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
         dataset_name = f"{self.experiment_id}-{timestamp}"
 
@@ -740,7 +742,6 @@ class SquidArtifactManager:
 
             # Generate alternative suggestions
             suggestions = []
-            import time
             timestamp = int(time.time())
             base_suggestions = [
                 f"{dataset_name}-v2",
@@ -799,7 +800,6 @@ class SquidArtifactManager:
 
         # Generate dataset name if experiment_id is provided
         if experiment_id is not None:
-            import time
             timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
             dataset_name = f"{experiment_id}-{timestamp}"
 
@@ -820,7 +820,6 @@ class SquidArtifactManager:
             raise ValueError(f"Dataset name '{dataset_name}' is not available: {name_check['reason']}")
 
         # Create dataset manifest
-        import time
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
         zip_size_mb = len(zarr_zip_content) / (1024 * 1024)
 
@@ -886,7 +885,6 @@ class SquidArtifactManager:
         # Move CPU-intensive ZIP validation to thread pool to avoid blocking asyncio loop
         def _validate_zip_sync(zip_content: bytes) -> None:
             import io
-            import zipfile
 
             zip_buffer = io.BytesIO(zip_content)
             with zipfile.ZipFile(zip_buffer, 'r') as zip_file:
@@ -1127,7 +1125,6 @@ class SquidArtifactManager:
         # Move CPU-intensive ZIP integrity testing to thread pool to avoid blocking asyncio loop
         def _test_zip_integrity_sync(zip_content: bytes, description: str) -> dict:
             import io
-            import zipfile
 
             results = {
                 "valid": False,
