@@ -3966,6 +3966,8 @@ class MicroscopeHyphaService:
         By default, processes 3 wells in parallel for faster processing. Upload only happens
         after ALL wells in a folder are processed.
         
+        **NEW: Runs in a separate thread to prevent blocking the main event loop and network disconnections.**
+        
         Args:
             experiment_id: Experiment ID to search for (e.g., 'test-drug')
             upload_immediately: Whether to upload each run after stitching
@@ -3986,29 +3988,63 @@ class MicroscopeHyphaService:
 
             logger.info(f"Starting offline processing for experiment ID: {experiment_id}")
             logger.info(f"Parameters: upload_immediately={upload_immediately}, cleanup_temp_files={cleanup_temp_files}, use_parallel_wells={use_parallel_wells}")
+            logger.info("🧵 Running offline processing in separate thread to prevent network disconnections")
 
-            # Import and create the offline processor directly
-            from .offline_processing import OfflineProcessor
-            processor = OfflineProcessor(
-                self.squidController, 
-                self.zarr_artifact_manager, 
-                self.service_id
-            )
-            logger.info("OfflineProcessor created successfully")
+            # Define the blocking processing function to run in a thread
+            def run_offline_processing():
+                """
+                Run the offline processing in a separate thread.
+                This prevents blocking the main event loop and maintains network connections.
+                """
+                try:
+                    # Import and create the offline processor
+                    from .offline_processing import OfflineProcessor
+                    processor = OfflineProcessor(
+                        self.squidController, 
+                        self.zarr_artifact_manager, 
+                        self.service_id
+                    )
+                    logger.info("OfflineProcessor created successfully in worker thread")
 
-            # Run the offline processing with parallel wells enabled by default
-            logger.info("Calling processor.stitch_and_upload_timelapse...")
-            result = await processor.stitch_and_upload_timelapse(
-                experiment_id, upload_immediately, cleanup_temp_files, use_parallel_wells=use_parallel_wells
-            )
+                    # Create a new event loop for this thread since offline processing uses async operations
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    
+                    try:
+                        # Run the offline processing in the new event loop
+                        logger.info("Calling processor.stitch_and_upload_timelapse in worker thread...")
+                        result = loop.run_until_complete(
+                            processor.stitch_and_upload_timelapse(
+                                experiment_id, upload_immediately, cleanup_temp_files, 
+                                use_parallel_wells=use_parallel_wells
+                            )
+                        )
+                        
+                        logger.info(f"Offline processing completed in worker thread: {result.get('total_datasets', 0)} datasets processed")
+                        logger.info(f"Processing mode: {result.get('processing_mode', 'unknown')}")
+                        return result
+                        
+                    finally:
+                        # Clean up the event loop
+                        loop.close()
+                        
+                except Exception as e:
+                    logger.error(f"Error in offline processing worker thread: {e}")
+                    return {
+                        "success": False,
+                        "error": str(e),
+                        "experiment_id": experiment_id
+                    }
+
+            # Run the processing function in a separate thread using asyncio.to_thread
+            logger.info("🚀 Launching offline processing in worker thread...")
+            result = await asyncio.to_thread(run_offline_processing)
             
-            logger.info(f"Offline processing completed: {result.get('total_datasets', 0)} datasets processed")
-            logger.info(f"Processing mode: {result.get('processing_mode', 'unknown')}")
-            logger.info(f"Processing result: {result}")
+            logger.info(f"🎉 Offline processing thread completed: {result}")
             return result
             
         except Exception as e:
-            logger.error(f"Error in offline stitching and upload: {e}")
+            logger.error(f"Error in offline stitching and upload service method: {e}")
             raise e
 
 # Global variable to hold the microscope instance
