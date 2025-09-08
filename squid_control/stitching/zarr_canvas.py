@@ -1331,26 +1331,6 @@ class WellZarrCanvasBase:
             logger.error(f"Error during zarr flush and sync: {e}")
             raise RuntimeError(f"Failed to flush zarr arrays: {e}")
 
-    def export_as_zip(self) -> bytes:
-        """
-        Export the entire zarr canvas as a zip file for upload to artifact manager.
-        Uses robust ZIP64 creation that's compatible with S3 ZIP parsers.
-        Creates ZIP directly to temporary file to avoid memory corruption with large files.
-        
-        Returns:
-            bytes: The zip file content containing the entire zarr directory structure
-        """
-        # Use the file-based export and read into memory for backward compatibility
-        temp_path = self.export_as_zip_file()
-        try:
-            with open(temp_path, 'rb') as f:
-                return f.read()
-        finally:
-            try:
-                os.unlink(temp_path)
-            except Exception as e:
-                logger.warning(f"Failed to clean up temporary ZIP file {temp_path}: {e}")
-
     def export_as_zip_file(self) -> str:
         """
         Export the entire zarr canvas as a zip file to a temporary file.

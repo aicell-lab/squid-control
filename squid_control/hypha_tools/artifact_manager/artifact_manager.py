@@ -397,35 +397,45 @@ class SquidArtifactManager:
             timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
             dataset_name = f"{experiment_id}-{timestamp}"
 
-        # Validate all ZIP files in parallel to avoid blocking asyncio loop
+        # Validate all ZIP files with streaming validation to avoid memory exhaustion
         total_size_mb = 0
-        validation_tasks = []
-        for file_info in zarr_files_info:
+        print(f"🔍 Validating {len(zarr_files_info)} ZIP files with streaming validation...")
+        
+        # Use sequential validation to avoid loading multiple large files into memory
+        for i, file_info in enumerate(zarr_files_info):
+            print(f"  Validating file {i+1}/{len(zarr_files_info)}: {file_info['name']} ({file_info['size_mb']:.2f} MB)")
+            
             # Handle both file_path and content for validation
             if 'file_path' in file_info:
-                # Read file content for validation only
+                # Load ONE file at a time, validate, then release memory immediately
                 with open(file_info['file_path'], 'rb') as f:
                     file_content = f.read()
-                validation_tasks.append(self._validate_zarr_zip_content(file_content))
+                await self._validate_zarr_zip_content(file_content)
+                # Explicitly delete to free memory immediately
+                del file_content
+                print(f"    ✅ File validated and memory freed")
             else:
-                # Original behavior with content in memory
-                validation_tasks.append(self._validate_zarr_zip_content(file_info['content']))
+                # Original behavior with content in memory (for backward compatibility)
+                await self._validate_zarr_zip_content(file_info['content'])
             total_size_mb += file_info['size_mb']
-
-        # Run all validations in parallel
-        if validation_tasks:
-            await asyncio.gather(*validation_tasks)
+        
+        print(f"✅ All {len(zarr_files_info)} ZIP files validated successfully")
 
         # Run detailed ZIP integrity test on first file as representative
         if zarr_files_info:
             first_file = zarr_files_info[0]
+            print(f"🔍 Running detailed integrity test on first file: {first_file['name']}")
+            
             if 'file_path' in first_file:
-                # Read file content for integrity test only
+                # Load ONE file, test integrity, then release memory immediately
                 with open(first_file['file_path'], 'rb') as f:
                     file_content = f.read()
                 zip_test_results = await self.test_zip_file_integrity(
                     file_content, f"Upload: {dataset_name} (first file)"
                 )
+                # Explicitly delete to free memory immediately
+                del file_content
+                print(f"    ✅ Integrity test completed and memory freed")
             else:
                 # Original behavior with content in memory
                 zip_test_results = await self.test_zip_file_integrity(
@@ -433,6 +443,8 @@ class SquidArtifactManager:
                 )
             if not zip_test_results["valid"]:
                 raise ValueError(f"ZIP file integrity test failed: {', '.join(zip_test_results['issues'])}")
+                
+            print(f"✅ Integrity test passed for first file")
 
         # Ensure gallery exists
         gallery = await self.create_or_get_microscope_gallery(microscope_service_id, experiment_id)
@@ -481,10 +493,10 @@ class SquidArtifactManager:
 
                 # Handle both file_path and content for upload
                 if 'file_path' in file_info:
-                    # Streaming upload: read file content one at a time
+                    # Load ONE file at a time to avoid memory exhaustion
                     with open(file_info['file_path'], 'rb') as f:
                         file_content = f.read()
-                    print(f"  📁 Read file from disk: {file_info['file_path']}")
+                    print(f"  📁 Loaded file into memory: {file_info['file_path']} ({file_size_mb:.2f} MB)")
                 else:
                     # Original behavior: content already in memory
                     file_content = file_info['content']
@@ -497,10 +509,10 @@ class SquidArtifactManager:
                     file_path=f"{file_name}.zip"
                 )
                 
-                # Clear file content from memory immediately after upload (for streaming)
+                # Clear file content from memory immediately after upload
                 if 'file_path' in file_info:
                     del file_content
-                    print(f"  🧹 Cleared file content from memory")
+                    print(f"  🧹 Cleared {file_size_mb:.2f} MB from memory")
 
                 uploaded_files.append({
                     "name": file_name,
