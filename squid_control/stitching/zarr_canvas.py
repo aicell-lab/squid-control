@@ -1252,7 +1252,7 @@ class WellZarrCanvasBase:
                 return
 
             # Create the ZIP file directly from the existing zarr data
-            with zipfile.ZipFile(zip_path, 'w', allowZip64=True, compression=zipfile.ZIP_DEFLATED) as zf:
+            with zipfile.ZipFile(zip_path, 'w', allowZip64=True, compression=zipfile.ZIP_STORED) as zf:
                 # Walk through the zarr directory and add all files
                 for root, dirs, files in os.walk(self.zarr_path):
                     for file in files:

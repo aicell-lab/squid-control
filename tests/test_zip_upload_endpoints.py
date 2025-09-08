@@ -503,7 +503,7 @@ class OMEZarrCreator:
             compresslevel = None
         else:
             print(f"✅ Low mini chunk percentage ({mini_chunk_percentage:.1f}%) - using DEFLATED compression")
-            compression = zipfile.ZIP_DEFLATED
+            compression = zipfile.ZIP_STORED
             compresslevel = 1
 
         # Create ZIP with appropriate settings
