@@ -284,9 +284,6 @@ class OfflineProcessor:
             if image_files:
                 position_images[(i, j, x_mm, y_mm)] = image_files
                 print(f"Well {well_id} position ({i},{j},{k}): found {len(image_files)} images")
-                # Debug: Show actual filenames
-                for img_file in image_files:
-                    print(f"  📸 {img_file.name}")
             else:
                 print(f"⚠️ Well {well_id} position ({i},{j},{k}): NO IMAGES FOUND!")
                 print(f"  🔍 Pattern used: {pattern}")
@@ -315,14 +312,6 @@ class OfflineProcessor:
         
         print(f"✅ Total images added to canvas: {images_added}/{total_images}")
         
-        # Debug: Calculate expected vs actual
-        expected_images = len(well_data) * 3  # Assuming 3 channels per FOV
-        print(f"🔍 DEBUG: Expected images per well: ~{expected_images} (FOVs × channels)")
-        print(f"🔍 DEBUG: Actual images found: {total_images}")
-        print(f"🔍 DEBUG: Images successfully added: {images_added}")
-        if total_images < expected_images:
-            print(f"⚠️ WARNING: Found fewer images than expected! Check channel mapping and file patterns.")
-
     def _load_and_process_single_image_sync(self, img_file: Path, x_mm: float, y_mm: float,
                                            canvas, channel_mapping: dict, available_channels: list) -> bool:
         """
