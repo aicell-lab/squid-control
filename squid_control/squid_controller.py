@@ -332,11 +332,8 @@ class SquidController:
         self.current_exposure_time = 100
         self.current_intensity = 100
         self.pixel_size_xy = 0.333
-        # drift correction for image map
-        self.drift_correction_x = -1.6
-        self.drift_correction_y = -2.1
         # simulated sample data alias
-        self.sample_data_alias = "agent-lens/20250506-scan-time-lapse-2025-05-06_17-56-38"
+        self.sample_data_alias = "agent-lens/20250824-example-data-20250824t211822-798933"
         self.get_pixel_size()
 
         # Initialize experiment-based zarr management
@@ -471,9 +468,7 @@ class SquidController:
         magnification_factor = SIMULATED_CAMERA.MAGNIFICATION_FACTOR
         self.current_exposure_time = exposure_time
         self.current_intensity = intensity
-        corrected_x = current_x + self.drift_correction_x
-        corrected_y = current_y + self.drift_correction_y
-        await self.camera.send_trigger(corrected_x, corrected_y, self.dz, self.pixel_size_xy, channel, intensity, exposure_time, magnification_factor, sample_data_alias=self.sample_data_alias)
+        await self.camera.send_trigger(current_x, current_y, self.dz, self.pixel_size_xy, channel, intensity, exposure_time, magnification_factor, sample_data_alias=self.sample_data_alias)
         print(f'For simulated camera, exposure_time={exposure_time}, intensity={intensity}, magnification_factor={magnification_factor}, current position: {current_x},{current_y},{current_z}')
 
     def set_simulated_sample_data_alias(self, sample_data_alias):

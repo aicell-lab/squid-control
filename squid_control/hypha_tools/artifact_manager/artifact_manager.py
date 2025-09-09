@@ -1304,7 +1304,7 @@ class SquidArtifactManager:
 
 # Constants
 SERVER_URL = "https://hypha.aicell.io"
-ARTIFACT_ALIAS = "20250506-scan-time-lapse-2025-05-06_17-56-38"
+ARTIFACT_ALIAS = "20250824-example-data-20250824t211822-798933"
 DEFAULT_CHANNEL = "BF_LED_matrix_full"
 
 # New class to replace TileManager using Zarr for efficient access
@@ -1323,7 +1323,7 @@ class ZarrImageManager:
         ]
         self.is_running = True
         self.session = None
-        self.default_timestamp = "20250506-scan-time-lapse-2025-05-06_17-56-38"  # Set a default timestamp
+        self.default_timestamp = "20250824-example-data-20250824t211822-798933"  # Set a default timestamp
         self.scale_key = 'scale0'
 
         # New attributes for HTTP-based access
@@ -1353,7 +1353,7 @@ class ZarrImageManager:
         """
         Fetch and cache Zarr metadata (.zgroup or .zarray) for a given dataset alias.
         Args:
-            dataset_alias (str): The alias of the dataset (e.g., "agent-lens/20250506-scan-time-lapse-2025-05-06_17-56-38")
+            dataset_alias (str): The alias of the dataset (e.g., "agent-lens/20250824-example-data-20250824t211822-798933")
             metadata_path_in_dataset (str): Path within the dataset (e.g., "Channel/scaleN/.zarray")
             use_cache (bool): Whether to use cached metadata. Defaults to True.
         """
@@ -1410,7 +1410,7 @@ class ZarrImageManager:
             await self._get_http_session()  # Ensures session is created
 
             # Prime metadata for a default dataset if needed, or remove if priming is dynamic
-            # Example: await self.prime_metadata("agent-lens/20250506-scan-time-lapse-2025-05-06_17-56-38", self.channels[0], scale=0)
+            # Example: await self.prime_metadata("agent-lens/20250824-example-data-20250824t211822-798933", self.channels[0], scale=0)
 
             print("ZarrImageManager connected successfully")
             return True
@@ -1457,21 +1457,22 @@ class ZarrImageManager:
             except StopIteration: # pragma: no cover
                 pass # Cache might have been cleared by another operation concurrently
 
-    async def get_chunk_np_data(self, dataset_id, channel, scale, x, y):
+    async def get_chunk_np_data(self, dataset_id, channel, scale, x, y, well_id="F5"):
         """
-        Get a chunk as numpy array using new HTTP chunk access.
+        Get a chunk as numpy array using new OME-Zarr well-based format.
         Args:
             dataset_id (str): The alias of the dataset.
             channel (str): Channel name
             scale (int): Scale level
             x (int): X coordinate of the chunk for this scale.
             y (int): Y coordinate of the chunk for this scale.
+            well_id (str): Well ID (e.g., "F5") - defaults to F5 for backward compatibility
         Returns:
             np.ndarray or None: Chunk data as numpy array, or None if not found/empty/error.
         """
         start_time = time.time()
         # Key for processed_tile_cache and empty_regions_cache
-        tile_cache_key = f"{dataset_id}:{channel}:{scale}:{x}:{y}"
+        tile_cache_key = f"{dataset_id}:{well_id}:{channel}:{scale}:{x}:{y}"
 
         # 1. Check processed tile cache
         if tile_cache_key in self.processed_tile_cache:
@@ -1488,50 +1489,82 @@ class ZarrImageManager:
             print(f"Skipping known empty tile: {tile_cache_key}")
             return None
 
-        # Construct path to .zarray metadata
-        zarray_path_in_dataset = f"{channel}/scale{scale}/.zarray"
-        zarray_metadata = await self._fetch_zarr_metadata(dataset_id, zarray_path_in_dataset)
-
+        # NEW FORMAT: Get well metadata from OME-Zarr structure
+        artifact_name_only = dataset_id.split('/')[-1]
+        well_zip_path = f"well_{well_id}_96.zip"
+        zarray_path_in_well = f"data.zarr/{scale}/.zarray"
+        
+        # Construct URL to access .zarray metadata in the well ZIP
+        zarray_metadata_url = f"{self.server_url}/{self.workspace}/artifacts/{artifact_name_only}/zip-files/{well_zip_path}?path={zarray_path_in_well}"
+        
+        # Fetch .zarray metadata
+        http_session = await self._get_http_session()
+        try:
+            async with http_session.get(zarray_metadata_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status != 200:
+                    print(f"Failed to get .zarray metadata from {zarray_metadata_url}: HTTP {response.status}")
+                    self._add_to_empty_regions_cache(tile_cache_key)
+                    return None
+                # Read as text and parse JSON manually to avoid MIME type issues
+                response_text = await response.text()
+                import json
+                zarray_metadata = json.loads(response_text)
+        except Exception as e:
+            print(f"Error fetching .zarray metadata from {zarray_metadata_url}: {e}")
+            self._add_to_empty_regions_cache(tile_cache_key)
+            return None
+        
         if not zarray_metadata:
-            print(f"Failed to get .zarray metadata for {dataset_id}/{zarray_path_in_dataset}")
+            print(f"Failed to get .zarray metadata for {dataset_id}/well_{well_id}/{scale}")
             self._add_to_empty_regions_cache(tile_cache_key)
             return None
 
         try:
-            z_shape = zarray_metadata["shape"]         # [total_height, total_width]
-            z_chunks = zarray_metadata["chunks"]       # [chunk_height, chunk_width]
+            # OME-Zarr format: shape is [T, C, Z, Y, X]
+            z_shape = zarray_metadata["shape"]         # [T, C, Z, total_height, total_width]
+            z_chunks = zarray_metadata["chunks"]       # [t_chunk, c_chunk, z_chunk, chunk_height, chunk_width]
             z_dtype_str = zarray_metadata["dtype"]
             z_dtype = np.dtype(z_dtype_str)
-            z_compressor_meta = zarray_metadata["compressor"]  # Can be null
-            z_fill_value = zarray_metadata.get("fill_value")  # Important for empty/partial chunks
+            z_compressor_meta = zarray_metadata.get("compressor")  # Can be null
+            z_fill_value = zarray_metadata.get("fill_value", 0)  # Important for empty/partial chunks
 
         except KeyError as e:
-            print(f"Incomplete .zarray metadata for {dataset_id}/{zarray_path_in_dataset}: Missing key {e}")
+            print(f"Incomplete .zarray metadata for {dataset_id}/well_{well_id}/{scale}: Missing key {e}")
             return None
 
-        # Check chunk coordinates are within bounds of the scale array
-        num_chunks_y_total = (z_shape[0] + z_chunks[0] - 1) // z_chunks[0]
-        num_chunks_x_total = (z_shape[1] + z_chunks[1] - 1) // z_chunks[1]
-
-        if not (0 <= y < num_chunks_y_total and 0 <= x < num_chunks_x_total):
-            print(f"Chunk coordinates ({x}, {y}) out of bounds for {dataset_id}/{channel}/scale{scale} (max: {num_chunks_x_total-1}, {num_chunks_y_total-1})")
+        # Get channel index from well metadata
+        channel_index = await self._get_channel_index_from_well(dataset_id, well_id, channel)
+        if channel_index is None:
+            print(f"Channel '{channel}' not found in well {well_id}")
             self._add_to_empty_regions_cache(tile_cache_key)
             return None
 
-        # Determine path to the zip file and the chunk name within that zip
-        # Interpretation: {y}.zip contains a row of chunks, chunk file is named {x}
-        zip_file_path_in_dataset = f"{channel}/scale{scale}/{y}.zip"
-        chunk_name_in_zip = str(x)
+        # Check chunk coordinates are within bounds (using Y, X dimensions from 5D array)
+        image_height, image_width = z_shape[3], z_shape[4]  # Y, X dimensions
+        chunk_height, chunk_width = z_chunks[3], z_chunks[4]  # Y, X chunk sizes
+        
+        num_chunks_y_total = (image_height + chunk_height - 1) // chunk_height
+        num_chunks_x_total = (image_width + chunk_width - 1) // chunk_width
 
+        if not (0 <= y < num_chunks_y_total and 0 <= x < num_chunks_x_total):
+            print(f"Chunk coordinates ({x}, {y}) out of bounds for {dataset_id}/well_{well_id}/scale{scale} (max: {num_chunks_x_total-1}, {num_chunks_y_total-1})")
+            self._add_to_empty_regions_cache(tile_cache_key)
+            return None
+
+        # NEW FORMAT: Construct chunk path in OME-Zarr format
+        # Chunk filename format: t.c.z.y.x (all coordinates needed)
+        t_coord = 0  # Default timepoint
+        c_coord = channel_index
+        z_coord = 0  # Default Z slice
+        chunk_filename = f"{t_coord}.{c_coord}.{z_coord}.{y}.{x}"
+        
+        chunk_path_in_well = f"data.zarr/{scale}/{chunk_filename}"
+        
         # Construct the full chunk download URL
-        # dataset_id is the full path like "agent-lens/artifact-name"
-        # self.workspace is "agent-lens"
-        artifact_name_only = dataset_id.split('/')[-1]
-        chunk_download_url = f"{self.server_url}/{self.workspace}/artifacts/{artifact_name_only}/zip-files/{zip_file_path_in_dataset}?path={chunk_name_in_zip}"
+        chunk_download_url = f"{self.server_url}/{self.workspace}/artifacts/{artifact_name_only}/zip-files/{well_zip_path}?path={chunk_path_in_well}"
 
         print(f"Attempting to fetch chunk: {chunk_download_url}")
 
-        http_session = await self._get_http_session()
         raw_chunk_bytes = None
         try:
             async with http_session.get(chunk_download_url, timeout=aiohttp.ClientTimeout(total=30)) as response:
@@ -1540,8 +1573,8 @@ class ZarrImageManager:
                 elif response.status == 404:
                     print(f"Chunk not found (404) at {chunk_download_url}. Treating as empty.")
                     self._add_to_empty_regions_cache(tile_cache_key)
-                    # Create an empty tile using fill_value if available
-                    empty_tile_data = np.full(z_chunks, z_fill_value if z_fill_value is not None else 0, dtype=z_dtype)
+                    # Create an empty tile using fill_value
+                    empty_tile_data = np.full((chunk_height, chunk_width), z_fill_value, dtype=z_dtype)
                     return empty_tile_data[:self.chunk_size, :self.chunk_size]  # Ensure correct output size
                 else:
                     error_text = await response.text()
@@ -1562,7 +1595,7 @@ class ZarrImageManager:
         if not raw_chunk_bytes:  # Should be caught by 404 or other errors, but as a safeguard
             print(f"No data received for chunk: {chunk_download_url}, though HTTP status was not an error.")
             self._add_to_empty_regions_cache(tile_cache_key)
-            empty_tile_data = np.full(z_chunks, z_fill_value if z_fill_value is not None else 0, dtype=z_dtype)
+            empty_tile_data = np.full((chunk_height, chunk_width), z_fill_value, dtype=z_dtype)
             return empty_tile_data[:self.chunk_size, :self.chunk_size]
 
         # 4. Decompress and decode chunk data
@@ -1573,16 +1606,12 @@ class ZarrImageManager:
                 codec = numcodecs.get_codec(z_compressor_meta)  # Handles filters too if defined in compressor object
                 decompressed_data = codec.decode(raw_chunk_bytes)
 
-            # Convert to NumPy array and reshape. Chunk shape from .zarray is [height, width]
-            chunk_data = np.frombuffer(decompressed_data, dtype=z_dtype).reshape(z_chunks)
+            # Convert to NumPy array and reshape. OME-Zarr chunk shape is [chunk_height, chunk_width]
+            chunk_data = np.frombuffer(decompressed_data, dtype=z_dtype).reshape((chunk_height, chunk_width))
 
             # The Zarr chunk might be smaller than self.chunk_size if it's a partial edge chunk.
-            # Or it could be larger if .zarray chunks are not self.chunk_size.
             # We need to return a tile of self.chunk_size.
-
-            final_tile_data = np.full((self.chunk_size, self.chunk_size),
-                                       z_fill_value if z_fill_value is not None else 0,
-                                       dtype=z_dtype)
+            final_tile_data = np.full((self.chunk_size, self.chunk_size), z_fill_value, dtype=z_dtype)
 
             # Determine the slice to copy from chunk_data and where to place it in final_tile_data
             copy_height = min(chunk_data.shape[0], self.chunk_size)
@@ -1621,6 +1650,75 @@ class ZarrImageManager:
 
         return final_tile_data
 
+    async def _get_channel_index_from_well(self, dataset_id, well_id, channel_name):
+        """
+        Get channel index from well's OME-Zarr metadata.
+        Args:
+            dataset_id (str): The alias of the dataset.
+            well_id (str): Well ID (e.g., "F5")
+            channel_name (str): Channel name to look up
+        Returns:
+            int or None: Channel index or None if not found
+        """
+        try:
+            artifact_name_only = dataset_id.split('/')[-1]
+            well_zip_path = f"well_{well_id}_96.zip"
+            zattrs_path_in_well = "data.zarr/.zattrs"
+            
+            # Construct URL to access .zattrs metadata in the well ZIP
+            zattrs_metadata_url = f"{self.server_url}/{self.workspace}/artifacts/{artifact_name_only}/zip-files/{well_zip_path}?path={zattrs_path_in_well}"
+            
+            # Fetch .zattrs metadata
+            http_session = await self._get_http_session()
+            async with http_session.get(zattrs_metadata_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status != 200:
+                    print(f"Failed to get .zattrs metadata from {zattrs_metadata_url}: HTTP {response.status}")
+                    return None
+                # Read as text and parse JSON manually to avoid MIME type issues
+                response_text = await response.text()
+                import json
+                zattrs_metadata = json.loads(response_text)
+            
+            # Check squid_canvas channel mapping first (new format)
+            if "squid_canvas" in zattrs_metadata and "channel_mapping" in zattrs_metadata["squid_canvas"]:
+                channel_mapping = zattrs_metadata["squid_canvas"]["channel_mapping"]
+                if channel_name in channel_mapping:
+                    return channel_mapping[channel_name]
+            
+            # Fallback to OMERO channels
+            if "omero" in zattrs_metadata and "channels" in zattrs_metadata["omero"]:
+                channels = zattrs_metadata["omero"]["channels"]
+                for idx, channel_info in enumerate(channels):
+                    if channel_info.get("label") == channel_name:
+                        return idx
+            
+            # Fallback mapping for common channel names
+            channel_name_map = {
+                'BF_LED_matrix_full': 0,
+                'BF LED matrix full': 0,
+                'Fluorescence_405_nm_Ex': 1,
+                'Fluorescence 405 nm Ex': 1,
+                'Fluorescence_488_nm_Ex': 2,
+                'Fluorescence 488 nm Ex': 2,
+                'Fluorescence_561_nm_Ex': 4,
+                'Fluorescence 561 nm Ex': 4,
+                'Fluorescence_638_nm_Ex': 3,
+                'Fluorescence 638 nm Ex': 3,
+                'Fluorescence_730_nm_Ex': 5,
+                'Fluorescence 730 nm Ex': 5
+            }
+            
+            if channel_name in channel_name_map:
+                print(f"Using fallback channel mapping: {channel_name} → {channel_name_map[channel_name]}")
+                return channel_name_map[channel_name]
+            
+            print(f"Channel '{channel_name}' not found in well {well_id}")
+            return None
+            
+        except Exception as e:
+            print(f"Error getting channel index for {channel_name} in well {well_id}: {e}")
+            return None
+
     # Legacy methods for backward compatibility - now use chunk-based access
     async def get_zarr_group(self, dataset_id, channel):
         """Legacy method - now returns None as we use direct chunk access instead. Timestamp is ignored."""
@@ -1649,7 +1747,7 @@ class ZarrImageManager:
         Get a region as numpy array using new HTTP chunk access
         
         Args:
-            dataset_id (str): The dataset ID (e.g., "agent-lens/20250506-scan-time-lapse-...")
+            dataset_id (str): The dataset ID (e.g., "agent-lens/scan-time-lapse-...")
             channel (str): Channel name
             scale (int): Scale level
             x (int): X coordinate (chunk coordinates)
@@ -1672,7 +1770,7 @@ class ZarrImageManager:
                 y_start, y_end, x_start, x_end = direct_region
 
                 # Get metadata to determine chunk size
-                # dataset_id is now the full path like "agent-lens/20250506-scan-time-lapse-..."
+                # dataset_id is now the full path like "agent-lens/scan-time-lapse-..."
                 zarray_path_in_dataset = f"{channel}/scale{scale}/.zarray"
                 zarray_metadata = await self._fetch_zarr_metadata(dataset_id, zarray_path_in_dataset)
 
@@ -1746,7 +1844,7 @@ class ZarrImageManager:
 
             else:
                 # Single chunk access
-                # dataset_id is the full path like "agent-lens/20250506-scan-time-lapse-..."
+                # dataset_id is the full path like "agent-lens/scan-time-lapse-..."
                 chunk_data = await self.get_chunk_np_data(dataset_id, channel, scale, x, y)
 
                 if chunk_data is None:
@@ -1841,7 +1939,7 @@ class ZarrImageManager:
         """
         try:
             # Use default values if not provided
-            dataset_id = dataset_id or "agent-lens/20250506-scan-time-lapse-2025-05-06_17-56-38"
+            dataset_id = dataset_id or "agent-lens/20250824-example-data-20250824t211822-798933"
             channel = channel or "BF_LED_matrix_full"
 
             print(f"Testing Zarr chunk access for dataset: {dataset_id}, channel: {channel}, bypass_cache: {bypass_cache}")

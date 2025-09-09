@@ -280,7 +280,7 @@ async def test_new_feature():
 ### Test Data
 
 Tests use simulated data with consistent parameters:
-- **Default sample data**: `agent-lens/20250506-scan-time-lapse-2025-05-06_17-56-38`
+- **Default sample data**: `agent-lens/20250824-example-data-20250824t211822-798933`
 - **Pixel size**: 0.333 micrometers
 - **Drift correction**: X=-1.6, Y=-2.1
 - **Reference Z position**: From SIMULATED_CAMERA.ORIN_Z

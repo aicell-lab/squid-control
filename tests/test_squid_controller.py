@@ -186,13 +186,6 @@ async def test_configuration_and_pixel_size(sim_controller_fixture):
         from squid_control.control.config import CONFIG
         assert hasattr(CONFIG, 'PIXEL_SIZE_ADJUSTMENT_FACTOR')
         assert CONFIG.PIXEL_SIZE_ADJUSTMENT_FACTOR > 0
-
-        # Test drift correction parameters
-        assert hasattr(controller, 'drift_correction_x')
-        assert hasattr(controller, 'drift_correction_y')
-        assert isinstance(controller.drift_correction_x, (int, float))
-        assert isinstance(controller.drift_correction_y, (int, float))
-
         # Test sample data alias methods
         original_alias = controller.get_simulated_sample_data_alias()
         test_alias = "test/sample/data"
@@ -733,7 +726,7 @@ async def test_simulated_sample_data_alias(sim_controller_fixture):
     """Test setting and getting the simulated sample data alias."""
     async for controller in sim_controller_fixture:
         default_alias = controller.get_simulated_sample_data_alias()
-        assert default_alias == "agent-lens/20250506-scan-time-lapse-2025-05-06_17-56-38"
+        assert default_alias == "agent-lens/20250824-example-data-20250824t211822-798933"
 
         new_alias = "new/sample/path"
         # This method is synchronous
