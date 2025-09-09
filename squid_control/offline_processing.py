@@ -482,7 +482,7 @@ class OfflineProcessor:
             experiment_id: Optional experiment ID prefix
             
         Returns:
-            Normalized dataset name (e.g., 'experiment-2025-07-20_09-51-13')
+            Normalized dataset name (e.g., 'experiment-20250720-095113')
         """
         # Extract the normalized timestamp
         timestamp = self.extract_timestamp_from_folder(experiment_folder)
@@ -501,9 +501,19 @@ class OfflineProcessor:
             base_name = re.sub(r'_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:\.\d+)?.*$', '', folder_name)
             base_name = re.sub(r'-\d{8}T\d{6}.*$', '', base_name)
         
-        # Create normalized name: base_name-timestamp
-        if timestamp and timestamp != folder_name:  # Only add timestamp if we found a valid one
-            normalized_name = f"{base_name}-{timestamp}"
+        # Convert timestamp to old format (YYYYMMDD-HHMMSS) if we have a valid timestamp
+        if timestamp and timestamp != folder_name:
+            # Check if timestamp is in the new format (YYYY-MM-DD_HH-MM-SS)
+            if '_' in timestamp and '-' in timestamp:
+                # Convert from YYYY-MM-DD_HH-MM-SS to YYYYMMDD-HHMMSS
+                date_part, time_part = timestamp.split('_')
+                date_compact = date_part.replace('-', '')
+                time_compact = time_part.replace('-', '')
+                old_format_timestamp = f"{date_compact}-{time_compact}"
+            else:
+                # Already in old format or some other format, use as-is
+                old_format_timestamp = timestamp
+            normalized_name = f"{base_name}-{old_format_timestamp}"
         else:
             normalized_name = base_name
         
