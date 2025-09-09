@@ -427,20 +427,88 @@ class OfflineProcessor:
         """
         Extract timestamp identifier from folder name.
         
+        Handles both old and new timestamp formats:
+        - Old format: 20250718-U2OS-FUCCI-Eto-ER-20250720T095000_2025-07-20_09-51-13.673205
+        - New format: 20250718-U2OS-FUCCI-Eto-ER_2025-07-20_09-51-13.673205
+        
         Args:
-            folder_path: Path to experiment folder (e.g., test-drug-20250822T143055)
+            folder_path: Path to experiment folder
             
         Returns:
-            Timestamp string (e.g., '20250822T143055')
+            Normalized timestamp string (e.g., '2025-07-20_09-51-13')
         """
+        import re
+        
         folder_name = folder_path.name
-        # Find the last occurrence of '-' and take everything after it
-        if '-' in folder_name:
-            timestamp = folder_name.split('-')[-1]
+        
+        # Pattern to match the normalized timestamp format: _YYYY-MM-DD_HH-MM-SS
+        # This pattern will match both old and new formats
+        timestamp_pattern = r'_(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:\.\d+)?)'
+        
+        match = re.search(timestamp_pattern, folder_name)
+        if match:
+            # Extract the timestamp part (without the leading underscore)
+            timestamp = match.group(1)
+            # Remove microseconds if present for consistency
+            if '.' in timestamp:
+                timestamp = timestamp.split('.')[0]
             return timestamp
         else:
-            # Fallback to folder name if no timestamp pattern found
+            # Fallback: try to find any timestamp-like pattern
+            # Look for patterns like YYYYMMDDTHHMMSS or YYYY-MM-DD_HH-MM-SS
+            fallback_patterns = [
+                r'(\d{8}T\d{6})',  # YYYYMMDDTHHMMSS
+                r'(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})',  # YYYY-MM-DD_HH-MM-SS
+                r'(\d{4}-\d{2}-\d{2}_\d{2}:\d{2}:\d{2})',  # YYYY-MM-DD_HH:MM:SS
+            ]
+            
+            for pattern in fallback_patterns:
+                match = re.search(pattern, folder_name)
+                if match:
+                    return match.group(1)
+            
+            # Final fallback: use folder name
             return folder_name
+
+    def create_normalized_dataset_name(self, experiment_folder: Path, experiment_id: str = None) -> str:
+        """
+        Create a normalized dataset name using the extracted timestamp.
+        
+        This helps group related experiments together by using a consistent
+        timestamp format regardless of the original folder naming.
+        
+        Args:
+            experiment_folder: Path to experiment folder
+            experiment_id: Optional experiment ID prefix
+            
+        Returns:
+            Normalized dataset name (e.g., 'experiment-2025-07-20_09-51-13')
+        """
+        # Extract the normalized timestamp
+        timestamp = self.extract_timestamp_from_folder(experiment_folder)
+        
+        # Get folder name for reference
+        folder_name = experiment_folder.name
+        
+        # Use experiment_id as prefix if provided, otherwise use folder name base
+        if experiment_id:
+            # Extract base name from experiment_id (before any timestamps)
+            base_name = experiment_id.split('_')[0] if '_' in experiment_id else experiment_id
+        else:
+            # Extract base name from folder (everything before the first timestamp pattern)
+            # Remove timestamp patterns to get base name
+            import re
+            base_name = re.sub(r'_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:\.\d+)?.*$', '', folder_name)
+            base_name = re.sub(r'-\d{8}T\d{6}.*$', '', base_name)
+        
+        # Create normalized name: base_name-timestamp
+        if timestamp and timestamp != folder_name:  # Only add timestamp if we found a valid one
+            normalized_name = f"{base_name}-{timestamp}"
+        else:
+            normalized_name = base_name
+        
+        # Sanitize the final name
+        return self.sanitize_dataset_name(normalized_name)
 
     def sanitize_dataset_name(self, name: str) -> str:
         """
@@ -779,10 +847,9 @@ class OfflineProcessor:
                 except Exception as e:
                     print(f"⚠️ Failed to create .done file: {e}")
             
-            # Create dataset name: experiment_id-(sanitized folder name)
-            # This ensures each folder gets its own dataset within the same gallery
-            sanitized_folder_name = self.sanitize_dataset_name(experiment_folder.name)
-            dataset_name = f"{sanitized_folder_name}"
+            # Create dataset name using normalized timestamp extraction
+            # This ensures consistent naming regardless of folder timestamp format
+            dataset_name = self.create_normalized_dataset_name(experiment_folder, experiment_id)
             print(f"📝 Using dataset name: {dataset_name}")
 
             # 4. Upload all wells to a single dataset (like upload_zarr_dataset does)
@@ -969,10 +1036,9 @@ class OfflineProcessor:
             total_size_mb = 0.0
             well_zip_files = []  # Store all well ZIP files for combined upload
             
-            # Create dataset name: experiment_id-(sanitized folder name)
-            # This ensures each folder gets its own dataset within the same gallery
-            sanitized_folder_name = self.sanitize_dataset_name(experiment_folder.name)
-            dataset_name = f"{sanitized_folder_name}"
+            # Create dataset name using normalized timestamp extraction
+            # This ensures consistent naming regardless of folder timestamp format
+            dataset_name = self.create_normalized_dataset_name(experiment_folder, experiment_id)
             print(f"📝 Using dataset name: {dataset_name}")
             
             for well_index, (well_id, well_data) in enumerate(coordinates_data.items()):
@@ -1303,9 +1369,8 @@ class OfflineProcessor:
             
             print(f"🎉 Found {wells_processed} existing well ZIP files, total size: {total_size_mb:.2f} MB")
             
-            # Create dataset name: experiment_id-(sanitized folder name)
-            sanitized_folder_name = self.sanitize_dataset_name(experiment_folder.name)
-            dataset_name = f"{sanitized_folder_name}"
+            # Create dataset name using normalized timestamp extraction
+            dataset_name = self.create_normalized_dataset_name(experiment_folder, experiment_id)
             print(f"📝 Using dataset name: {dataset_name}")
 
             # Upload all wells to a single dataset (if upload requested)
