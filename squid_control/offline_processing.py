@@ -915,6 +915,15 @@ class OfflineProcessor:
                                 print(f"    🗑️ Cleaned up {well_info['name']}.zip")
                             except Exception as e:
                                 print(f"    ⚠️ Failed to cleanup {well_info['name']}.zip: {e}")
+                        
+                        # Also remove the .done file after successful upload
+                        try:
+                            well_zips_path = Path(CONFIG.DEFAULT_SAVING_PATH) / "well_zips"
+                            done_file = well_zips_path / ".done"
+                            done_file.unlink()
+                            print(f"    🗑️ Cleaned up .done file")
+                        except Exception as e:
+                            print(f"    ⚠️ Failed to cleanup .done file: {e}")
                     
                     # Clean up any existing temporary offline_stitch folders after successful upload
                     self._cleanup_existing_temp_folders(experiment_folder.name)
@@ -1142,6 +1151,15 @@ class OfflineProcessor:
                                 print(f"    🗑️ Cleaned up {well_info['name']}.zip")
                             except Exception as e:
                                 print(f"    ⚠️ Failed to cleanup {well_info['name']}.zip: {e}")
+                        
+                        # Also remove the .done file after successful upload
+                        try:
+                            well_zips_path = Path(CONFIG.DEFAULT_SAVING_PATH) / "well_zips"
+                            done_file = well_zips_path / ".done"
+                            done_file.unlink()
+                            print(f"    🗑️ Cleaned up .done file")
+                        except Exception as e:
+                            print(f"    ⚠️ Failed to cleanup .done file: {e}")
                     
                     # Clean up any existing temporary offline_stitch folders after successful upload
                     self._cleanup_existing_temp_folders(experiment_folder.name)
