@@ -733,7 +733,7 @@ async def test_simulated_sample_data_alias(sim_controller_fixture):
     """Test setting and getting the simulated sample data alias."""
     async for controller in sim_controller_fixture:
         default_alias = controller.get_simulated_sample_data_alias()
-        assert default_alias == "agent-lens/20250506-scan-time-lapse-2025-05-06_17-56-38"
+        assert default_alias == "agent-lens/20250824-example-data-20250824t211822-798933"
 
         new_alias = "new/sample/path"
         # This method is synchronous

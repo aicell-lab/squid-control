@@ -7,6 +7,7 @@ import os
 import sys
 import cv2
 import asyncio
+import aiohttp
 
 # Check if we're in simulation mode by looking for --simulation in sys.argv or environment
 _is_simulation_mode = (
@@ -556,7 +557,7 @@ class Camera_Simulation(object):
         self.image_paths = ChannelMapper.get_id_to_example_image_map()
         # Configuration for ZarrImageManager
         self.SERVER_URL = "https://hypha.aicell.io"
-        self.DEFAULT_TIMESTAMP = "20250506-scan-time-lapse-2025-05-06_17-56-38"  # Default timestamp for the dataset
+        self.DEFAULT_TIMESTAMP = "20250824-example-data-20250824t211822-798933"  # Default timestamp for the dataset
         
         # Initialize these to None, will be set up lazily when needed
         self.zarr_image_manager = None
@@ -741,16 +742,17 @@ class Camera_Simulation(object):
     def set_hardware_triggered_acquisition(self):
         pass
 
-    async def get_image_from_zarr(self, x, y, pixel_size_um, channel_name, sample_data_alias="agent-lens/20250506-scan-time-lapse-2025-05-06_17-56-38"):
+    async def get_image_from_zarr(self, x, y, pixel_size_um, channel_name, sample_data_alias="agent-lens/20250824-example-data-20250824t211822-798933", well_id="F5"):
         """
-        Get image data from Zarr storage for the specified coordinates and channel.
+        Get image data from new OME-Zarr well-based storage format.
         
         Args:
             x (float): X coordinate in mm
             y (float): Y coordinate in mm
             pixel_size_um (float): Pixel size in micrometers
             channel_name (str): Name of the channel to retrieve
-            sample_data_alias (str): Alias of the sample data (e.g., "agent-lens/20250506-scan-time-lapse-...")
+            sample_data_alias (str): Alias of the sample data (e.g., "agent-lens/20250824-example-data-20250824t211822-798933")
+            well_id (str): Well ID (e.g., "F5") - defaults to F5 for backward compatibility
             
         Returns:
             np.ndarray: The image data
@@ -763,52 +765,18 @@ class Camera_Simulation(object):
             await self.zarr_image_manager.connect(server_url=self.SERVER_URL)
             print("Connected to ZarrImageManager")
         
-        # Convert microscope coordinates (mm) to pixel coordinates - fix conversion factor
-        # Divide by scale_factor since we're using scale1 (1/4 resolution)
-        pixel_x = int((x / pixel_size_um) * 1000 / self.scale_factor)
-        pixel_y = int((y / pixel_size_um) * 1000 / self.scale_factor)
-        
-        # Print pixel coordinates for debugging
-        print(f"Converted coords (mm) x={x}, y={y} to pixel coords: x={pixel_x}, y={pixel_y} (scale{self.scale_level})")
-        
-        # Use the class variables for dataset configuration
-        dataset_id = sample_data_alias
-        # Timestamp is now part of dataset_id or determined by the dataset_id itself.
-        print(f"Using dataset: {dataset_id}, channel: {channel_name}")
-        
+        # Use the new buffered loading method which handles the new OME-Zarr format
         try:
-            # Calculate region boundaries with reduced dimensions (Width/4, Height/4)
-            scaled_width = self.Width // self.scale_factor
-            scaled_height = self.Height // self.scale_factor
-            
-            half_width = scaled_width // 2
-            half_height = scaled_height // 2
-            
-            y_start = max(0, pixel_y - half_height)
-            y_end = y_start + scaled_height
-            x_start = max(0, pixel_x - half_width)
-            x_end = x_start + scaled_width
-            
-            # Get the region directly using direct_region parameter and passing scaled Width and Height
-            region_data = await self.zarr_image_manager.get_region_np_data(
-                dataset_id, 
-                channel_name, 
-                self.scale_level,  # Using scale level from class property
-                0,  # x coordinate (ignored when using direct_region)
-                0,  # y coordinate (ignored when using direct_region)
-                direct_region=(y_start, y_end, x_start, x_end),
-                width=scaled_width,
-                height=scaled_height
+            await self._load_zarr_data_buffered(
+                x, y, pixel_size_um, channel_name, sample_data_alias, 
+                intensity=50, exposure_time=100, dz=0  # Default values for compatibility
             )
-            
-            return region_data
+            return self.image
         except Exception as e:
-            print(f"Error getting image from Zarr: {str(e)}")
-            import traceback
-            print(traceback.format_exc())
+            print(f"Failed to load image using new OME-Zarr format: {e}")
             return None
 
-    async def send_trigger(self, x=29.81, y=36.85, dz=0, pixel_size_um=0.333, channel=0, intensity=100, exposure_time=100, magnification_factor=20, performace_mode=False, sample_data_alias="agent-lens/20250506-scan-time-lapse-2025-05-06_17-56-38"):
+    async def send_trigger(self, x=29.81, y=36.85, dz=0, pixel_size_um=0.333, channel=0, intensity=100, exposure_time=100, magnification_factor=20, performace_mode=False, sample_data_alias="agent-lens/20250824-example-data-20250824t211822-798933"):
         print(f"Sending trigger with x={x}, y={y}, dz={dz}, pixel_size_um={pixel_size_um}, channel={channel}, intensity={intensity}, exposure_time={exposure_time}, magnification_factor={magnification_factor}, performace_mode={performace_mode}, sample_data_alias={sample_data_alias}")
         self.frame_ID += 1
         self.timestamp = time.time()
@@ -921,7 +889,7 @@ class Camera_Simulation(object):
     def set_line3_to_exposure_active(self):
         pass
 
-    async def send_trigger_buffered(self, x=29.81, y=36.85, dz=0, pixel_size_um=0.333, channel=0, intensity=100, exposure_time=100, magnification_factor=20, sample_data_alias="agent-lens/20250506-scan-time-lapse-2025-05-06_17-56-38"):
+    async def send_trigger_buffered(self, x=29.81, y=36.85, dz=0, pixel_size_um=0.333, channel=0, intensity=100, exposure_time=100, magnification_factor=20, sample_data_alias="agent-lens/20250824-example-data-20250824t211822-798933"):
         """
         Buffered trigger method for video buffering.
         Loads Zarr chunks directly without fallback to example images.
@@ -976,15 +944,63 @@ class Camera_Simulation(object):
         x_start = max(0, pixel_x - half_width)
         x_end = x_start + scaled_width
 
-        # Get metadata to determine chunk layout
+        # Get metadata to determine chunk layout using new OME-Zarr format
         dataset_id = sample_data_alias
-        zarray_path = f"{channel_name}/scale{self.scale_level}/.zarray"
-        zarray_metadata = await self.zarr_image_manager._fetch_zarr_metadata(dataset_id, zarray_path)
+        
+        # NEW: Dynamically determine which well we're in based on stage position
+        # Import here to avoid circular import
+        from squid_control.squid_controller import SquidController
+        from squid_control.control.config import (
+            WELLPLATE_FORMAT_96, CONFIG
+        )
+        
+        # Convert stage coordinates to well position
+        wellplate_format = WELLPLATE_FORMAT_96  # Default to 96-well
+        max_rows = 8  # A-H
+        max_cols = 12  # 1-12
+        
+        # Calculate which well this position corresponds to (same logic as get_well_from_position)
+        x_relative = x - wellplate_format.A1_X_MM  # No offset in simulation
+        y_relative = y - wellplate_format.A1_Y_MM
+        
+        # Calculate well indices (0-based initially)
+        col_index = round(x_relative / wellplate_format.WELL_SPACING_MM)
+        row_index = round(y_relative / wellplate_format.WELL_SPACING_MM)
+        
+        # Check if the calculated well indices are valid and convert to well ID
+        if 0 <= col_index < max_cols and 0 <= row_index < max_rows:
+            column = col_index + 1
+            row = chr(ord('A') + row_index)
+            well_id = f"{row}{column}"
+            print(f"Detected well position: {well_id} from coordinates ({x:.2f}, {y:.2f})")
+        else:
+            # Default to F5 if outside valid range
+            well_id = "F5"
+            print(f"Coordinates ({x:.2f}, {y:.2f}) outside valid well range, defaulting to well F5")
+        
+        # NEW FORMAT: Get .zarray metadata from well ZIP
+        artifact_name_only = dataset_id.split('/')[-1]
+        well_zip_path = f"well_{well_id}_96.zip"
+        zarray_path_in_well = f"data.zarr/{self.scale_level}/.zarray"
+        
+        # Construct URL to access .zarray metadata in the well ZIP
+        zarray_metadata_url = f"{self.zarr_image_manager.server_url}/{self.zarr_image_manager.workspace}/artifacts/{artifact_name_only}/zip-files/{well_zip_path}?path={zarray_path_in_well}"
+        
+        # Fetch .zarray metadata
+        http_session = await self.zarr_image_manager._get_http_session()
+        try:
+            async with http_session.get(zarray_metadata_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status != 200:
+                    raise Exception(f"Failed to get .zarray metadata from {zarray_metadata_url}: HTTP {response.status}")
+                zarray_metadata = await response.json()
+        except Exception as e:
+            raise Exception(f"Error fetching .zarray metadata from {zarray_metadata_url}: {e}")
         
         if not zarray_metadata:
-            raise Exception(f"No metadata available for {dataset_id}/{zarray_path}")
+            raise Exception(f"No metadata available for {dataset_id}/well_{well_id}/{self.scale_level}")
 
-        z_chunks = zarray_metadata["chunks"]  # [chunk_height, chunk_width]
+        # OME-Zarr format: chunks is [T, C, Z, Y, X]
+        z_chunks = zarray_metadata["chunks"][3:5]  # Get [chunk_height, chunk_width] from Y, X dimensions
         
         # Calculate which chunks we need
         chunk_y_start = y_start // z_chunks[0]
@@ -1006,9 +1022,10 @@ class Camera_Simulation(object):
             for chunk_x in range(chunk_x_start, chunk_x_end):
                 try:
                     # Load individual chunk with increased timeout (5 seconds)
+                    # Use dynamically detected well ID
                     chunk_data = await asyncio.wait_for(
                         self.zarr_image_manager.get_chunk_np_data(
-                            dataset_id, channel_name, self.scale_level, chunk_x, chunk_y
+                            dataset_id, channel_name, self.scale_level, chunk_x, chunk_y, well_id=well_id
                         ),
                         timeout=5.0  # 5s timeout per chunk (increased from 2s)
                     )

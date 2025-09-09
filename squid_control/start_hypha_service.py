@@ -628,7 +628,7 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    def set_simulated_sample_data_alias(self, sample_data_alias: str=Field("agent-lens/20250506-scan-time-lapse-2025-05-06_17-56-38", description="The alias of the sample data"), context=None):
+    def set_simulated_sample_data_alias(self, sample_data_alias: str=Field("agent-lens/20250824-example-data-20250824t211822-798933", description="The alias of the sample data"), context=None):
         """
         Set the alias of simulated sample
         """
@@ -1598,7 +1598,7 @@ class MicroscopeHyphaService:
 
     class SetSimulatedSampleDataAliasInput(BaseModel):
         """Set the alias of simulated sample"""
-        sample_data_alias: str = Field("agent-lens/20250506-scan-time-lapse-2025-05-06_17-56-38", description="The alias of the sample data")
+        sample_data_alias: str = Field("agent-lens/20250824-example-data-20250824t211822-798933", description="The alias of the sample data")
 
     class AutoFocusInput(BaseModel):
         """Reflection based autofocus."""
