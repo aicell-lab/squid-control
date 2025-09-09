@@ -2671,6 +2671,7 @@ class SquidController:
         self._restore_original_velocity(CONFIG.MAX_VELOCITY_X_MM, CONFIG.MAX_VELOCITY_Y_MM)
         return {"success": True, "message": "Scan stop requested"}
 
+
 async def try_microscope():
     squid_controller = SquidController(is_simulation=False)
 

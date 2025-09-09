@@ -5,12 +5,15 @@ import shutil
 import tempfile
 import time
 import uuid
+import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
+import cv2
 import httpx
 import numpy as np
+import pandas as pd
 import pytest
 import pytest_asyncio
 import requests
@@ -500,7 +503,7 @@ class OMEZarrCreator:
             compresslevel = None
         else:
             print(f"✅ Low mini chunk percentage ({mini_chunk_percentage:.1f}%) - using DEFLATED compression")
-            compression = zipfile.ZIP_DEFLATED
+            compression = zipfile.ZIP_STORED
             compresslevel = 1
 
         # Create ZIP with appropriate settings
@@ -999,3 +1002,243 @@ async def test_final_cleanup(artifact_manager):
         print(f"❌ Final cleanup failed: {e}")
         # Don't fail the test, just log the error
         # This ensures cleanup issues don't break the test suite
+
+
+class OfflineDataGenerator:
+    """Helper class to generate synthetic microscopy data for offline processing tests."""
+
+    @staticmethod
+    def create_synthetic_microscopy_data(base_path: Path, experiment_id: str,
+                                       num_runs: int = 2, wells: List[str] = None,
+                                       channels: List[str] = None) -> List[Path]:
+        """
+        Create synthetic microscopy data in the expected format for offline processing.
+        
+        Args:
+            base_path: Base directory to create experiment folders
+            experiment_id: Experiment ID prefix
+            num_runs: Number of experiment runs to create
+            wells: List of well IDs (e.g., ['A1', 'B2', 'C3'])
+            channels: List of channel names
+            
+        Returns:
+            List of created experiment folder paths
+        """
+        if wells is None:
+            wells = ['A1', 'B2', 'C3']  # Default test wells
+        if channels is None:
+            channels = ['BF LED matrix full', 'Fluorescence 488 nm Ex', 'Fluorescence 561 nm Ex']
+
+        experiment_folders = []
+
+        for run_idx in range(num_runs):
+            # Create timestamp for this run
+            timestamp = f"20250822T{14 + run_idx:02d}30{run_idx:02d}"
+            experiment_folder = base_path / f"{experiment_id}-{timestamp}"
+            experiment_folder.mkdir(parents=True, exist_ok=True)
+
+            # Create the '0' subfolder
+            data_folder = experiment_folder / "0"
+            data_folder.mkdir(exist_ok=True)
+
+            print(f"Creating synthetic data in: {experiment_folder}")
+
+            # Generate acquisition parameters
+            acquisition_params = {
+                "dx(mm)": 0.9,
+                "Nx": 3,
+                "dy(mm)": 0.9,
+                "Ny": 3,
+                "dz(um)": 1.5,
+                "Nz": 1,
+                "dt(s)": 0,
+                "Nt": 1,
+                "with CONFIG.AF": False,
+                "with reflection CONFIG.AF": True,
+                "objective": {
+                    "magnification": 20,
+                    "NA": 0.4,
+                    "tube_lens_f_mm": 180,
+                    "name": "20x (Boli)"
+                },
+                "sensor_pixel_size_um": 1.85,
+                "tube_lens_mm": 50
+            }
+
+            with open(data_folder / "acquisition parameters.json", 'w') as f:
+                json.dump(acquisition_params, f, indent=2)
+
+            # Generate configurations.xml
+            OfflineDataGenerator._create_configurations_xml(data_folder, channels)
+
+            # Generate coordinates and images for each well
+            all_coordinates = []
+
+            for well_idx, well_id in enumerate(wells):
+                well_coords = OfflineDataGenerator._create_well_data(
+                    data_folder, well_id, channels, acquisition_params, well_idx
+                )
+                all_coordinates.extend(well_coords)
+
+            # Create coordinates.csv
+            df = pd.DataFrame(all_coordinates)
+            df.to_csv(data_folder / "coordinates.csv", index=False)
+
+            experiment_folders.append(experiment_folder)
+            print(f"Created experiment run: {experiment_folder.name}")
+
+        return experiment_folders
+
+    @staticmethod
+    def _create_configurations_xml(data_folder: Path, channels: List[str]):
+        """Create configurations.xml file with channel settings."""
+        root = ET.Element("modes")
+
+        # Channel mapping to XML format
+        channel_configs = {
+            "BF LED matrix full": {
+                "ID": "1",
+                "ExposureTime": "5.0",
+                "AnalogGain": "1.1",
+                "IlluminationSource": "0",
+                "IlluminationIntensity": "32.0"
+            },
+            "Fluorescence 488 nm Ex": {
+                "ID": "6",
+                "ExposureTime": "100.0",
+                "AnalogGain": "10.0",
+                "IlluminationSource": "12",
+                "IlluminationIntensity": "27.0"
+            },
+            "Fluorescence 561 nm Ex": {
+                "ID": "8",
+                "ExposureTime": "300.0",
+                "AnalogGain": "10.0",
+                "IlluminationSource": "14",
+                "IlluminationIntensity": "50.0"
+            }
+        }
+
+        for channel in channels:
+            config = channel_configs.get(channel, {
+                "ID": "1",
+                "ExposureTime": "50.0",
+                "AnalogGain": "1.0",
+                "IlluminationSource": "0",
+                "IlluminationIntensity": "50.0"
+            })
+
+            mode = ET.SubElement(root, "mode")
+            mode.set("ID", config["ID"])
+            mode.set("Name", channel)
+            mode.set("ExposureTime", config["ExposureTime"])
+            mode.set("AnalogGain", config["AnalogGain"])
+            mode.set("IlluminationSource", config["IlluminationSource"])
+            mode.set("IlluminationIntensity", config["IlluminationIntensity"])
+            mode.set("CameraSN", "")
+            mode.set("ZOffset", "0.0")
+            mode.set("PixelFormat", "default")
+            mode.set("_PixelFormat_options", "[default,MONO8,MONO12,MONO14,MONO16,BAYER_RG8,BAYER_RG12]")
+            mode.set("Selected", "1")
+
+        # Write XML file
+        tree = ET.ElementTree(root)
+        ET.indent(tree, space="  ", level=0)
+        tree.write(data_folder / "configurations.xml", encoding="UTF-8", xml_declaration=True)
+
+    @staticmethod
+    def _create_well_data(data_folder: Path, well_id: str, channels: List[str],
+                         acquisition_params: dict, well_offset: int) -> List[dict]:
+        """Create synthetic images and coordinates for a single well."""
+        coordinates = []
+
+        # Well center coordinates (simulate different well positions)
+        well_center_x = 20.0 + well_offset * 9.0  # 9mm spacing between wells
+        well_center_y = 60.0 + well_offset * 9.0
+
+        Nx = acquisition_params["Nx"]
+        Ny = acquisition_params["Ny"]
+        dx = acquisition_params["dx(mm)"]
+        dy = acquisition_params["dy(mm)"]
+
+        # Generate images for each position in the well
+        for i in range(Nx):
+            for j in range(Ny):
+                # Calculate position coordinates
+                x_mm = well_center_x + (i - Nx//2) * dx
+                y_mm = well_center_y + (j - Ny//2) * dy
+                z_um = 4035.0 + np.random.normal(0, 10)  # Simulate focus variation
+
+                # Generate timestamp
+                timestamp = f"2025-08-22_18-16-{35 + i*2 + j}.{702228 + i*100 + j*10:06d}"
+
+                # Create images for each channel
+                for channel in channels:
+                    # Generate synthetic microscopy image
+                    image = OfflineDataGenerator._generate_synthetic_image(channel, i, j)
+
+                    # Save as BMP file
+                    filename = f"{well_id}_{i}_{j}_0_{channel.replace(' ', '_')}.bmp"
+                    filepath = data_folder / filename
+                    cv2.imwrite(str(filepath), image)
+
+                # Add coordinate record
+                coordinates.append({
+                    "i": i,
+                    "j": j,
+                    "k": 0,
+                    "x (mm)": x_mm,
+                    "y (mm)": y_mm,
+                    "z (um)": z_um,
+                    "time": timestamp,
+                    "region": well_id
+                })
+
+        return coordinates
+
+    @staticmethod
+    def _generate_synthetic_image(channel: str, i: int, j: int) -> np.ndarray:
+        """Generate a synthetic microscopy image for testing."""
+        # Create 512x512 image
+        height, width = 512, 512
+
+        # Generate different patterns based on channel
+        if "BF" in channel or "Bright" in channel:
+            # Brightfield - uniform with some texture
+            image = np.random.normal(2000, 100, (height, width)).astype(np.uint16)
+            # Add some structure
+            y, x = np.ogrid[:height, :width]
+            structure = 500 * np.sin(x * 0.02) * np.cos(y * 0.02)
+            image = np.clip(image + structure, 0, 4095).astype(np.uint16)
+
+        elif "488" in channel:
+            # GFP-like fluorescence
+            image = np.random.exponential(200, (height, width)).astype(np.uint16)
+            # Add some bright spots
+            for _ in range(5):
+                center_y = np.random.randint(50, height-50)
+                center_x = np.random.randint(50, width-50)
+                y, x = np.ogrid[:height, :width]
+                spot = 1000 * np.exp(-((x-center_x)**2 + (y-center_y)**2) / (2*30**2))
+                image = np.clip(image + spot, 0, 4095).astype(np.uint16)
+
+        elif "561" in channel:
+            # RFP-like fluorescence
+            image = np.random.gamma(2, 150, (height, width)).astype(np.uint16)
+            # Add some linear structures
+            y, x = np.ogrid[:height, :width]
+            lines = 800 * np.sin(x * 0.01 + y * 0.005)
+            image = np.clip(image + lines, 0, 4095).astype(np.uint16)
+
+        else:
+            # Default pattern
+            image = np.random.randint(100, 1000, (height, width), dtype=np.uint16)
+
+        # Add position-dependent variation
+        position_factor = 1.0 + 0.1 * (i + j) / 6.0
+        image = np.clip(image * position_factor, 0, 4095).astype(np.uint16)
+
+        # Convert to 8-bit for BMP format
+        image_8bit = (image / 16).astype(np.uint8)
+
+        return image_8bit

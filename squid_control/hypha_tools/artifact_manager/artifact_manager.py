@@ -10,7 +10,7 @@ import io
 import math
 import time
 import uuid
-
+import zipfile
 import aiohttp
 import dotenv
 import httpx
@@ -302,6 +302,8 @@ class SquidArtifactManager:
             if experiment_id is None:
                 raise ValueError("experiment_id is required when microscope_service_id ends with a number")
             gallery_number = number_match.group(1)
+            # FIXED: Always use the base experiment_id for gallery naming, not folder-specific names
+            # This ensures all datasets from the same experiment go into the same gallery
             gallery_alias = f"{gallery_number}-{experiment_id}"
         else:
             # Standard case: use microscope-based gallery
@@ -369,48 +371,80 @@ class SquidArtifactManager:
             else:
                 raise e
 
-    async def upload_multiple_zarr_files_to_dataset(self, microscope_service_id, experiment_id,
+    async def upload_multiple_zip_files_to_dataset(self, microscope_service_id, experiment_id,
                                                    zarr_files_info, acquisition_settings=None,
-                                                   description=None):
+                                                   description=None, dataset_name=None):
         """
         Upload multiple zarr files to a single dataset within a gallery.
         
         Args:
             microscope_service_id (str): The hypha service ID of the microscope
-            experiment_id (str): The experiment ID for dataset naming
-            zarr_files_info (list): List of dicts with 'name', 'content', 'size_mb' for each file
+            experiment_id (str): The experiment ID for gallery naming
+            zarr_files_info (list): List of dicts with 'name', 'content'/'file_path', 'size_mb' for each file
+                                   - 'content': file data in memory (original behavior)
+                                   - 'file_path': path to file on disk (new streaming behavior)
             acquisition_settings (dict, optional): Acquisition settings metadata
             description (str, optional): Description of the dataset
+            dataset_name (str, optional): Custom dataset name. If None, uses experiment_id-timestamp
             
         Returns:
             dict: Information about the uploaded dataset
         """
         workspace = "agent-lens"
 
-        # Generate dataset name with timestamp
-        import time
-        timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
-        dataset_name = f"{experiment_id}-{timestamp}"
+        # Generate dataset name with timestamp if not provided
+        if dataset_name is None:
+            timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
+            dataset_name = f"{experiment_id}-{timestamp}"
 
-        # Validate all ZIP files in parallel to avoid blocking asyncio loop
+        # Validate all ZIP files with streaming validation to avoid memory exhaustion
         total_size_mb = 0
-        validation_tasks = []
-        for file_info in zarr_files_info:
-            validation_tasks.append(self._validate_zarr_zip_content(file_info['content']))
+        print(f"🔍 Validating {len(zarr_files_info)} ZIP files with streaming validation...")
+        
+        # Use sequential validation to avoid loading multiple large files into memory
+        for i, file_info in enumerate(zarr_files_info):
+            print(f"  Validating file {i+1}/{len(zarr_files_info)}: {file_info['name']} ({file_info['size_mb']:.2f} MB)")
+            
+            # Handle both file_path and content for validation
+            if 'file_path' in file_info:
+                # Load ONE file at a time, validate, then release memory immediately
+                with open(file_info['file_path'], 'rb') as f:
+                    file_content = f.read()
+                await self._validate_zarr_zip_content(file_content)
+                # Explicitly delete to free memory immediately
+                del file_content
+                print(f"    ✅ File validated and memory freed")
+            else:
+                # Original behavior with content in memory (for backward compatibility)
+                await self._validate_zarr_zip_content(file_info['content'])
             total_size_mb += file_info['size_mb']
-
-        # Run all validations in parallel
-        if validation_tasks:
-            await asyncio.gather(*validation_tasks)
+        
+        print(f"✅ All {len(zarr_files_info)} ZIP files validated successfully")
 
         # Run detailed ZIP integrity test on first file as representative
         if zarr_files_info:
             first_file = zarr_files_info[0]
-            zip_test_results = await self.test_zip_file_integrity(
-                first_file['content'], f"Upload: {dataset_name} (first file)"
-            )
+            print(f"🔍 Running detailed integrity test on first file: {first_file['name']}")
+            
+            if 'file_path' in first_file:
+                # Load ONE file, test integrity, then release memory immediately
+                with open(first_file['file_path'], 'rb') as f:
+                    file_content = f.read()
+                zip_test_results = await self.test_zip_file_integrity(
+                    file_content, f"Upload: {dataset_name} (first file)"
+                )
+                # Explicitly delete to free memory immediately
+                del file_content
+                print(f"    ✅ Integrity test completed and memory freed")
+            else:
+                # Original behavior with content in memory
+                zip_test_results = await self.test_zip_file_integrity(
+                    first_file['content'], f"Upload: {dataset_name} (first file)"
+                )
             if not zip_test_results["valid"]:
                 raise ValueError(f"ZIP file integrity test failed: {', '.join(zip_test_results['issues'])}")
+                
+            print(f"✅ Integrity test passed for first file")
 
         # Ensure gallery exists
         gallery = await self.create_or_get_microscope_gallery(microscope_service_id, experiment_id)
@@ -453,10 +487,19 @@ class SquidArtifactManager:
             # Upload each zarr zip file with retry logic
             for i, file_info in enumerate(zarr_files_info):
                 file_name = file_info['name']
-                file_content = file_info['content']
                 file_size_mb = file_info['size_mb']
 
                 print(f"Uploading file {i+1}/{len(zarr_files_info)}: {file_name} ({file_size_mb:.2f} MB)")
+
+                # Handle both file_path and content for upload
+                if 'file_path' in file_info:
+                    # Load ONE file at a time to avoid memory exhaustion
+                    with open(file_info['file_path'], 'rb') as f:
+                        file_content = f.read()
+                    print(f"  📁 Loaded file into memory: {file_info['file_path']} ({file_size_mb:.2f} MB)")
+                else:
+                    # Original behavior: content already in memory
+                    file_content = file_info['content']
 
                 # Upload zarr zip file with retry logic
                 await self._upload_large_zip_multipart(
@@ -465,6 +508,11 @@ class SquidArtifactManager:
                     max_retries=3,
                     file_path=f"{file_name}.zip"
                 )
+                
+                # Clear file content from memory immediately after upload
+                if 'file_path' in file_info:
+                    del file_content
+                    print(f"  🧹 Cleared {file_size_mb:.2f} MB from memory")
 
                 uploaded_files.append({
                     "name": file_name,
@@ -601,7 +649,6 @@ class SquidArtifactManager:
         workspace = "agent-lens"
 
         # Generate dataset name with timestamp
-        import time
         timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
         dataset_name = f"{self.experiment_id}-{timestamp}"
 
@@ -740,7 +787,6 @@ class SquidArtifactManager:
 
             # Generate alternative suggestions
             suggestions = []
-            import time
             timestamp = int(time.time())
             base_suggestions = [
                 f"{dataset_name}-v2",
@@ -799,7 +845,6 @@ class SquidArtifactManager:
 
         # Generate dataset name if experiment_id is provided
         if experiment_id is not None:
-            import time
             timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
             dataset_name = f"{experiment_id}-{timestamp}"
 
@@ -820,7 +865,6 @@ class SquidArtifactManager:
             raise ValueError(f"Dataset name '{dataset_name}' is not available: {name_check['reason']}")
 
         # Create dataset manifest
-        import time
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
         zip_size_mb = len(zarr_zip_content) / (1024 * 1024)
 
@@ -886,7 +930,6 @@ class SquidArtifactManager:
         # Move CPU-intensive ZIP validation to thread pool to avoid blocking asyncio loop
         def _validate_zip_sync(zip_content: bytes) -> None:
             import io
-            import zipfile
 
             zip_buffer = io.BytesIO(zip_content)
             with zipfile.ZipFile(zip_buffer, 'r') as zip_file:
@@ -1127,7 +1170,6 @@ class SquidArtifactManager:
         # Move CPU-intensive ZIP integrity testing to thread pool to avoid blocking asyncio loop
         def _test_zip_integrity_sync(zip_content: bytes, description: str) -> dict:
             import io
-            import zipfile
 
             results = {
                 "valid": False,

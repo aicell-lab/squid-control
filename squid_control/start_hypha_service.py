@@ -1849,6 +1849,8 @@ class MicroscopeHyphaService:
             "upload_zarr_dataset": self.upload_zarr_dataset,
             "list_microscope_galleries": self.list_microscope_galleries,
             "list_gallery_datasets": self.list_gallery_datasets,
+            # Offline processing functions
+            "offline_stitch_and_upload_timelapse": self.offline_stitch_and_upload_timelapse,
         }
 
         # Only register get_canvas_chunk when not in local mode
@@ -3013,14 +3015,15 @@ class MicroscopeHyphaService:
                                     rotation_angle_deg=CONFIG.STITCHING_ROTATION_ANGLE_DEG
                                 )
 
-                                # Export the well canvas as zip using asyncio.to_thread to avoid blocking
-                                well_zip_content = await asyncio.to_thread(temp_canvas.export_as_zip)
+                                # Export the well canvas as zip file using asyncio.to_thread to avoid blocking
+                                # Use export_as_zip_file() to get file path instead of loading into memory
+                                well_zip_path = await asyncio.to_thread(temp_canvas.export_as_zip_file)
                                 temp_canvas.close()
 
-                                # Add to files info for batch upload
+                                # Add to files info for batch upload using file path (streaming upload)
                                 zarr_files_info.append({
                                     'name': well_name,
-                                    'content': well_zip_content,
+                                    'file_path': well_zip_path,  # Use file path instead of content
                                     'size_mb': well_size_mb
                                 })
 
@@ -3056,7 +3059,7 @@ class MicroscopeHyphaService:
             if acquisition_settings:
                 acquisition_settings["wells"] = well_info_list
 
-            upload_result = await self.zarr_artifact_manager.upload_multiple_zarr_files_to_dataset(
+            upload_result = await self.zarr_artifact_manager.upload_multiple_zip_files_to_dataset(
                 microscope_service_id=self.service_id,
                 experiment_id=experiment_name,
                 zarr_files_info=zarr_files_info,
@@ -3065,6 +3068,16 @@ class MicroscopeHyphaService:
             )
 
             logger.info(f"Successfully uploaded experiment '{experiment_name}' to single dataset")
+
+            # Clean up temporary ZIP files after successful upload
+            for file_info in zarr_files_info:
+                if 'file_path' in file_info:
+                    try:
+                        import os
+                        os.unlink(file_info['file_path'])
+                        logger.debug(f"Cleaned up temporary ZIP file: {file_info['file_path']}")
+                    except Exception as e:
+                        logger.warning(f"Failed to cleanup temporary ZIP file {file_info['file_path']}: {e}")
 
             return {
                 "success": True,
@@ -3936,6 +3949,107 @@ class MicroscopeHyphaService:
             return result
         except Exception as e:
             logger.error(f"Failed to get experiment info: {e}")
+            raise e
+
+    @schema_function(skip_self=True)
+    async def offline_stitch_and_upload_timelapse(self,
+        experiment_id: str = Field(..., description="Experiment ID to process (prefix match for folder names)"),
+        upload_immediately: bool = Field(True, description="Upload each experiment run after stitching"),
+        cleanup_temp_files: bool = Field(True, description="Delete temporary zarr files after upload"),
+        use_parallel_wells: bool = Field(True, description="Process 3 wells in parallel (faster) or sequentially"),
+        context=None):
+        """
+        Process time-lapse experiment data offline: stitch images and upload to gallery.
+        
+        Finds all experiment run folders starting with experiment_id (e.g., 'test-drug-20250822T...'),
+        processes each run separately, and uploads each run as a dataset to a gallery
+        named 'experiment-{experiment_id}'.
+        
+        Each experiment run folder contains a single '0' subfolder with all the data that
+        is stitched together into well canvases and uploaded as one dataset.
+        
+        By default, processes 3 wells in parallel for faster processing. Upload only happens
+        after ALL wells in a folder are processed.
+        
+        **NEW: Runs in a separate thread to prevent blocking the main event loop and network disconnections.**
+        
+        Args:
+            experiment_id: Experiment ID to search for (e.g., 'test-drug')
+            upload_immediately: Whether to upload each run after stitching
+            cleanup_temp_files: Whether to delete temporary files after upload
+            use_parallel_wells: Whether to process 3 wells in parallel (faster) or sequentially
+        
+        Returns:
+            dict: Processing results with gallery and dataset information
+        """
+        try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+
+            # Check if zarr artifact manager is available
+            if self.zarr_artifact_manager is None:
+                raise Exception("Zarr artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
+
+            logger.info(f"Starting offline processing for experiment ID: {experiment_id}")
+            logger.info(f"Parameters: upload_immediately={upload_immediately}, cleanup_temp_files={cleanup_temp_files}, use_parallel_wells={use_parallel_wells}")
+            logger.info("🧵 Running offline processing in separate thread to prevent network disconnections")
+
+            # Define the blocking processing function to run in a thread
+            def run_offline_processing():
+                """
+                Run the offline processing in a separate thread.
+                This prevents blocking the main event loop and maintains network connections.
+                """
+                try:
+                    # Import and create the offline processor
+                    from .offline_processing import OfflineProcessor
+                    processor = OfflineProcessor(
+                        self.squidController, 
+                        self.zarr_artifact_manager, 
+                        self.service_id
+                    )
+                    logger.info("OfflineProcessor created successfully in worker thread")
+
+                    # Create a new event loop for this thread since offline processing uses async operations
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    
+                    try:
+                        # Run the offline processing in the new event loop
+                        logger.info("Calling processor.stitch_and_upload_timelapse in worker thread...")
+                        result = loop.run_until_complete(
+                            processor.stitch_and_upload_timelapse(
+                                experiment_id, upload_immediately, cleanup_temp_files, 
+                                use_parallel_wells=use_parallel_wells
+                            )
+                        )
+                        
+                        logger.info(f"Offline processing completed in worker thread: {result.get('total_datasets', 0)} datasets processed")
+                        logger.info(f"Processing mode: {result.get('processing_mode', 'unknown')}")
+                        return result
+                        
+                    finally:
+                        # Clean up the event loop
+                        loop.close()
+                        
+                except Exception as e:
+                    logger.error(f"Error in offline processing worker thread: {e}")
+                    return {
+                        "success": False,
+                        "error": str(e),
+                        "experiment_id": experiment_id
+                    }
+
+            # Run the processing function in a separate thread using asyncio.to_thread
+            logger.info("🚀 Launching offline processing in worker thread...")
+            result = await asyncio.to_thread(run_offline_processing)
+            
+            logger.info(f"🎉 Offline processing thread completed: {result}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in offline stitching and upload service method: {e}")
             raise e
 
 # Global variable to hold the microscope instance

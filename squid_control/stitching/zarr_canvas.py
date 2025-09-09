@@ -568,6 +568,13 @@ class WellZarrCanvasBase:
         Returns:
             Tuple of (x_pixel, y_pixel) coordinates
         """
+        # Debug logging for coordinate conversion (only in debug mode)
+        if logger.level <= 10:  # DEBUG level
+            logger.debug(f"COORD_CONVERSION: Input coordinates ({x_mm:.2f}, {y_mm:.2f}) mm, scale {scale}")
+            logger.debug(f"COORD_CONVERSION: Stage limits: {self.stage_limits}")
+            logger.debug(f"COORD_CONVERSION: Canvas size: {self.canvas_width_px}x{self.canvas_height_px} px")
+            logger.debug(f"COORD_CONVERSION: Pixel size: {self.pixel_size_xy_um} um")
+        
         # Offset to make all coordinates positive
         x_offset_mm = -self.stage_limits['x_negative']
         y_offset_mm = -self.stage_limits['y_negative']
@@ -591,6 +598,9 @@ class WellZarrCanvasBase:
         x_px //= scale_factor
         y_px //= scale_factor
 
+        if logger.level <= 10:  # DEBUG level
+            logger.debug(f"COORD_CONVERSION: Final pixel coordinates: ({x_px}, {y_px}) for scale {scale}")
+        
         return x_px, y_px
 
     def _rotate_and_crop_image(self, image: np.ndarray) -> np.ndarray:
@@ -616,8 +626,8 @@ class WellZarrCanvasBase:
         rotated = cv2.warpAffine(image, rotation_matrix, (width, height),
                                 flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
 
-        # Crop to 95% of original size to remove black borders
-        crop_factor = 0.96
+        # Crop to 97% of original size to remove black borders
+        crop_factor = 0.97
         image_size = min(int(height * crop_factor), int(width * crop_factor))
 
         # Calculate crop bounds (center crop)
@@ -705,53 +715,42 @@ class WellZarrCanvasBase:
 
                 # CRITICAL: Always validate bounds before writing to zarr arrays
                 # This prevents zero-size chunk creation and zarr write errors
-                logger.info(f"ZARR_WRITE: Scale {scale} bounds check - zarr_y({y_start}:{y_end}), zarr_x({x_start}:{x_end}), img_y({img_y_start}:{img_y_end}), img_x({img_x_start}:{img_x_end})")
 
                 if y_end > y_start and x_end > x_start and img_y_end > img_y_start and img_x_end > img_x_start:
                     # Additional validation to ensure image slice is within bounds
                     img_y_end = min(img_y_end, scaled_image.shape[0])
                     img_x_end = min(img_x_end, scaled_image.shape[1])
 
-                    logger.info(f"ZARR_WRITE: Scale {scale} after clamping - img_y({img_y_start}:{img_y_end}), img_x({img_x_start}:{img_x_end}), scaled_image.shape={scaled_image.shape}")
 
                     # Final check that we still have valid bounds after clamping
                     if img_y_end > img_y_start and img_x_end > img_x_start:
                         try:
-                            logger.info(f"ZARR_WRITE: Attempting to write to zarr array at scale {scale}, channel {channel_idx}, timepoint {timepoint}")
                             # Ensure image is uint8 before writing to zarr
                             image_to_write = scaled_image[img_y_start:img_y_end, img_x_start:img_x_end]
-                            logger.info(f"ZARR_WRITE: Original image_to_write dtype: {image_to_write.dtype}, shape: {image_to_write.shape}, min: {image_to_write.min()}, max: {image_to_write.max()}")
 
                             if image_to_write.dtype != np.uint8:
                                 # Convert to uint8 if needed
                                 if image_to_write.dtype == np.uint16:
                                     image_to_write = (image_to_write / 256).astype(np.uint8)
-                                    logger.info(f"ZARR_WRITE: Converted uint16 to uint8: min={image_to_write.min()}, max={image_to_write.max()}")
                                 elif image_to_write.dtype in [np.float32, np.float64]:
                                     # Normalize float data to 0-255
                                     if image_to_write.max() > image_to_write.min():
                                         image_to_write = ((image_to_write - image_to_write.min()) /
                                                         (image_to_write.max() - image_to_write.min()) * 255).astype(np.uint8)
-                                        logger.info(f"ZARR_WRITE: Normalized float to uint8: min={image_to_write.min()}, max={image_to_write.max()}")
                                     else:
                                         image_to_write = np.zeros_like(image_to_write, dtype=np.uint8)
-                                        logger.info("ZARR_WRITE: Created zero uint8 array")
                                 else:
                                     image_to_write = image_to_write.astype(np.uint8)
-                                    logger.info(f"ZARR_WRITE: Direct conversion to uint8: min={image_to_write.min()}, max={image_to_write.max()}")
                                 logger.info(f"ZARR_WRITE: Converted image from {scaled_image.dtype} to uint8")
                             else:
                                 logger.info(f"ZARR_WRITE: Image already uint8: min={image_to_write.min()}, max={image_to_write.max()}")
 
                             # Double-check the final data type
                             if image_to_write.dtype != np.uint8:
-                                logger.error(f"ZARR_WRITE: CRITICAL ERROR - image_to_write is still {image_to_write.dtype}, not uint8!")
                                 # Force conversion as fallback
                                 image_to_write = image_to_write.astype(np.uint8)
-                                logger.info(f"ZARR_WRITE: Forced conversion to uint8: min={image_to_write.min()}, max={image_to_write.max()}")
 
                             zarr_array[timepoint, channel_idx, z_idx, y_start:y_end, x_start:x_end] = image_to_write
-                            logger.info(f"ZARR_WRITE: Successfully wrote image to zarr at scale {scale}, channel {channel_idx}, timepoint {timepoint}")
 
                             # Update channel activation status when data is written
                             if scale == 0:  # Only update on full resolution (scale 0) to avoid multiple updates
@@ -1247,30 +1246,24 @@ class WellZarrCanvasBase:
         """
 
         try:
-            # Create a temporary directory for the zarr data
-            with tempfile.TemporaryDirectory() as temp_dir:
-                temp_zarr_path = os.path.join(temp_dir, "data.zarr")
+            # Check if the zarr path exists
+            if not self.zarr_path.exists():
+                logger.warning(f"Zarr path does not exist: {self.zarr_path}")
+                return
 
-                # Copy the zarr data to the temporary location
-                if self.zarr_path.exists():
-                    shutil.copytree(self.zarr_path, temp_zarr_path)
-                else:
-                    logger.warning(f"Zarr path does not exist: {self.zarr_path}")
-                    return
+            # Create the ZIP file directly from the existing zarr data
+            with zipfile.ZipFile(zip_path, 'w', allowZip64=True, compression=zipfile.ZIP_STORED) as zf:
+                # Walk through the zarr directory and add all files
+                for root, dirs, files in os.walk(self.zarr_path):
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        # Calculate relative path for the ZIP
+                        relative_path = os.path.relpath(file_path, self.zarr_path.parent)
+                        # Use forward slashes for ZIP paths and ensure it starts with "data.zarr/"
+                        arcname = "data.zarr/" + relative_path.replace(os.sep, '/').split('/', 1)[-1]
+                        zf.write(file_path, arcname)
 
-                # Create the ZIP file
-                with zipfile.ZipFile(zip_path, 'w', allowZip64=True, compression=zipfile.ZIP_DEFLATED) as zf:
-                    # Walk through the temporary zarr directory and add all files
-                    for root, dirs, files in os.walk(temp_zarr_path):
-                        for file in files:
-                            file_path = os.path.join(root, file)
-                            # Calculate relative path for the ZIP
-                            relative_path = os.path.relpath(file_path, temp_dir)
-                            # Use forward slashes for ZIP paths
-                            arcname = relative_path.replace(os.sep, '/')
-                            zf.write(file_path, arcname)
-
-                logger.info(f"Exported well canvas to ZIP: {zip_path}")
+            logger.info(f"Exported well canvas to ZIP: {zip_path}")
 
         except Exception as e:
             logger.error(f"Failed to export well canvas to ZIP: {e}")
@@ -1330,7 +1323,6 @@ class WellZarrCanvasBase:
                     logger.info("Thread pool shutdown and recreated to ensure all zarr operations complete")
 
                 # Give the filesystem a moment to complete any pending I/O
-                import time
                 time.sleep(0.1)
 
                 logger.info("All zarr arrays flushed and synchronized")
@@ -1338,26 +1330,6 @@ class WellZarrCanvasBase:
         except Exception as e:
             logger.error(f"Error during zarr flush and sync: {e}")
             raise RuntimeError(f"Failed to flush zarr arrays: {e}")
-
-    def export_as_zip(self) -> bytes:
-        """
-        Export the entire zarr canvas as a zip file for upload to artifact manager.
-        Uses robust ZIP64 creation that's compatible with S3 ZIP parsers.
-        Creates ZIP directly to temporary file to avoid memory corruption with large files.
-        
-        Returns:
-            bytes: The zip file content containing the entire zarr directory structure
-        """
-        # Use the file-based export and read into memory for backward compatibility
-        temp_path = self.export_as_zip_file()
-        try:
-            with open(temp_path, 'rb') as f:
-                return f.read()
-        finally:
-            try:
-                os.unlink(temp_path)
-            except Exception as e:
-                logger.warning(f"Failed to clean up temporary ZIP file {temp_path}: {e}")
 
     def export_as_zip_file(self) -> str:
         """
@@ -1685,7 +1657,6 @@ class WellZarrCanvasBase:
         Wait for all zarr operations to complete and ensure filesystem sync.
         This prevents race conditions with ZIP export.
         """
-        import time
 
         with self.zarr_lock:
             # Shutdown thread pool and wait for all tasks to complete
@@ -1867,48 +1838,6 @@ class WellZarrCanvas(WellZarrCanvasBase):
             }
         }
 
-    def add_image_from_absolute_coords(self, image: np.ndarray, absolute_x_mm: float, absolute_y_mm: float,
-                                     channel_idx: int = 0, z_idx: int = 0, timepoint: int = 0):
-        """
-        Add an image using absolute stage coordinates (converts to well-relative internally).
-        
-        Args:
-            image: Image array (2D)
-            absolute_x_mm: Absolute X position in mm
-            absolute_y_mm: Absolute Y position in mm
-            channel_idx: Local zarr channel index (0, 1, 2, etc.)
-            z_idx: Z-slice index (default 0)
-            timepoint: Timepoint index (default 0)
-        """
-        # Convert absolute coordinates to well-relative
-        well_relative_x = absolute_x_mm - self.well_center_x
-        well_relative_y = absolute_y_mm - self.well_center_y
-
-        # Use parent's add_image_sync with well-relative coordinates
-        self.add_image_sync(image, well_relative_x, well_relative_y, channel_idx, z_idx, timepoint)
-
-        logger.debug(f"Added image at absolute coords ({absolute_x_mm:.2f}, {absolute_y_mm:.2f}) "
-                    f"-> well-relative ({well_relative_x:.2f}, {well_relative_y:.2f}) for well {self.well_row}{self.well_column}")
-
-    async def add_image_from_absolute_coords_async(self, image: np.ndarray, absolute_x_mm: float, absolute_y_mm: float,
-                                                 channel_idx: int = 0, z_idx: int = 0, timepoint: int = 0):
-        """
-        Asynchronously add an image using absolute stage coordinates.
-        
-        Args:
-            image: Image array (2D)
-            absolute_x_mm: Absolute X position in mm
-            absolute_y_mm: Absolute Y position in mm
-            channel_idx: Local zarr channel index (0, 1, 2, etc.)
-            z_idx: Z-slice index (default 0)
-            timepoint: Timepoint index (default 0)
-        """
-        # Convert absolute coordinates to well-relative
-        well_relative_x = absolute_x_mm - self.well_center_x
-        well_relative_y = absolute_y_mm - self.well_center_y
-
-        # Use parent's add_image_async with well-relative coordinates
-        await self.add_image_async(image, well_relative_x, well_relative_y, channel_idx, z_idx, timepoint)
 
 class ExperimentManager:
     """

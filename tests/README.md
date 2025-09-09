@@ -93,7 +93,7 @@ pytest
 pytest tests/test_squid_controller.py
 pytest tests/test_hypha_service.py
 pytest tests/test_webrtc_e2e.py
-pytest tests/test_zip_upload_endpoints.py
+pytest tests/test_upload_and_endpoints.py
 ```
 
 **Run tests with specific markers:**
