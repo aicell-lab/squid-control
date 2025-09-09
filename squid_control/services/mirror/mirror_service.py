@@ -25,24 +25,9 @@ if ENV_FILE:
     dotenv.load_dotenv(ENV_FILE)
 
 # Set up logging
-def setup_logging(log_file="mirror_squid_control_service.log", max_bytes=100000, backup_count=3):
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.INFO)
+from squid_control.utils.logging_utils import setup_logging
 
-    # Rotating file handler
-    file_handler = logging.handlers.RotatingFileHandler(log_file, maxBytes=max_bytes, backupCount=backup_count)
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-
-    # Console handler
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
-
-    return logger
-
-logger = setup_logging()
+logger = setup_logging("mirror_squid_control_service.log")
 
 
 class MirrorMicroscopeService:
