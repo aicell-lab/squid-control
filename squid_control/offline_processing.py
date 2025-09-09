@@ -591,6 +591,10 @@ class OfflineProcessor:
                 # Wait for stitching to complete properly
                 await self._wait_for_stitching_completion(canvas)
 
+                # CRITICAL: Check which channels have data and activate them
+                logger.info(f"Running post-stitching channel activation check for well {well_row}{well_column}")
+                canvas.activate_channels_with_data()
+
                 # Export as zip file to disk with proper naming - use to_thread
                 well_zip_filename = f"well_{well_row}{well_column}_96.zip"
                 well_zip_path = await asyncio.to_thread(self._export_well_to_zip_direct, canvas, well_zip_filename)
