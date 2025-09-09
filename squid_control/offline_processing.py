@@ -631,6 +631,40 @@ class OfflineProcessor:
             self.logger.error(f"Processing failed: {e}")
 
         return results
+    
+    def _cleanup_existing_temp_folders(self, experiment_folder_name: str):
+        """
+        Clean up any existing temporary offline_stitch folders for this experiment.
+        
+        Args:
+            experiment_folder_name: Name of the experiment folder to clean up temp folders for
+        """
+        try:
+            from squid_control.control.config import CONFIG
+            
+            if CONFIG.DEFAULT_SAVING_PATH and Path(CONFIG.DEFAULT_SAVING_PATH).exists():
+                base_temp_path = Path(CONFIG.DEFAULT_SAVING_PATH)
+                
+                # Find all offline_stitch folders for this experiment
+                pattern = f"offline_stitch_{experiment_folder_name}_*"
+                temp_folders = list(base_temp_path.glob(pattern))
+                
+                if temp_folders:
+                    print(f"🧹 Found {len(temp_folders)} temporary folders to clean up:")
+                    for temp_folder in temp_folders:
+                        try:
+                            if temp_folder.is_dir():
+                                shutil.rmtree(temp_folder, ignore_errors=True)
+                                print(f"  🗑️ Cleaned up: {temp_folder.name}")
+                        except Exception as e:
+                            print(f"  ⚠️ Failed to cleanup {temp_folder.name}: {e}")
+                else:
+                    print(f"  ✅ No temporary folders found for {experiment_folder_name}")
+            else:
+                print(f"  ⚠️ Cannot cleanup temp folders: CONFIG.DEFAULT_SAVING_PATH not available")
+                
+        except Exception as e:
+            print(f"  ⚠️ Error during temp folder cleanup: {e}")
 
     async def process_experiment_run_parallel(self, experiment_folder: Path,
                                             upload_immediately: bool = True,
@@ -800,6 +834,9 @@ class OfflineProcessor:
                                 print(f"    🗑️ Cleaned up {well_info['name']}.zip")
                             except Exception as e:
                                 print(f"    ⚠️ Failed to cleanup {well_info['name']}.zip: {e}")
+                    
+                    # Clean up any existing temporary offline_stitch folders after successful upload
+                    self._cleanup_existing_temp_folders(experiment_folder.name)
                     
                 except Exception as upload_error:
                     print(f"  ❌ Dataset upload failed: {upload_error}")
@@ -1025,6 +1062,9 @@ class OfflineProcessor:
                                 print(f"    🗑️ Cleaned up {well_info['name']}.zip")
                             except Exception as e:
                                 print(f"    ⚠️ Failed to cleanup {well_info['name']}.zip: {e}")
+                    
+                    # Clean up any existing temporary offline_stitch folders after successful upload
+                    self._cleanup_existing_temp_folders(experiment_folder.name)
                     
                 except Exception as upload_error:
                     print(f"  ❌ Dataset upload failed: {upload_error}")
@@ -1313,6 +1353,9 @@ class OfflineProcessor:
                             print(f"    🗑️ Cleaned up .done file")
                         except Exception as e:
                             print(f"    ⚠️ Failed to cleanup .done file: {e}")
+                    
+                    # Clean up any existing temporary offline_stitch folders after successful upload
+                    self._cleanup_existing_temp_folders(experiment_folder.name)
                     
                 except Exception as upload_error:
                     print(f"  ❌ Dataset upload failed: {upload_error}")
