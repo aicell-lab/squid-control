@@ -387,8 +387,14 @@ class WellZarrCanvasBase:
             if 'omero' in root.attrs and 'channels' in root.attrs['omero']:
                 channels = root.attrs['omero']['channels']
                 if 0 <= channel_idx < len(channels):
+                    # Update the channel activation status
                     channels[channel_idx]['active'] = active
-                    logger.debug(f"Updated channel {channel_idx} activation status to {active}")
+                    
+                    # CRITICAL: Save the updated metadata back to the zarr file
+                    # This is essential because zarr attributes are not automatically persisted
+                    root.attrs['omero']['channels'] = channels
+                    
+                    logger.debug(f"Updated channel {channel_idx} activation status to {active} and saved to zarr")
                 else:
                     logger.warning(f"Channel index {channel_idx} out of bounds for metadata update")
         except Exception as e:
