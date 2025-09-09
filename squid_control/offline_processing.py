@@ -650,6 +650,17 @@ class OfflineProcessor:
         self.logger.info(f"Processing experiment folder: {experiment_folder.name}")
 
         try:
+            # 0. Check for .done file in well_zips directory - skip processing if found
+            from squid_control.control.config import CONFIG
+            well_zips_path = Path(CONFIG.DEFAULT_SAVING_PATH) / "well_zips"
+            done_file = well_zips_path / ".done"
+            
+            if done_file.exists():
+                print(f"🎯 Found .done file at {done_file} - SKIPPING PROCESSING, going directly to upload!")
+                return await self._upload_existing_wells_from_directory(
+                    well_zips_path, experiment_folder, experiment_id, upload_immediately, cleanup_temp_files
+                )
+            
             # 1. Parse metadata from this folder
             print(f"📋 Reading metadata from {experiment_folder.name}...")
             acquisition_params = self.parse_acquisition_parameters(experiment_folder)
@@ -723,6 +734,16 @@ class OfflineProcessor:
                 print(f"  ✅ Well {result['name']} completed: {result['size_mb']:.2f} MB")
             
             print(f"🎉 Parallel processing complete: {wells_processed}/{len(coordinates_data)} wells processed successfully")
+            
+            # Create .done file to mark processing completion
+            if wells_processed > 0:
+                well_zips_path = Path(CONFIG.DEFAULT_SAVING_PATH) / "well_zips"
+                done_file = well_zips_path / ".done"
+                try:
+                    done_file.touch()
+                    print(f"✅ Created .done file at {done_file} to mark processing completion")
+                except Exception as e:
+                    print(f"⚠️ Failed to create .done file: {e}")
             
             # Create dataset name: experiment_id-(sanitized folder name)
             # This ensures each folder gets its own dataset within the same gallery
@@ -872,6 +893,17 @@ class OfflineProcessor:
         self.logger.info(f"Processing experiment folder (sequential mode): {experiment_folder.name}")
 
         try:
+            # 0. Check for .done file in well_zips directory - skip processing if found
+            from squid_control.control.config import CONFIG
+            well_zips_path = Path(CONFIG.DEFAULT_SAVING_PATH) / "well_zips"
+            done_file = well_zips_path / ".done"
+            
+            if done_file.exists():
+                print(f"🎯 Found .done file at {done_file} - SKIPPING PROCESSING, going directly to upload!")
+                return await self._upload_existing_wells_from_directory(
+                    well_zips_path, experiment_folder, experiment_id, upload_immediately, cleanup_temp_files
+                )
+            
             # 1. Parse metadata from this folder
             print(f"📋 Reading metadata from {experiment_folder.name}...")
             acquisition_params = self.parse_acquisition_parameters(experiment_folder)
@@ -933,6 +965,16 @@ class OfflineProcessor:
                 total_size_mb += well_info['size_mb']
                 well_zip_files.append(well_info)
                 print(f"  ✅ Well {well_id} completed successfully")
+
+            # Create .done file to mark processing completion
+            if wells_processed > 0:
+                well_zips_path = Path(CONFIG.DEFAULT_SAVING_PATH) / "well_zips"
+                done_file = well_zips_path / ".done"
+                try:
+                    done_file.touch()
+                    print(f"✅ Created .done file at {done_file} to mark processing completion")
+                except Exception as e:
+                    print(f"⚠️ Failed to create .done file: {e}")
 
             # 4. Upload all wells to a single dataset (like upload_zarr_dataset does)
             upload_result = None
@@ -1168,6 +1210,133 @@ class OfflineProcessor:
         canvas.export_to_zip(str(zip_file_path))
         
         return str(zip_file_path)
+
+    async def _upload_existing_wells_from_directory(self, well_zips_path: Path, experiment_folder: Path,
+                                                   experiment_id: str, upload_immediately: bool,
+                                                   cleanup_temp_files: bool) -> dict:
+        """
+        Upload existing well ZIP files from well_zips directory (when .done file detected).
+        
+        Args:
+            well_zips_path: Path to directory containing well ZIP files
+            experiment_folder: Original experiment folder for metadata
+            experiment_id: Experiment ID for upload
+            upload_immediately: Whether to upload immediately
+            cleanup_temp_files: Whether to cleanup temp files
+            
+        Returns:
+            Dictionary with processing results
+        """
+        try:
+            print(f"📁 Scanning for existing well ZIP files in {well_zips_path}...")
+            
+            # Find all well ZIP files matching the pattern well_*_96.zip
+            well_zip_files = []
+            zip_pattern = "well_*_96.zip"
+            
+            for zip_file in well_zips_path.glob(zip_pattern):
+                if zip_file.is_file():
+                    file_size_bytes = zip_file.stat().st_size
+                    file_size_mb = file_size_bytes / (1024 * 1024)
+                    
+                    # Extract well name from filename (e.g., "well_A1_96.zip" -> "well_A1_96")
+                    well_name = zip_file.stem
+                    
+                    well_zip_files.append({
+                        'name': well_name,
+                        'file_path': str(zip_file),
+                        'size_mb': file_size_mb
+                    })
+                    
+                    print(f"  📦 Found: {well_name} ({file_size_mb:.2f} MB)")
+            
+            if not well_zip_files:
+                print(f"⚠️ No well ZIP files found matching pattern {zip_pattern}")
+                return {
+                    "success": False,
+                    "experiment_folder": experiment_folder.name,
+                    "error": f"No well ZIP files found in {well_zips_path}"
+                }
+            
+            wells_processed = len(well_zip_files)
+            total_size_mb = sum(well_info['size_mb'] for well_info in well_zip_files)
+            
+            print(f"🎉 Found {wells_processed} existing well ZIP files, total size: {total_size_mb:.2f} MB")
+            
+            # Create dataset name: experiment_id-(sanitized folder name)
+            sanitized_folder_name = self.sanitize_dataset_name(experiment_folder.name)
+            dataset_name = f"{sanitized_folder_name}"
+            print(f"📝 Using dataset name: {dataset_name}")
+
+            # Upload all wells to a single dataset (if upload requested)
+            upload_result = None
+            if upload_immediately and self.zarr_artifact_manager:
+                print(f"\n📦 Uploading {len(well_zip_files)} existing wells to single dataset...")
+                
+                try:
+                    # Use the original experiment_id for gallery creation, dataset_name for dataset naming
+                    gallery_experiment_id = experiment_id if experiment_id else dataset_name
+                    
+                    # Upload all wells to a single dataset
+                    upload_result = await self.zarr_artifact_manager.upload_multiple_zip_files_to_dataset(
+                        microscope_service_id=self.service_id,
+                        experiment_id=gallery_experiment_id,
+                        zarr_files_info=well_zip_files,  # Already has file_path instead of content
+                        dataset_name=dataset_name,
+                        acquisition_settings={
+                            "microscope_service_id": self.service_id,
+                            "experiment_name": experiment_folder.name,
+                            "total_wells": len(well_zip_files),
+                            "total_size_mb": total_size_mb,
+                            "offline_processing": True,
+                            "from_existing_zips": True  # Flag to indicate this was from existing files
+                        },
+                        description=f"Upload of existing processed wells: {experiment_folder.name} with {len(well_zip_files)} wells (detected .done file)"
+                    )
+                    
+                    print(f"  ✅ Dataset upload complete: {upload_result.get('dataset_name')}")
+                    
+                    # Clean up individual well ZIP files if requested
+                    if cleanup_temp_files:
+                        for well_info in well_zip_files:
+                            try:
+                                import os
+                                os.unlink(well_info['file_path'])
+                                print(f"    🗑️ Cleaned up {well_info['name']}.zip")
+                            except Exception as e:
+                                print(f"    ⚠️ Failed to cleanup {well_info['name']}.zip: {e}")
+                        
+                        # Also remove the .done file
+                        try:
+                            done_file = well_zips_path / ".done"
+                            done_file.unlink()
+                            print(f"    🗑️ Cleaned up .done file")
+                        except Exception as e:
+                            print(f"    ⚠️ Failed to cleanup .done file: {e}")
+                    
+                except Exception as upload_error:
+                    print(f"  ❌ Dataset upload failed: {upload_error}")
+                    upload_result = None
+            else:
+                print(f"⏭️ Upload skipped (upload_immediately={upload_immediately}, zarr_artifact_manager available: {self.zarr_artifact_manager is not None})")
+
+            return {
+                "success": True,
+                "experiment_folder": experiment_folder.name,
+                "wells_processed": wells_processed,
+                "total_size_mb": total_size_mb,
+                "dataset_name": dataset_name,
+                "upload_result": upload_result,
+                "from_existing_zips": True  # Flag to indicate this was from existing files
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error uploading existing wells from {well_zips_path}: {e}")
+            return {
+                "success": False,
+                "experiment_folder": experiment_folder.name,
+                "error": str(e)
+            }
 
 
 
