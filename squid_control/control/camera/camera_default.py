@@ -929,30 +929,9 @@ class Camera_Simulation(object):
             self.zarr_image_manager = ZarrImageManager()
             await self.zarr_image_manager.connect(server_url=self.SERVER_URL)
 
-        # Convert coordinates
-        pixel_x = int((x / pixel_size_um) * 1000 / self.scale_factor)
-        pixel_y = int((y / pixel_size_um) * 1000 / self.scale_factor)
-        
-        # Calculate region boundaries
-        scaled_width = self.Width // self.scale_factor
-        scaled_height = self.Height // self.scale_factor
-        half_width = scaled_width // 2
-        half_height = scaled_height // 2
-        
-        y_start = max(0, pixel_y - half_height)
-        y_end = y_start + scaled_height
-        x_start = max(0, pixel_x - half_width)
-        x_end = x_start + scaled_width
-
-        # Get metadata to determine chunk layout using new OME-Zarr format
-        dataset_id = sample_data_alias
-        
-        # NEW: Dynamically determine which well we're in based on stage position
+        # NEW: Dynamically determine which well we're in based on stage position (FIRST!)
         # Import here to avoid circular import
-        from squid_control.squid_controller import SquidController
-        from squid_control.control.config import (
-            WELLPLATE_FORMAT_96, CONFIG
-        )
+        from squid_control.control.config import WELLPLATE_FORMAT_96
         
         # Convert stage coordinates to well position
         wellplate_format = WELLPLATE_FORMAT_96  # Default to 96-well
@@ -977,6 +956,21 @@ class Camera_Simulation(object):
             # Default to F5 if outside valid range
             well_id = "F5"
             print(f"Coordinates ({x:.2f}, {y:.2f}) outside valid well range, defaulting to well F5")
+
+        # Now calculate well center coordinates (needed for relative positioning)
+        col_index_for_center = int(well_id[1:]) - 1  # Convert column number to 0-based index
+        row_index_for_center = ord(well_id[0]) - ord('A')  # Convert row letter to 0-based index
+        well_center_x = wellplate_format.A1_X_MM + col_index_for_center * wellplate_format.WELL_SPACING_MM
+        well_center_y = wellplate_format.A1_Y_MM + row_index_for_center * wellplate_format.WELL_SPACING_MM
+        
+        # Convert absolute stage coordinates to well-relative coordinates (in mm)
+        well_relative_x = x - well_center_x
+        well_relative_y = y - well_center_y
+        
+        print(f"Well center: ({well_center_x:.2f}, {well_center_y:.2f}), Stage: ({x:.2f}, {y:.2f}), Well-relative: ({well_relative_x:.3f}, {well_relative_y:.3f})")
+
+        # Get metadata to determine chunk layout using new OME-Zarr format
+        dataset_id = sample_data_alias
         
         # NEW FORMAT: Get .zarray metadata from well ZIP
         artifact_name_only = dataset_id.split('/')[-1]
@@ -1005,6 +999,72 @@ class Camera_Simulation(object):
 
         # OME-Zarr format: chunks is [T, C, Z, Y, X]
         z_chunks = zarray_metadata["chunks"][3:5]  # Get [chunk_height, chunk_width] from Y, X dimensions
+        image_shape = zarray_metadata["shape"]  # [T, C, Z, Y, X]
+        image_height = image_shape[3]  # Y dimension
+        image_width = image_shape[4]   # X dimension
+        
+        # Get OME-Zarr metadata for coordinate transformation
+        artifact_name_only = dataset_id.split('/')[-1]
+        zattrs_metadata_url = f"{self.zarr_image_manager.server_url}/{self.zarr_image_manager.workspace}/artifacts/{artifact_name_only}/zip-files/well_{well_id}_96.zip?path=data.zarr/.zattrs"
+        
+        http_session = await self.zarr_image_manager._get_http_session()
+        try:
+            async with http_session.get(zattrs_metadata_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status != 200:
+                    raise Exception(f"Failed to get .zattrs metadata from {zattrs_metadata_url}: HTTP {response.status}")
+                
+                # Read as text and parse JSON manually to avoid MIME type issues
+                response_text = await response.text()
+                import json
+                zattrs_metadata = json.loads(response_text)
+        except Exception as e:
+            raise Exception(f"Error fetching .zattrs metadata from {zattrs_metadata_url}: {e}")
+        
+        # Get pixel size from squid_canvas metadata (base pixel size)
+        base_pixel_size_um = 0.311688  # Default fallback
+        if "squid_canvas" in zattrs_metadata and "pixel_size_xy_um" in zattrs_metadata["squid_canvas"]:
+            base_pixel_size_um = zattrs_metadata["squid_canvas"]["pixel_size_xy_um"]
+        
+        # Get effective pixel size for this scale level from multiscales
+        effective_pixel_size_um = base_pixel_size_um
+        if "multiscales" in zattrs_metadata and len(zattrs_metadata["multiscales"]) > 0:
+            multiscales = zattrs_metadata["multiscales"][0]
+            if "datasets" in multiscales and len(multiscales["datasets"]) > self.scale_level:
+                dataset_info = multiscales["datasets"][self.scale_level]
+                if "coordinateTransformations" in dataset_info:
+                    for transform in dataset_info["coordinateTransformations"]:
+                        if transform.get("type") == "scale" and "scale" in transform:
+                            scale_array = transform["scale"]
+                            if len(scale_array) >= 5:  # [T, C, Z, Y, X]
+                                effective_pixel_size_um = scale_array[4]  # X scale (effective pixel size for this scale)
+                                break
+        
+        print(f"Using pixel size: base={base_pixel_size_um}µm, effective={effective_pixel_size_um}µm for scale {self.scale_level}")
+        
+        # Convert well-relative coordinates (mm) to pixel coordinates in OME-Zarr coordinate system
+        # OME-Zarr coordinate system: center of image is well center (0,0 in well-relative coordinates)
+        center_x_px = image_width / 2
+        center_y_px = image_height / 2
+        
+        # Convert well-relative mm to pixels using effective pixel size
+        pixel_x = round(center_x_px + (well_relative_x * 1000) / effective_pixel_size_um)
+        pixel_y = round(center_y_px + (well_relative_y * 1000) / effective_pixel_size_um)
+        
+        print(f"OME-Zarr coordinate conversion: well-relative({well_relative_x:.3f}, {well_relative_y:.3f})mm → pixel({pixel_x}, {pixel_y}) with center({center_x_px}, {center_y_px})")
+        
+        # Calculate region boundaries
+        scaled_width = self.Width // (4 ** self.scale_level)
+        scaled_height = self.Height // (4 ** self.scale_level)
+        half_width = scaled_width // 2
+        half_height = scaled_height // 2
+        
+        # Calculate bounds ensuring they're within image bounds
+        x_start = max(0, pixel_x - half_width)
+        y_start = max(0, pixel_y - half_height)
+        x_end = min(image_width, x_start + scaled_width)
+        y_end = min(image_height, y_start + scaled_height)
+        
+        print(f"Region bounds: pixel({x_start}, {y_start}) to ({x_end}, {y_end}), size: {x_end-x_start}x{y_end-y_start}, image: {image_width}x{image_height}")
         
         # Calculate which chunks we need
         chunk_y_start = y_start // z_chunks[0]
