@@ -1505,7 +1505,10 @@ class ZarrImageManager:
                     print(f"Failed to get .zarray metadata from {zarray_metadata_url}: HTTP {response.status}")
                     self._add_to_empty_regions_cache(tile_cache_key)
                     return None
-                zarray_metadata = await response.json()
+                # Read as text and parse JSON manually to avoid MIME type issues
+                response_text = await response.text()
+                import json
+                zarray_metadata = json.loads(response_text)
         except Exception as e:
             print(f"Error fetching .zarray metadata from {zarray_metadata_url}: {e}")
             self._add_to_empty_regions_cache(tile_cache_key)
@@ -1671,7 +1674,10 @@ class ZarrImageManager:
                 if response.status != 200:
                     print(f"Failed to get .zattrs metadata from {zattrs_metadata_url}: HTTP {response.status}")
                     return None
-                zattrs_metadata = await response.json()
+                # Read as text and parse JSON manually to avoid MIME type issues
+                response_text = await response.text()
+                import json
+                zattrs_metadata = json.loads(response_text)
             
             # Check squid_canvas channel mapping first (new format)
             if "squid_canvas" in zattrs_metadata and "channel_mapping" in zattrs_metadata["squid_canvas"]:

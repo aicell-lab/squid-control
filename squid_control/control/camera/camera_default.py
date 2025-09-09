@@ -992,7 +992,11 @@ class Camera_Simulation(object):
             async with http_session.get(zarray_metadata_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
                 if response.status != 200:
                     raise Exception(f"Failed to get .zarray metadata from {zarray_metadata_url}: HTTP {response.status}")
-                zarray_metadata = await response.json()
+                
+                # Read as text and parse JSON manually to avoid MIME type issues
+                response_text = await response.text()
+                import json
+                zarray_metadata = json.loads(response_text)
         except Exception as e:
             raise Exception(f"Error fetching .zarray metadata from {zarray_metadata_url}: {e}")
         
