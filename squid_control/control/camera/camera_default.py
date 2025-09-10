@@ -557,7 +557,7 @@ class Camera_Simulation(object):
         self.image_paths = ChannelMapper.get_id_to_example_image_map()
         # Configuration for ZarrImageManager
         self.SERVER_URL = "https://hypha.aicell.io"
-        self.DEFAULT_TIMESTAMP = "20250824-example-data-20250824t211822-798933"  # Default timestamp for the dataset
+        self.DEFAULT_TIMESTAMP = "20250824-example-data-20250824-221822"  # Default timestamp for the dataset
         
         # Initialize these to None, will be set up lazily when needed
         self.zarr_image_manager = None
@@ -742,7 +742,7 @@ class Camera_Simulation(object):
     def set_hardware_triggered_acquisition(self):
         pass
 
-    async def get_image_from_zarr(self, x, y, pixel_size_um, channel_name, sample_data_alias="agent-lens/20250824-example-data-20250824t211822-798933", well_id="F5"):
+    async def get_image_from_zarr(self, x, y, pixel_size_um, channel_name, sample_data_alias="agent-lens/20250824-example-data-20250824-221822", well_id="F5"):
         """
         Get image data from new OME-Zarr well-based storage format.
         
@@ -751,7 +751,7 @@ class Camera_Simulation(object):
             y (float): Y coordinate in mm
             pixel_size_um (float): Pixel size in micrometers
             channel_name (str): Name of the channel to retrieve
-            sample_data_alias (str): Alias of the sample data (e.g., "agent-lens/20250824-example-data-20250824t211822-798933")
+            sample_data_alias (str): Alias of the sample data (e.g., "agent-lens/20250824-example-data-20250824-221822")
             well_id (str): Well ID (e.g., "F5") - defaults to F5 for backward compatibility
             
         Returns:
@@ -776,7 +776,7 @@ class Camera_Simulation(object):
             print(f"Failed to load image using new OME-Zarr format: {e}")
             return None
 
-    async def send_trigger(self, x=29.81, y=36.85, dz=0, pixel_size_um=0.333, channel=0, intensity=100, exposure_time=100, magnification_factor=20, performace_mode=False, sample_data_alias="agent-lens/20250824-example-data-20250824t211822-798933"):
+    async def send_trigger(self, x=29.81, y=36.85, dz=0, pixel_size_um=0.333, channel=0, intensity=100, exposure_time=100, magnification_factor=20, performace_mode=False, sample_data_alias="agent-lens/20250824-example-data-20250824-221822"):
         print(f"Sending trigger with x={x}, y={y}, dz={dz}, pixel_size_um={pixel_size_um}, channel={channel}, intensity={intensity}, exposure_time={exposure_time}, magnification_factor={magnification_factor}, performace_mode={performace_mode}, sample_data_alias={sample_data_alias}")
         self.frame_ID += 1
         self.timestamp = time.time()
@@ -889,7 +889,7 @@ class Camera_Simulation(object):
     def set_line3_to_exposure_active(self):
         pass
 
-    async def send_trigger_buffered(self, x=29.81, y=36.85, dz=0, pixel_size_um=0.333, channel=0, intensity=100, exposure_time=100, magnification_factor=20, sample_data_alias="agent-lens/20250824-example-data-20250824t211822-798933"):
+    async def send_trigger_buffered(self, x=29.81, y=36.85, dz=0, pixel_size_um=0.333, channel=0, intensity=100, exposure_time=100, magnification_factor=20, sample_data_alias="agent-lens/20250824-example-data-20250824-221822"):
         """
         Buffered trigger method for video buffering.
         Loads Zarr chunks directly without fallback to example images.
