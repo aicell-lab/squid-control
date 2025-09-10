@@ -458,7 +458,7 @@ class MicroscopeHyphaService:
                         "client_id": f"squid-chatbot-{self.service_id}-{uuid.uuid4()}",
                         "server_url": chatbot_server_url,
                         "token": chatbot_token,
-                        "ping_interval": None
+                        "ping_interval": 30
                     })
                     chatbot_svc = await asyncio.wait_for(chatbot_server.get_service(chatbot_id), 10)
                     if chatbot_svc is None:
@@ -2011,7 +2011,7 @@ class MicroscopeHyphaService:
             remote_workspace = "squid-control"
 
         remote_server = await connect_to_server(
-                {"client_id": f"squid-remote-server-{self.service_id}-{uuid.uuid4()}", "server_url": "https://hypha.aicell.io", "token": remote_token, "workspace": remote_workspace, "ping_interval": None}
+                {"client_id": f"squid-remote-server-{self.service_id}-{uuid.uuid4()}", "server_url": "https://hypha.aicell.io", "token": remote_token, "workspace": remote_workspace, "ping_interval": 30}
             )
         if not self.service_id:
             raise ValueError("MICROSCOPE_SERVICE_ID is not set in the environment variables.")
@@ -2019,7 +2019,7 @@ class MicroscopeHyphaService:
             token = os.environ.get("REEF_LOCAL_TOKEN")
             workspace = os.environ.get("REEF_LOCAL_WORKSPACE")
             server = await connect_to_server(
-                {"client_id": f"squid-local-server-{self.service_id}-{uuid.uuid4()}", "server_url": self.server_url, "token": token, "workspace": workspace, "ping_interval": None}
+                {"client_id": f"squid-local-server-{self.service_id}-{uuid.uuid4()}", "server_url": self.server_url, "token": token, "workspace": workspace, "ping_interval": 30}
             )
         else:
             # Determine workspace and token based on simulation mode
@@ -2037,7 +2037,7 @@ class MicroscopeHyphaService:
                 workspace = "squid-control"
 
             server = await connect_to_server(
-                {"client_id": f"squid-control-server-{self.service_id}-{uuid.uuid4()}", "server_url": self.server_url, "token": token, "workspace": workspace,  "ping_interval": None}
+                {"client_id": f"squid-control-server-{self.service_id}-{uuid.uuid4()}", "server_url": self.server_url, "token": token, "workspace": workspace,  "ping_interval": 30}
             )
 
         self.server = server
@@ -2056,7 +2056,7 @@ class MicroscopeHyphaService:
                     "server_url": "https://hypha.aicell.io",
                     "token": zarr_token,
                     "workspace": "agent-lens",
-                    "ping_interval": None
+                    "ping_interval": 30
                 })
                 await self.zarr_artifact_manager.connect_server(zarr_server)
                 logger.info("Zarr artifact manager initialized successfully")
@@ -2099,7 +2099,7 @@ class MicroscopeHyphaService:
             chatbot_token= os.environ.get("WORKSPACE_TOKEN_CHATBOT")
         except:
             chatbot_token = await login({"server_url": chatbot_server_url})
-        chatbot_server = await connect_to_server({"client_id": f"squid-chatbot-{self.service_id}-{uuid.uuid4()}", "server_url": chatbot_server_url, "token": chatbot_token,  "ping_interval": None})
+        chatbot_server = await connect_to_server({"client_id": f"squid-chatbot-{self.service_id}-{uuid.uuid4()}", "server_url": chatbot_server_url, "token": chatbot_token,  "ping_interval": 30})
         await self.start_chatbot_service(chatbot_server, chatbot_id)
         webrtc_id = f"video-track-{self.service_id}"
         if not self.is_local: # only start webrtc service in remote mode
