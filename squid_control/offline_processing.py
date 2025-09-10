@@ -616,6 +616,19 @@ class OfflineProcessor:
 
         except Exception as e:
             self.logger.error(f"Error processing well {well_id}: {e}")
+            # Clean up any partial Zarr files that might cause issues
+            try:
+                if hasattr(canvas, 'zarr_path') and canvas.zarr_path.exists():
+                    import glob
+                    import os
+                    partial_files = glob.glob(str(canvas.zarr_path / "**" / "*.partial"), recursive=True)
+                    for partial_file in partial_files:
+                        try:
+                            os.remove(partial_file)
+                        except:
+                            pass
+            except:
+                pass
             return None
 
     async def stitch_and_upload_timelapse(self, experiment_id: str,
@@ -1342,6 +1355,17 @@ class OfflineProcessor:
         
         # Create full path for the ZIP file
         zip_file_path = output_dir / filename
+        
+        # Clean up any partial Zarr files before export
+        if hasattr(canvas, 'zarr_path') and canvas.zarr_path.exists():
+            import glob
+            import os
+            partial_files = glob.glob(str(canvas.zarr_path / "**" / "*.partial"), recursive=True)
+            for partial_file in partial_files:
+                try:
+                    os.remove(partial_file)
+                except:
+                    pass
         
         # Export canvas to this specific file path
         self.logger.info(f"Exporting well canvas to: {zip_file_path}")
