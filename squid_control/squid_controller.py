@@ -333,7 +333,7 @@ class SquidController:
         self.current_intensity = 100
         self.pixel_size_xy = 0.333
         # simulated sample data alias
-        self.sample_data_alias = "agent-lens/20250824-example-data-20250824t211822-798933"
+        self.sample_data_alias = "agent-lens/20250824-example-data-20250824-221822"
         self.get_pixel_size()
 
         # Initialize experiment-based zarr management

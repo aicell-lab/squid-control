@@ -387,12 +387,141 @@ class WellZarrCanvasBase:
             if 'omero' in root.attrs and 'channels' in root.attrs['omero']:
                 channels = root.attrs['omero']['channels']
                 if 0 <= channel_idx < len(channels):
+                    # Update the channel activation status
                     channels[channel_idx]['active'] = active
-                    logger.debug(f"Updated channel {channel_idx} activation status to {active}")
+
+                    # CRITICAL: Save the updated metadata back to the zarr file
+                    # This is essential because zarr attributes are not automatically persisted
+                    root.attrs['omero']['channels'] = channels
+
+                    # Force sync to ensure attributes are written to disk
+                    if hasattr(root.store, 'flush'):
+                        root.store.flush()
+                        logger.debug(f"Flushed zarr store after updating channel {channel_idx}")
+
+                    logger.debug(f"Updated channel {channel_idx} activation status to {active} and saved to zarr")
                 else:
                     logger.warning(f"Channel index {channel_idx} out of bounds for metadata update")
         except Exception as e:
             logger.warning(f"Failed to update channel activation status: {e}")
+
+    def _ensure_channel_activated(self, channel_idx: int):
+        """
+        Simple channel activation: check if channel is already active, if not, activate it.
+        
+        Args:
+            channel_idx: Local zarr channel index (0, 1, 2, etc.)
+        """
+        if not hasattr(self, 'zarr_root'):
+            return
+
+        try:
+            root = self.zarr_root
+            if 'omero' in root.attrs and 'channels' in root.attrs['omero']:
+                channels = root.attrs['omero']['channels']
+                if 0 <= channel_idx < len(channels):
+                    # Check if channel is already active
+                    if not channels[channel_idx]['active']:
+                        # Channel is inactive, activate it
+                        self._update_channel_activation(channel_idx, active=True)
+                        logger.info(f"Activated channel {channel_idx} (was inactive)")
+                    else:
+                        logger.debug(f"Channel {channel_idx} already active")
+                else:
+                    logger.warning(f"Channel index {channel_idx} out of bounds for activation check")
+        except Exception as e:
+            logger.warning(f"Failed to check/ensure channel activation: {e}")
+            # Fallback: try to activate anyway
+            self._update_channel_activation(channel_idx, active=True)
+
+    def activate_channels_with_data(self):
+        """
+        Simple post-stitching method: check highest available scale and activate channels that have data.
+        This directly reads and writes the .zattrs file to bypass zarr caching issues.
+        """
+        if not hasattr(self, 'zarr_path'):
+            logger.warning("Cannot activate channels: zarr_path not available")
+            return
+
+        try:
+            import json
+
+            logger.info("Checking for channels with data and activating them...")
+
+            # Read .zattrs file directly
+            zattrs_path = self.zarr_path / '.zattrs'
+            if not zattrs_path.exists():
+                logger.warning(f"No .zattrs file found at {zattrs_path}")
+                return
+
+            # Load current attributes
+            with open(zattrs_path) as f:
+                attrs = json.load(f)
+
+            # Find the highest scale that exists (prefer highest scales for memory efficiency)
+            scales_to_check = [5, 4, 3, 2, 1, 0]
+            scale_used = None
+
+            for scale in scales_to_check:
+                scale_path = self.zarr_path / str(scale)
+                if scale_path.exists():
+                    scale_used = scale
+                    logger.info(f"Using scale {scale} for channel activation check")
+                    break
+
+            if scale_used is None:
+                logger.warning("No scale directories found for channel activation")
+                return
+
+            # Simple approach: list all chunk files for the highest scale and extract channel indices
+            channels_with_data = set()
+            scale_path = self.zarr_path / str(scale_used)
+
+            logger.info(f"Scanning chunk files in {scale_path} to find channels with data...")
+
+            # Look for all chunk files in the scale directory
+            for chunk_file in scale_path.glob('*'):
+                if chunk_file.is_file() and '.' in chunk_file.name:
+                    # Parse chunk coordinates from filename: t.c.z.y.x
+                    parts = chunk_file.name.split('.')
+                    if len(parts) >= 5:  # t.c.z.y.x format
+                        try:
+                            chunk_channel = int(parts[1])  # c dimension
+                            channels_with_data.add(chunk_channel)
+                            logger.debug(f"Found chunk for channel {chunk_channel}: {chunk_file.name}")
+                        except (ValueError, IndexError):
+                            continue
+
+            # Convert set to sorted list
+            channels_with_data = sorted(list(channels_with_data))
+            logger.info(f"Found data in channels: {channels_with_data}")
+
+            # Update the attributes directly
+            if 'omero' in attrs and 'channels' in attrs['omero']:
+                channels = attrs['omero']['channels']
+
+                # Activate channels that have data
+                for channel_idx in channels_with_data:
+                    if 0 <= channel_idx < len(channels):
+                        channels[channel_idx]['active'] = True
+                        logger.info(f"Activated channel {channel_idx}")
+
+                # Write back the updated attributes
+                with open(zattrs_path, 'w') as f:
+                    json.dump(attrs, f, indent=4)
+
+                logger.info(f"Successfully updated .zattrs file with {len(channels_with_data)} active channels")
+
+                # Log final result
+                active_channels = [i for i, ch in enumerate(channels) if ch['active']]
+                logger.info(f"Final active channels: {active_channels}")
+            else:
+                logger.warning("No omero.channels found in .zattrs file")
+
+        except Exception as e:
+            logger.error(f"Error in activate_channels_with_data: {e}")
+            import traceback
+            traceback.print_exc()
 
     def initialize_canvas(self):
         """Initialize the OME-Zarr structure with proper metadata."""
@@ -574,7 +703,7 @@ class WellZarrCanvasBase:
             logger.debug(f"COORD_CONVERSION: Stage limits: {self.stage_limits}")
             logger.debug(f"COORD_CONVERSION: Canvas size: {self.canvas_width_px}x{self.canvas_height_px} px")
             logger.debug(f"COORD_CONVERSION: Pixel size: {self.pixel_size_xy_um} um")
-        
+
         # Offset to make all coordinates positive
         x_offset_mm = -self.stage_limits['x_negative']
         y_offset_mm = -self.stage_limits['y_negative']
@@ -600,7 +729,7 @@ class WellZarrCanvasBase:
 
         if logger.level <= 10:  # DEBUG level
             logger.debug(f"COORD_CONVERSION: Final pixel coordinates: ({x_px}, {y_px}) for scale {scale}")
-        
+
         return x_px, y_px
 
     def _rotate_and_crop_image(self, image: np.ndarray) -> np.ndarray:
@@ -751,10 +880,6 @@ class WellZarrCanvasBase:
                                 image_to_write = image_to_write.astype(np.uint8)
 
                             zarr_array[timepoint, channel_idx, z_idx, y_start:y_end, x_start:x_end] = image_to_write
-
-                            # Update channel activation status when data is written
-                            if scale == 0:  # Only update on full resolution (scale 0) to avoid multiple updates
-                                self._update_channel_activation(channel_idx, active=True)
                         except IndexError as e:
                             logger.error(f"ZARR_WRITE: IndexError writing to zarr array at scale {scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
                             logger.error(f"ZARR_WRITE: Zarr array shape: {zarr_array.shape}, trying to access timepoint {timepoint}")
@@ -900,10 +1025,6 @@ class WellZarrCanvasBase:
 
                             zarr_array[timepoint, channel_idx, z_idx, y_start:y_end, x_start:x_end] = image_to_write
                             logger.info(f"QUICK_SYNC: Successfully wrote image to zarr at scale {scale}, channel {channel_idx}, timepoint {timepoint} (quick scan)")
-
-                            # Update channel activation status when data is written
-                            if scale == 1:  # Only update on scale 1 for quick scan to avoid multiple updates
-                                self._update_channel_activation(channel_idx, active=True)
                         except IndexError as e:
                             logger.error(f"QUICK_SYNC: IndexError writing to zarr array at scale {scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
                             logger.error(f"QUICK_SYNC: Zarr array shape: {zarr_array.shape}, trying to access timepoint {timepoint}")
@@ -1341,7 +1462,6 @@ class WellZarrCanvasBase:
             str: Path to the temporary ZIP file (caller must clean up)
         """
         import os
-        import tempfile
         import zipfile
 
         # Create temporary file for ZIP creation to avoid memory issues
@@ -2019,7 +2139,6 @@ class ExperimentManager:
             raise ValueError(f"Experiment '{experiment_name}' not found")
 
         # Remove experiment directory and all contents
-        import shutil
         shutil.rmtree(experiment_path)
 
         logger.info(f"Removed experiment '{experiment_name}'")
@@ -2183,7 +2302,7 @@ class ExperimentManager:
             experiment_name: Name of the experiment (default: current experiment)
             
         Returns:
-            dict: Detailed experiment information
+            dict: Detailed experiment information including OME-Zarr metadata
         """
         if experiment_name is None:
             experiment_name = self.current_experiment
@@ -2196,9 +2315,10 @@ class ExperimentManager:
         if not experiment_path.exists():
             raise ValueError(f"Experiment '{experiment_name}' not found")
 
-        # Count well canvases
+        # Count well canvases and collect OME-Zarr metadata
         well_canvases = []
         total_size_bytes = 0
+        omero_metadata = None
 
         for item in experiment_path.iterdir():
             if item.is_dir() and item.suffix == '.zarr':
@@ -2206,6 +2326,21 @@ class ExperimentManager:
                     # Calculate size
                     size_bytes = sum(f.stat().st_size for f in item.rglob('*') if f.is_file())
                     total_size_bytes += size_bytes
+
+                    # Try to read OME-Zarr metadata from the first well canvas
+                    if omero_metadata is None:
+                        try:
+                            zarr_path = item / '.zattrs'
+                            if zarr_path.exists():
+                                with open(zarr_path) as f:
+                                    attrs = json.load(f)
+
+                                # Extract OME-Zarr metadata
+                                if 'omero' in attrs:
+                                    omero_metadata = attrs['omero']
+                                    logger.debug(f"Found OME-Zarr metadata in {item.name}")
+                        except Exception as e:
+                            logger.debug(f"Could not read OME-Zarr metadata from {item}: {e}")
 
                     well_canvases.append({
                         "name": item.stem,
@@ -2216,7 +2351,8 @@ class ExperimentManager:
                 except Exception as e:
                     logger.warning(f"Error getting info for {item}: {e}")
 
-        return {
+        # Prepare the result dictionary
+        result = {
             "experiment_name": experiment_name,
             "experiment_path": str(experiment_path),
             "is_active": experiment_name == self.current_experiment,
@@ -2225,6 +2361,91 @@ class ExperimentManager:
             "total_size_bytes": total_size_bytes,
             "total_size_mb": total_size_bytes / (1024 * 1024)
         }
+
+        # Add OME-Zarr metadata if available
+        if omero_metadata is not None:
+            result["omero"] = omero_metadata
+        else:
+            # Provide default OME-Zarr structure if no metadata found
+            result["omero"] = {
+                "channels": [
+                    {
+                        "active": True,
+                        "coefficient": 1.0,
+                        "color": "FFFFFF",
+                        "family": "linear",
+                        "label": "BF LED matrix full",
+                        "window": {
+                            "end": 255,
+                            "start": 0
+                        }
+                    },
+                    {
+                        "active": True,
+                        "coefficient": 1.0,
+                        "color": "8000FF",
+                        "family": "linear",
+                        "label": "Fluorescence 405 nm Ex",
+                        "window": {
+                            "end": 255,
+                            "start": 0
+                        }
+                    },
+                    {
+                        "active": True,
+                        "coefficient": 1.0,
+                        "color": "00FF00",
+                        "family": "linear",
+                        "label": "Fluorescence 488 nm Ex",
+                        "window": {
+                            "end": 255,
+                            "start": 0
+                        }
+                    },
+                    {
+                        "active": True,
+                        "coefficient": 1.0,
+                        "color": "FF0000",
+                        "family": "linear",
+                        "label": "Fluorescence 638 nm Ex",
+                        "window": {
+                            "end": 255,
+                            "start": 0
+                        }
+                    },
+                    {
+                        "active": True,
+                        "coefficient": 1.0,
+                        "color": "FFFF00",
+                        "family": "linear",
+                        "label": "Fluorescence 561 nm Ex",
+                        "window": {
+                            "end": 255,
+                            "start": 0
+                        }
+                    },
+                    {
+                        "active": True,
+                        "coefficient": 1.0,
+                        "color": "FF00FF",
+                        "family": "linear",
+                        "label": "Fluorescence 730 nm Ex",
+                        "window": {
+                            "end": 255,
+                            "start": 0
+                        }
+                    }
+                ],
+                "id": 1,
+                "name": f"Squid Microscope Live Stitching ({experiment_name})",
+                "rdefs": {
+                    "defaultT": 0,
+                    "defaultZ": 0,
+                    "model": "color"
+                }
+            }
+
+        return result
 
     def _get_all_well_positions(self, wellplate_type: str):
         """Get all well positions for a given plate type."""

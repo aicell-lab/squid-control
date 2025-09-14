@@ -1304,7 +1304,7 @@ class SquidArtifactManager:
 
 # Constants
 SERVER_URL = "https://hypha.aicell.io"
-ARTIFACT_ALIAS = "20250824-example-data-20250824t211822-798933"
+ARTIFACT_ALIAS = "20250824-example-data-20250824-221822"
 DEFAULT_CHANNEL = "BF_LED_matrix_full"
 
 # New class to replace TileManager using Zarr for efficient access
@@ -1323,7 +1323,7 @@ class ZarrImageManager:
         ]
         self.is_running = True
         self.session = None
-        self.default_timestamp = "20250824-example-data-20250824t211822-798933"  # Set a default timestamp
+        self.default_timestamp = "20250824-example-data-20250824-221822"  # Set a default timestamp
         self.scale_key = 'scale0'
 
         # New attributes for HTTP-based access
@@ -1353,7 +1353,7 @@ class ZarrImageManager:
         """
         Fetch and cache Zarr metadata (.zgroup or .zarray) for a given dataset alias.
         Args:
-            dataset_alias (str): The alias of the dataset (e.g., "agent-lens/20250824-example-data-20250824t211822-798933")
+            dataset_alias (str): The alias of the dataset (e.g., "agent-lens/20250824-example-data-20250824-221822")
             metadata_path_in_dataset (str): Path within the dataset (e.g., "Channel/scaleN/.zarray")
             use_cache (bool): Whether to use cached metadata. Defaults to True.
         """
@@ -1410,7 +1410,7 @@ class ZarrImageManager:
             await self._get_http_session()  # Ensures session is created
 
             # Prime metadata for a default dataset if needed, or remove if priming is dynamic
-            # Example: await self.prime_metadata("agent-lens/20250824-example-data-20250824t211822-798933", self.channels[0], scale=0)
+            # Example: await self.prime_metadata("agent-lens/20250824-example-data-20250824-221822", self.channels[0], scale=0)
 
             print("ZarrImageManager connected successfully")
             return True
@@ -1939,7 +1939,7 @@ class ZarrImageManager:
         """
         try:
             # Use default values if not provided
-            dataset_id = dataset_id or "agent-lens/20250824-example-data-20250824t211822-798933"
+            dataset_id = dataset_id or "agent-lens/20250824-example-data-20250824-221822"
             channel = channel or "BF_LED_matrix_full"
 
             print(f"Testing Zarr chunk access for dataset: {dataset_id}, channel: {channel}, bypass_cache: {bypass_cache}")

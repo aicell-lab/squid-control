@@ -591,6 +591,10 @@ class OfflineProcessor:
                 # Wait for stitching to complete properly
                 await self._wait_for_stitching_completion(canvas)
 
+                # CRITICAL: Check which channels have data and activate them
+                logger.info(f"Running post-stitching channel activation check for well {well_row}{well_column}")
+                canvas.activate_channels_with_data()
+
                 # Export as zip file to disk with proper naming - use to_thread
                 well_zip_filename = f"well_{well_row}{well_column}_96.zip"
                 well_zip_path = await asyncio.to_thread(self._export_well_to_zip_direct, canvas, well_zip_filename)
@@ -612,6 +616,19 @@ class OfflineProcessor:
 
         except Exception as e:
             self.logger.error(f"Error processing well {well_id}: {e}")
+            # Clean up any partial Zarr files that might cause issues
+            try:
+                if hasattr(canvas, 'zarr_path') and canvas.zarr_path.exists():
+                    import glob
+                    import os
+                    partial_files = glob.glob(str(canvas.zarr_path / "**" / "*.partial"), recursive=True)
+                    for partial_file in partial_files:
+                        try:
+                            os.remove(partial_file)
+                        except:
+                            pass
+            except:
+                pass
             return None
 
     async def stitch_and_upload_timelapse(self, experiment_id: str,
@@ -911,6 +928,15 @@ class OfflineProcessor:
                                 print(f"    🗑️ Cleaned up {well_info['name']}.zip")
                             except Exception as e:
                                 print(f"    ⚠️ Failed to cleanup {well_info['name']}.zip: {e}")
+                        
+                        # Also remove the .done file after successful upload
+                        try:
+                            well_zips_path = Path(CONFIG.DEFAULT_SAVING_PATH) / "well_zips"
+                            done_file = well_zips_path / ".done"
+                            done_file.unlink()
+                            print(f"    🗑️ Cleaned up .done file")
+                        except Exception as e:
+                            print(f"    ⚠️ Failed to cleanup .done file: {e}")
                     
                     # Clean up any existing temporary offline_stitch folders after successful upload
                     self._cleanup_existing_temp_folders(experiment_folder.name)
@@ -1138,6 +1164,15 @@ class OfflineProcessor:
                                 print(f"    🗑️ Cleaned up {well_info['name']}.zip")
                             except Exception as e:
                                 print(f"    ⚠️ Failed to cleanup {well_info['name']}.zip: {e}")
+                        
+                        # Also remove the .done file after successful upload
+                        try:
+                            well_zips_path = Path(CONFIG.DEFAULT_SAVING_PATH) / "well_zips"
+                            done_file = well_zips_path / ".done"
+                            done_file.unlink()
+                            print(f"    🗑️ Cleaned up .done file")
+                        except Exception as e:
+                            print(f"    ⚠️ Failed to cleanup .done file: {e}")
                     
                     # Clean up any existing temporary offline_stitch folders after successful upload
                     self._cleanup_existing_temp_folders(experiment_folder.name)
@@ -1320,6 +1355,17 @@ class OfflineProcessor:
         
         # Create full path for the ZIP file
         zip_file_path = output_dir / filename
+        
+        # Clean up any partial Zarr files before export
+        if hasattr(canvas, 'zarr_path') and canvas.zarr_path.exists():
+            import glob
+            import os
+            partial_files = glob.glob(str(canvas.zarr_path / "**" / "*.partial"), recursive=True)
+            for partial_file in partial_files:
+                try:
+                    os.remove(partial_file)
+                except:
+                    pass
         
         # Export canvas to this specific file path
         self.logger.info(f"Exporting well canvas to: {zip_file_path}")

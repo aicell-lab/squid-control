@@ -458,7 +458,7 @@ class MicroscopeHyphaService:
                         "client_id": f"squid-chatbot-{self.service_id}-{uuid.uuid4()}",
                         "server_url": chatbot_server_url,
                         "token": chatbot_token,
-                        "ping_interval": None
+                        "ping_interval": 30
                     })
                     chatbot_svc = await asyncio.wait_for(chatbot_server.get_service(chatbot_id), 10)
                     if chatbot_svc is None:
@@ -628,7 +628,7 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    def set_simulated_sample_data_alias(self, sample_data_alias: str=Field("agent-lens/20250824-example-data-20250824t211822-798933", description="The alias of the sample data"), context=None):
+    def set_simulated_sample_data_alias(self, sample_data_alias: str=Field("agent-lens/20250824-example-data-20250824-221822", description="The alias of the sample data"), context=None):
         """
         Set the alias of simulated sample
         """
@@ -1598,7 +1598,7 @@ class MicroscopeHyphaService:
 
     class SetSimulatedSampleDataAliasInput(BaseModel):
         """Set the alias of simulated sample"""
-        sample_data_alias: str = Field("agent-lens/20250824-example-data-20250824t211822-798933", description="The alias of the sample data")
+        sample_data_alias: str = Field("agent-lens/20250824-example-data-20250824-221822", description="The alias of the sample data")
 
     class AutoFocusInput(BaseModel):
         """Reflection based autofocus."""
@@ -2011,7 +2011,7 @@ class MicroscopeHyphaService:
             remote_workspace = "squid-control"
 
         remote_server = await connect_to_server(
-                {"client_id": f"squid-remote-server-{self.service_id}-{uuid.uuid4()}", "server_url": "https://hypha.aicell.io", "token": remote_token, "workspace": remote_workspace, "ping_interval": None}
+                {"client_id": f"squid-remote-server-{self.service_id}-{uuid.uuid4()}", "server_url": "https://hypha.aicell.io", "token": remote_token, "workspace": remote_workspace, "ping_interval": 30}
             )
         if not self.service_id:
             raise ValueError("MICROSCOPE_SERVICE_ID is not set in the environment variables.")
@@ -2019,7 +2019,7 @@ class MicroscopeHyphaService:
             token = os.environ.get("REEF_LOCAL_TOKEN")
             workspace = os.environ.get("REEF_LOCAL_WORKSPACE")
             server = await connect_to_server(
-                {"client_id": f"squid-local-server-{self.service_id}-{uuid.uuid4()}", "server_url": self.server_url, "token": token, "workspace": workspace, "ping_interval": None}
+                {"client_id": f"squid-local-server-{self.service_id}-{uuid.uuid4()}", "server_url": self.server_url, "token": token, "workspace": workspace, "ping_interval": 30}
             )
         else:
             # Determine workspace and token based on simulation mode
@@ -2037,7 +2037,7 @@ class MicroscopeHyphaService:
                 workspace = "squid-control"
 
             server = await connect_to_server(
-                {"client_id": f"squid-control-server-{self.service_id}-{uuid.uuid4()}", "server_url": self.server_url, "token": token, "workspace": workspace,  "ping_interval": None}
+                {"client_id": f"squid-control-server-{self.service_id}-{uuid.uuid4()}", "server_url": self.server_url, "token": token, "workspace": workspace,  "ping_interval": 30}
             )
 
         self.server = server
@@ -2056,7 +2056,7 @@ class MicroscopeHyphaService:
                     "server_url": "https://hypha.aicell.io",
                     "token": zarr_token,
                     "workspace": "agent-lens",
-                    "ping_interval": None
+                    "ping_interval": 30
                 })
                 await self.zarr_artifact_manager.connect_server(zarr_server)
                 logger.info("Zarr artifact manager initialized successfully")
@@ -2099,7 +2099,7 @@ class MicroscopeHyphaService:
             chatbot_token= os.environ.get("WORKSPACE_TOKEN_CHATBOT")
         except:
             chatbot_token = await login({"server_url": chatbot_server_url})
-        chatbot_server = await connect_to_server({"client_id": f"squid-chatbot-{self.service_id}-{uuid.uuid4()}", "server_url": chatbot_server_url, "token": chatbot_token,  "ping_interval": None})
+        chatbot_server = await connect_to_server({"client_id": f"squid-chatbot-{self.service_id}-{uuid.uuid4()}", "server_url": chatbot_server_url, "token": chatbot_token,  "ping_interval": 30})
         await self.start_chatbot_service(chatbot_server, chatbot_id)
         webrtc_id = f"video-track-{self.service_id}"
         if not self.is_local: # only start webrtc service in remote mode
@@ -3582,11 +3582,21 @@ class MicroscopeHyphaService:
             dict: Retrieved stitched image data with metadata and region information
         """
         try:
+            # Log function entry with all parameters
+            logger.info(f"get_stitched_region called with parameters:")
+            logger.info(f"  center_x_mm={center_x_mm}, center_y_mm={center_y_mm}")
+            logger.info(f"  width_mm={width_mm}, height_mm={height_mm}")
+            logger.info(f"  wellplate_type='{wellplate_type}', scale_level={scale_level}")
+            logger.info(f"  channel_name='{channel_name}', timepoint={timepoint}")
+            logger.info(f"  well_padding_mm={well_padding_mm}, output_format='{output_format}'")
+            
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
+                logger.warning("User not authorized to access this service")
                 raise Exception("User not authorized to access this service")
 
             # Parse channel_name string into a list
+            logger.info("Parsing channel names...")
             if isinstance(channel_name, str):
                 # Split by comma and strip whitespace, filter out empty strings
                 channel_list = [ch.strip() for ch in channel_name.split(',') if ch.strip()]
@@ -3597,7 +3607,9 @@ class MicroscopeHyphaService:
                 logger.info(f"Using channel list: {channel_list}")
 
             # Validate channel names
+            logger.info(f"Validating channel list: {len(channel_list)} channels found")
             if not channel_list:
+                logger.warning("No valid channel names found - returning error")
                 return {
                     "success": False,
                     "message": "At least one channel name must be specified",
@@ -3615,8 +3627,10 @@ class MicroscopeHyphaService:
                 }
 
             # Get regions for each channel
+            logger.info(f"Retrieving regions for {len(channel_list)} channels...")
             channel_regions = []
-            for ch_name in channel_list:
+            for i, ch_name in enumerate(channel_list):
+                logger.info(f"Processing channel {i+1}/{len(channel_list)}: '{ch_name}'")
                 region = self.squidController.get_stitched_region(
                     center_x_mm=center_x_mm,
                     center_y_mm=center_y_mm,
@@ -3633,9 +3647,11 @@ class MicroscopeHyphaService:
                     logger.warning(f"No data available for channel '{ch_name}' at ({center_x_mm:.2f}, {center_y_mm:.2f})")
                     continue
 
+                logger.info(f"Successfully retrieved region for channel '{ch_name}': shape={region.shape if hasattr(region, 'shape') else 'unknown'}")
                 channel_regions.append((ch_name, region))
 
             if not channel_regions:
+                logger.warning(f"No data available for any channels at ({center_x_mm:.2f}, {center_y_mm:.2f}) with size ({width_mm:.2f}x{height_mm:.2f})")
                 return {
                     "success": False,
                     "message": f"No data available for any channels at ({center_x_mm:.2f}, {center_y_mm:.2f}) with size ({width_mm:.2f}x{height_mm:.2f})",
@@ -3653,16 +3669,20 @@ class MicroscopeHyphaService:
                 }
 
             # Merge channels if multiple channels are specified
+            logger.info(f"Channel merging: {len(channel_regions)} channels to process")
             if len(channel_regions) == 1:
                 # Single channel - return as grayscale
+                logger.info("Single channel detected - returning as grayscale")
                 merged_region = channel_regions[0][1]
                 is_rgb = False
             else:
                 # Multiple channels - merge into RGB
+                logger.info(f"Multiple channels detected - merging {len(channel_regions)} channels into RGB")
                 merged_region = self._merge_channels_to_rgb(channel_regions)
                 is_rgb = True
 
             if merged_region is None:
+                logger.error("Failed to merge channels - merged_region is None")
                 return {
                     "success": False,
                     "message": "Failed to merge channels",
@@ -3680,16 +3700,21 @@ class MicroscopeHyphaService:
                 }
 
             # Process output format
+            logger.info(f"Processing output format: '{output_format}', merged_region shape: {merged_region.shape if hasattr(merged_region, 'shape') else 'unknown'}")
             if output_format == 'base64':
                 # Convert to base64 encoded PNG
+                logger.info("Converting to base64 PNG format...")
                 import base64
                 import io
 
                 from PIL import Image
 
+                logger.info(f"Original merged_region dtype: {merged_region.dtype}, is_rgb: {is_rgb}")
                 if merged_region.dtype != np.uint8:
+                    logger.info("Converting to uint8 format...")
                     if is_rgb:
                         # RGB image - normalize each channel independently
+                        logger.info("Normalizing RGB channels independently")
                         normalized = np.zeros_like(merged_region, dtype=np.uint8)
                         for c in range(merged_region.shape[2]):
                             channel_data = merged_region[:, :, c]
@@ -3698,17 +3723,22 @@ class MicroscopeHyphaService:
                         merged_region = normalized
                     else:
                         # Grayscale image
+                        logger.info("Normalizing grayscale image")
                         merged_region = (merged_region / merged_region.max() * 255).astype(np.uint8) if merged_region.max() > 0 else merged_region.astype(np.uint8)
 
+                logger.info(f"Creating PIL Image: is_rgb={is_rgb}, shape={merged_region.shape}")
                 if is_rgb:
                     img = Image.fromarray(merged_region, 'RGB')
                 else:
                     img = Image.fromarray(merged_region, 'L')
 
+                logger.info("Encoding image to base64...")
                 buffer = io.BytesIO()
                 img.save(buffer, format='PNG')
                 img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
+                logger.info(f"Base64 encoding complete, length: {len(img_base64)} characters")
 
+                logger.info("Returning base64 PNG result")
                 return {
                     "success": True,
                     "data": img_base64,
@@ -3730,6 +3760,7 @@ class MicroscopeHyphaService:
                     }
                 }
             else:
+                logger.info("Returning array format result")
                 return {
                     "success": True,
                     "data": merged_region.tolist(),
@@ -3752,7 +3783,7 @@ class MicroscopeHyphaService:
                 }
 
         except Exception as e:
-            logger.error(f"Failed to get stitched region: {e}")
+            logger.error(f"Failed to get stitched region: {e}", exc_info=True)
             raise e
 
     def _merge_channels_to_rgb(self, channel_regions):

@@ -365,7 +365,7 @@ The heart of the simulation is the `Camera_Simulation` class in `camera_default.
 #### 3. **Zarr-Based Virtual Sample System**
 The simulation uses **Zarr data archives** stored in ZIP files containing high-resolution microscopy images:
 
-- **Data Source**: Virtual samples from `agent-lens/20250824-example-data-20250824t211822-798933`
+- **Data Source**: Virtual samples from `agent-lens/20250824-example-data-20250824-221822`
 - **Multi-Scale Support**: Uses scale1 (1/4 resolution) for performance optimization
 - **Channel Mapping**:
   ```python

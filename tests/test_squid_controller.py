@@ -726,7 +726,7 @@ async def test_simulated_sample_data_alias(sim_controller_fixture):
     """Test setting and getting the simulated sample data alias."""
     async for controller in sim_controller_fixture:
         default_alias = controller.get_simulated_sample_data_alias()
-        assert default_alias == "agent-lens/20250824-example-data-20250824t211822-798933"
+        assert default_alias == "agent-lens/20250824-example-data-20250824-221822"
 
         new_alias = "new/sample/path"
         # This method is synchronous
@@ -1768,8 +1768,60 @@ async def test_well_canvas_management(sim_controller_fixture):
         assert experiment_info["is_active"] == True
         assert "well_canvases" in experiment_info
         assert "total_wells" in experiment_info
+        
+        # Test OME-Zarr metadata
+        assert "omero" in experiment_info
+        omero = experiment_info["omero"]
+        assert "channels" in omero
+        assert "id" in omero
+        assert "name" in omero
+        assert "rdefs" in omero
+        
+        # Test channel structure
+        channels = omero["channels"]
+        assert isinstance(channels, list)
+        assert len(channels) == 6  # Should have 6 channels
+        
+        # Test first channel (BF)
+        bf_channel = channels[0]
+        assert bf_channel["label"] == "BF LED matrix full"
+        assert bf_channel["color"] == "FFFFFF"
+        assert bf_channel["active"] == False  # Channels start inactive until data is written
+        assert bf_channel["coefficient"] == 1.0
+        assert bf_channel["family"] == "linear"
+        assert "window" in bf_channel
+        assert bf_channel["window"]["start"] == 0
+        assert bf_channel["window"]["end"] == 255
+        
+        # Test fluorescence channels
+        fluorescence_channels = channels[1:]
+        expected_colors = ["8000FF", "00FF00", "FF0000", "FFFF00", "FF00FF"]
+        expected_labels = [
+            "Fluorescence 405 nm Ex",
+            "Fluorescence 488 nm Ex", 
+            "Fluorescence 638 nm Ex",
+            "Fluorescence 561 nm Ex",
+            "Fluorescence 730 nm Ex"
+        ]
+        
+        for i, channel in enumerate(fluorescence_channels):
+            assert channel["label"] == expected_labels[i]
+            assert channel["color"] == expected_colors[i]
+            assert channel["active"] == False  # Channels start inactive until data is written
+            assert channel["coefficient"] == 1.0
+            assert channel["family"] == "linear"
+            assert "window" in channel
+            assert channel["window"]["start"] == 0
+            assert channel["window"]["end"] == 255
+        
+        # Test rdefs structure
+        rdefs = omero["rdefs"]
+        assert rdefs["defaultT"] == 0
+        assert rdefs["defaultZ"] == 0
+        assert rdefs["model"] == "color"
 
         print(f"   ✓ Got experiment info: {experiment_info['total_wells']} wells")
+        print(f"   ✓ OME-Zarr metadata: {len(channels)} channels, {omero['name']}")
 
         print("✅ Well canvas management tests passed!")
         break
