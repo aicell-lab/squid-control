@@ -250,16 +250,15 @@ class MirrorMicroscopeService:
                     self.local_service = None
                     self.mirrored_methods.clear()
 
-                # Retry setup with exponential backoff
+                # Retry setup with 30 second intervals
                 retry_count = 0
                 max_retries = 50
-                base_delay = 10
+                retry_delay = 30  # 30 seconds between retries
 
                 while retry_count < max_retries:
                     try:
-                        delay = base_delay * (2 ** min(retry_count, 5))  # Cap at 32 * base_delay
-                        logger.info(f"Retrying setup in {delay} seconds (attempt {retry_count + 1}/{max_retries})")
-                        await asyncio.sleep(delay)
+                        logger.info(f"Retrying setup in {retry_delay} seconds (attempt {retry_count + 1}/{max_retries})")
+                        await asyncio.sleep(retry_delay)
 
                         # Rerun the setup method
                         self.setup_task = asyncio.create_task(self.setup())

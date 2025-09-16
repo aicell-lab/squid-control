@@ -751,7 +751,7 @@ class SquidArtifactManager:
             except Exception as e:
                 print(f"Upload attempt {attempt + 1} failed for {well_info['name']}: {e}")
                 if attempt < 2:
-                    wait_time = 2 ** attempt
+                    wait_time = 60  # Wait 1 minute before retry
                     print(f"Waiting {wait_time}s before retry...")
                     await asyncio.sleep(wait_time)
 

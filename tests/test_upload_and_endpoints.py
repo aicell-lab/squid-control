@@ -629,9 +629,9 @@ async def upload_zip_with_retry(put_url: str, zip_path: Path, size_mb: int, max_
             if attempt == max_retries - 1:
                 raise Exception(f"Upload failed after {max_retries} attempts: {e}")
 
-        # Wait before retry (exponential backoff)
+        # Wait before retry (1 minute interval)
         if attempt < max_retries - 1:
-            wait_time = 2 ** attempt
+            wait_time = 60  # Wait 1 minute before retry
             print(f"Waiting {wait_time}s before retry...")
             await asyncio.sleep(wait_time)
 
