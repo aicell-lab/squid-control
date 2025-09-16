@@ -191,8 +191,17 @@ class OfflineProcessor:
 
         for region in df['region'].unique():
             well_data = df[df['region'] == region].copy()
-            # Only process k=0 (single focal plane)
-            well_data = well_data[well_data['k'] == 0]
+            
+            # Handle both CSV formats: old format has 'k' column, new format has 'z_level'
+            if 'k' in well_data.columns:
+                # Old format: Only process k=0 (single focal plane)
+                well_data = well_data[well_data['k'] == 0]
+            elif 'z_level' in well_data.columns:
+                # New format: Only process z_level=0 (single focal plane)
+                well_data = well_data[well_data['z_level'] == 0]
+            else:
+                # If neither column exists, process all data
+                self.logger.warning(f"No 'k' or 'z_level' column found in CSV, processing all data for region {region}")
 
             if len(well_data) > 0:
                 wells_data[region] = well_data.to_dict('records')
@@ -266,9 +275,18 @@ class OfflineProcessor:
         # Pre-filter and group images by position for batch processing
         position_images = {}
         for coord_record in well_data:
-            i = int(coord_record['i'])
-            j = int(coord_record['j'])
-            k = int(coord_record['k'])
+            # Handle both CSV formats: old format has 'i','j','k', new format has 'fov','z_level'
+            if 'i' in coord_record and 'j' in coord_record:
+                # Old format
+                i = int(coord_record['i'])
+                j = int(coord_record['j'])
+                k = int(coord_record.get('k', 0))  # Default to 0 if not present
+            else:
+                # New format: map fov to i, use 0 for j, z_level to k
+                i = int(coord_record['fov'])
+                j = 0  # New format doesn't have j, use 0
+                k = int(coord_record.get('z_level', 0))  # Default to 0 if not present
+            
             x_mm = float(coord_record['x (mm)'])
             y_mm = float(coord_record['y (mm)'])
             well_id = coord_record['region']
@@ -278,7 +296,14 @@ class OfflineProcessor:
                 continue
 
             # Find all image files for this position
-            pattern = f"{well_id}_{i}_{j}_{k}_*.bmp"
+            # Handle both filename patterns: old format uses i_j_k, new format uses fov_z_level
+            if 'i' in coord_record and 'j' in coord_record:
+                # Old format: well_id_i_j_k_channel.bmp
+                pattern = f"{well_id}_{i}_{j}_{k}_*.bmp"
+            else:
+                # New format: well_id_fov_z_level_channel.bmp
+                pattern = f"{well_id}_{i}_{k}_*.bmp"
+            
             image_files = list(data_folder.glob(pattern))
             
             if image_files:
@@ -323,11 +348,22 @@ class OfflineProcessor:
         try:
             # Extract channel name from filename
             filename_parts = img_file.stem.split('_')
-            if len(filename_parts) < 5:
+            
+            # Handle both filename formats by looking for channel keywords
+            # Look for "Fluorescence" or "BF" to identify the start of channel name
+            channel_start_idx = None
+            for i, part in enumerate(filename_parts):
+                if part in ['Fluorescence', 'BF']:
+                    channel_start_idx = i
+                    break
+            
+            if channel_start_idx is not None:
+                channel_name = '_'.join(filename_parts[channel_start_idx:])
+                print(f"    🔍 Debug: filename_parts={filename_parts}, channel_start_idx={channel_start_idx}, channel_name={channel_name}")
+            else:
+                print(f"    ❌ No channel keyword found in filename: {img_file.name}")
                 return False
                 
-            # Channel name is everything after the position indices (in zarr format)
-            channel_name = '_'.join(filename_parts[4:])
             mapped_channel_name = channel_mapping.get(channel_name, channel_name)
 
             # Check if this channel is available in the canvas
@@ -391,11 +427,20 @@ class OfflineProcessor:
         try:
             # Extract channel name from filename
             filename_parts = img_file.stem.split('_')
-            if len(filename_parts) < 5:
+            
+            # Handle both filename formats by looking for channel keywords
+            # Look for "Fluorescence" or "BF" to identify the start of channel name
+            channel_start_idx = None
+            for i, part in enumerate(filename_parts):
+                if part in ['Fluorescence', 'BF']:
+                    channel_start_idx = i
+                    break
+            
+            if channel_start_idx is not None:
+                channel_name = '_'.join(filename_parts[channel_start_idx:])
+            else:
                 return False
                 
-            # Channel name is everything after the position indices (in zarr format)
-            channel_name = '_'.join(filename_parts[4:])
             mapped_channel_name = channel_mapping.get(channel_name, channel_name)
 
             # Check if this channel is available in the canvas
