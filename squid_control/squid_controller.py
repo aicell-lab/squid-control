@@ -1274,7 +1274,7 @@ class SquidController:
                                                  zarr_channel_idx: int, timepoint: int = 0,
                                                  wellplate_type='96', well_padding_mm=1.0, channel_name='BF LED matrix full'):
         """
-        Add image to well canvas stitching queue for quick scan - updates all scales for complete OME-Zarr pyramid.
+        Add image to well canvas stitching queue for quick scan - only updates scales 1-5 (skips scale 0).
         The input image should already be at scale1 resolution (1/4 of original).
         
         Args:

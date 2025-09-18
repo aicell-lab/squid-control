@@ -894,7 +894,7 @@ class WellZarrCanvasBase:
                            channel_idx: int = 0, z_idx: int = 0, timepoint: int = 0):
         """
         Synchronously add an image to the canvas for quick scan mode.
-        Updates all scales (0 to num_scales-1) for complete OME-Zarr pyramid.
+        Only updates scales 1-5 (skips scale 0 for performance).
         The input image should already be at scale1 resolution.
         
         Args:
@@ -932,10 +932,10 @@ class WellZarrCanvasBase:
             # Ensure zarr arrays are sized correctly for this timepoint (lazy expansion)
             self._ensure_timepoint_exists_in_zarr(timepoint)
 
-            logger.info(f"QUICK_SYNC: Starting zarr write operations for timepoint {timepoint}, processing all scales 0-{self.num_scales-1}")
+            logger.info(f"QUICK_SYNC: Starting zarr write operations for timepoint {timepoint}, processing scales 1-{min(self.num_scales, 6)-1}")
 
-            # Process all scales (0 to num_scales-1) for complete OME-Zarr pyramid
-            for scale in range(self.num_scales):  # all scales 0 to num_scales-1
+            # Only process scales 1-5 (skip scale 0 for performance)
+            for scale in range(1, min(self.num_scales, 6)):  # scales 1-5
                 logger.info(f"QUICK_SYNC: Processing scale {scale}")
                 scale_factor = 4 ** scale
 
@@ -1160,7 +1160,7 @@ class WellZarrCanvasBase:
                 # Process in thread pool to avoid blocking
                 loop = asyncio.get_event_loop()
                 if is_quick_scan:
-                    # Use quick scan method that updates all scales
+                    # Use quick scan method that only updates scales 1-5
                     logger.info(f"STITCHING_LOOP: Calling add_image_sync_quick for image at ({frame_data['x_mm']:.2f}, {frame_data['y_mm']:.2f})")
                     await loop.run_in_executor(
                         self.executor,
