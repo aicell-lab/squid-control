@@ -1894,13 +1894,12 @@ class SquidController:
             well_row: Well row (e.g., 'A', 'B')
             well_column: Well column (e.g., 1, 2, 3)
             wellplate_type: Well plate type ('6', '12', '24', '96', '384')
-            experiment_name: Name of the experiment to check (default: current experiment)
+            experiment_name: Name of the experiment to check (default: None uses current experiment)
             
         Returns:
             bool: True if the well canvas exists on disk, False otherwise
         """
-        # Use specified experiment or current experiment
-        target_experiment = experiment_name or self.experiment_manager.current_experiment
+        target_experiment = experiment_name if experiment_name is not None else self.experiment_manager.current_experiment
         if target_experiment is None:
             return False
 
@@ -1931,12 +1930,20 @@ class SquidController:
             channel_name: Name of channel to retrieve
             timepoint: Timepoint index (default 0)
             well_padding_mm: Padding around wells in mm
-            experiment_name: Name of the experiment to retrieve data from (default: current experiment)
+            experiment_name: Name of the experiment to retrieve data from (default: None uses current experiment)
             
         Returns:
             np.ndarray: The requested region, or None if not available
         """
         try:
+            # Handle experiment name - use current experiment if not specified
+            target_experiment = experiment_name if experiment_name is not None else self.experiment_manager.current_experiment
+            if target_experiment is None:
+                logger.error("No experiment specified and no current experiment set")
+                return None
+            
+            logger.info(f"Getting stitched region from experiment '{target_experiment}'")
+            
             # Calculate the bounding box of the requested region
             half_width = width_mm / 2.0
             half_height = height_mm / 2.0
@@ -2052,12 +2059,12 @@ class SquidController:
                 well_column = well_info['well_column']
 
                 # Check if the well canvas exists
-                if not self._check_well_canvas_exists(well_row, well_column, wellplate_type, experiment_name):
-                    logger.warning(f"Well canvas for {well_row}{well_column} ({wellplate_type}) does not exist in experiment '{experiment_name or 'current'}'")
+                if not self._check_well_canvas_exists(well_row, well_column, wellplate_type, target_experiment):
+                    logger.warning(f"Well canvas for {well_row}{well_column} ({wellplate_type}) does not exist in experiment '{target_experiment}'")
                     return None
 
                 # Get well canvas and extract region
-                canvas = self.experiment_manager.get_well_canvas(well_row, well_column, wellplate_type, well_padding_mm, experiment_name)
+                canvas = self.experiment_manager.get_well_canvas(well_row, well_column, wellplate_type, well_padding_mm, target_experiment)
 
                 # Calculate absolute coordinates for the intersection region
                 intersection_center_x = (well_info['abs_min_x'] + well_info['abs_max_x']) / 2.0
@@ -2095,11 +2102,11 @@ class SquidController:
                 well_column = well_info['well_column']
 
                 # Check if the well canvas exists
-                if not self._check_well_canvas_exists(well_row, well_column, wellplate_type, experiment_name):
+                if not self._check_well_canvas_exists(well_row, well_column, wellplate_type, target_experiment):
                     continue
 
                 # Get well canvas and extract region
-                canvas = self.experiment_manager.get_well_canvas(well_row, well_column, wellplate_type, well_padding_mm, experiment_name)
+                canvas = self.experiment_manager.get_well_canvas(well_row, well_column, wellplate_type, well_padding_mm, target_experiment)
 
                 # Calculate absolute coordinates for the intersection region
                 intersection_center_x = (well_info['abs_min_x'] + well_info['abs_max_x']) / 2.0
