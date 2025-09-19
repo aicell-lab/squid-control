@@ -3556,6 +3556,7 @@ class MicroscopeHyphaService:
                            channel_name: str = Field('BF LED matrix full', description="Channel names to retrieve and merge (comma-separated string or single channel name, e.g., 'BF LED matrix full' or 'BF LED matrix full,Fluorescence 488 nm Ex')"),
                            timepoint: int = Field(0, description="Timepoint index to retrieve (default 0)"),
                            well_padding_mm: float = Field(1.0, description="Padding around wells in mm"),
+                           experiment_name: str = Field(None, description="Name of the experiment to retrieve data from (default: current experiment)"),
                            output_format: str = Field('base64', description="Output format: 'base64' or 'array'"),
                            context=None):
         """
@@ -3576,6 +3577,7 @@ class MicroscopeHyphaService:
             channel_name: Channel names to retrieve and merge (comma-separated string or single channel name)
             timepoint: Timepoint index to retrieve (default 0)
             well_padding_mm: Padding around wells in mm
+            experiment_name: Name of the experiment to retrieve data from (default: current experiment)
             output_format: Output format ('base64' for compressed image, 'array' for numpy array)
             
         Returns:
@@ -3588,7 +3590,7 @@ class MicroscopeHyphaService:
             logger.info(f"  width_mm={width_mm}, height_mm={height_mm}")
             logger.info(f"  wellplate_type='{wellplate_type}', scale_level={scale_level}")
             logger.info(f"  channel_name='{channel_name}', timepoint={timepoint}")
-            logger.info(f"  well_padding_mm={well_padding_mm}, output_format='{output_format}'")
+            logger.info(f"  well_padding_mm={well_padding_mm}, experiment_name='{experiment_name}', output_format='{output_format}'")
             
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -3640,7 +3642,8 @@ class MicroscopeHyphaService:
                     scale_level=scale_level,
                     channel_name=ch_name,
                     timepoint=timepoint,
-                    well_padding_mm=well_padding_mm
+                    well_padding_mm=well_padding_mm,
+                    experiment_name=experiment_name
                 )
 
                 if region is None:
