@@ -1098,7 +1098,6 @@ async def webrtc_test_services():
                     return None
 
             microscope.datastore = SimpleTestDataStore()
-            microscope.similarity_search_svc = None
 
             # Override setup method
             async def mock_setup():

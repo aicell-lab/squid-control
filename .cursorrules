@@ -19,7 +19,7 @@ This is a Python-based control system for the Squid microscope (by Cephla Inc.),
 - **Image Processing**: NumPy, SciPy, scikit-image, OpenCV, PIL
 - **Data Storage**: Zarr, TiffFile, HDF5
 - **Web Services**: Hypha RPC, Flask, aiohttp, WebRTC (aiortc)
-- **AI Integration**: OpenAI API, similarity search services
+- **AI Integration**: OpenAI API
 - **Testing**: pytest, pytest-asyncio, pytest-cov
 - **Note**: Qt dependencies have been removed for headless operation
 
