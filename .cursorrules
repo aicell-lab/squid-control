@@ -37,7 +37,7 @@ This is a Python-based control system for the Squid microscope (by Cephla Inc.),
 - Supports simulation mode with ZarrImageManager for virtual samples
 
 ### Service Layer (`squid_control/start_hypha_service.py`)
-- Hypha RPC service with 30+ API endpoints
+- Hypha RPC service with API endpoints
 - WebRTC video streaming capabilities
 - Task status tracking and error handling
 - AI chatbot integration for natural language control
@@ -688,12 +688,16 @@ This serial communication system provides the foundation for precise, reliable, 
 - Support both direct service and mirror service modes
 
 ### Testing (`tests/`)
+- **Comprehensive Test Suite**: 6,000+ lines across 5 major test files
+- **Test Coverage**: 39% current coverage with detailed metrics and reporting
+- **Test Files**: `test_squid_controller.py`, `test_hypha_service.py`, `test_webrtc_e2e.py`, `test_upload_and_endpoints.py`, `test_mirror_service.py`
+- **WebRTC Testing**: End-to-end video streaming validation with performance metrics
+- **Zarr Testing**: Dataset management and artifact upload testing
 - Write unit tests for all core functionality
 - Use pytest fixtures for hardware mocking
 - Test both simulation and real hardware modes
 - Include integration tests for API endpoints
 - Test mirror service integration and WebRTC functionality
-- Use `test_squid_controller.py` for comprehensive controller testing
 
 ## Development Guidelines
 
@@ -745,8 +749,8 @@ python squid_control/run_mirror_service.py [options]
 ```
 
 ### Service Architecture
-- **`MicroscopeHyphaService` class**: Main service class in `start_hypha_service.py` (3998 lines)
-- **`SquidController` class**: High-level controller in `squid_controller.py` (2714 lines)
+- **`MicroscopeHyphaService` class**: Main service class in `start_hypha_service.py`
+- **`SquidController` class**: High-level controller in `squid_controller.py`
 - **`MirrorMicroscopeService`**: Mirror service for cloud proxy in `services/mirror/`
 
 ## Important Conventions
@@ -774,6 +778,9 @@ python squid_control/run_mirror_service.py [options]
 ## Zarr Canvas & Image Stitching Guidelines
 
 ### Zarr Canvas Management (`squid_control/stitching/zarr_canvas.py`)
+- **WellZarrCanvasBase**: Base class for well-specific zarr canvas functionality
+- **WellZarrCanvas**: Well-specific implementation with coordinate conversion and automatic well center calculation
+- **ExperimentManager**: Multi-well experiment management with automatic canvas creation/access
 - **Chunk Size Optimization**: Use standardized 256x256 pixel chunks for optimal I/O performance
 - **Canvas Dimension Alignment**: Always ensure canvas dimensions are divisible by chunk_size to prevent partial chunks
 - **Zero-Size Chunk Prevention**: ALWAYS validate bounds before writing to zarr arrays:
