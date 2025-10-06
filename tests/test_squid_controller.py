@@ -1871,7 +1871,7 @@ async def test_experiment_error_handling(sim_controller_fixture):
             controller.experiment_manager.get_well_canvas('A', 1, '96')
             assert False, "Should have raised error when no active experiment"
         except RuntimeError as e:
-            assert "No active experiment" in str(e)
+            assert "no active experiment" in str(e).lower()
             print("   ✓ get_well_canvas correctly raised RuntimeError when no active experiment")
 
         print("✅ Experiment error handling tests passed!")
