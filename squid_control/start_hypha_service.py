@@ -3557,6 +3557,7 @@ class MicroscopeHyphaService:
                            timepoint: int = Field(0, description="Timepoint index to retrieve (default 0)"),
                            well_padding_mm: float = Field(1.0, description="Padding around wells in mm"),
                            output_format: str = Field('base64', description="Output format: 'base64' or 'array'"),
+                           experiment_name: str = Field(None, description="Name of the experiment to retrieve data from (default: None uses current experiment)"),
                            context=None):
         """
         Get a stitched region that may span multiple wells by determining which wells 
@@ -3640,7 +3641,8 @@ class MicroscopeHyphaService:
                     scale_level=scale_level,
                     channel_name=ch_name,
                     timepoint=timepoint,
-                    well_padding_mm=well_padding_mm
+                    well_padding_mm=well_padding_mm,
+                    experiment_name=experiment_name
                 )
 
                 if region is None:

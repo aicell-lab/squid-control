@@ -2200,48 +2200,61 @@ class ExperimentManager:
         }
 
     def get_well_canvas(self, well_row: str, well_column: int, wellplate_type: str = '96',
-                       padding_mm: float = 1.0):
+                       padding_mm: float = 1.0, experiment_name: str = None):
         """
-        Get or create a well canvas for the current experiment.
+        Get or create a well canvas for the specified experiment.
         
         Args:
             well_row: Well row (e.g., 'A', 'B')
             well_column: Well column (e.g., 1, 2, 3)
             wellplate_type: Well plate type ('6', '12', '24', '96', '384')
             padding_mm: Padding around well in mm
+            experiment_name: Name of the experiment to get canvas from (default: None uses current experiment)
             
         Returns:
             WellZarrCanvas: The well-specific canvas
         """
-        if self.current_experiment is None:
-            raise RuntimeError("No active experiment. Create or set an experiment first.")
+        target_experiment = experiment_name if experiment_name is not None else self.current_experiment
+        if target_experiment is None:
+            raise RuntimeError("No experiment specified and no active experiment. Create or set an experiment first.")
 
         well_id = f"{well_row}{well_column}_{wellplate_type}"
 
-        if well_id not in self.well_canvases:
-            # Create new well canvas in experiment folder
-            experiment_path = self.base_path / self.current_experiment
+        # If requesting from current experiment, use cached canvases
+        if target_experiment == self.current_experiment and well_id in self.well_canvases:
+            return self.well_canvases[well_id]
 
-            from squid_control.control.config import CONFIG, ChannelMapper
-            all_channels = ChannelMapper.get_all_human_names()
+        # For different experiments or new canvases, create/load directly
+        experiment_path = self.base_path / target_experiment
+        
+        # Ensure experiment directory exists
+        if not experiment_path.exists():
+            raise ValueError(f"Experiment '{target_experiment}' does not exist")
 
-            canvas = WellZarrCanvas(
-                well_row=well_row,
-                well_column=well_column,
-                wellplate_type=wellplate_type,
-                padding_mm=padding_mm,
-                base_path=str(experiment_path),  # Use experiment folder as base
-                pixel_size_xy_um=self.pixel_size_xy_um,
-                channels=all_channels,
-                rotation_angle_deg=CONFIG.STITCHING_ROTATION_ANGLE_DEG,
-                initial_timepoints=20,
-                timepoint_expansion_chunk=10
-            )
+        from squid_control.control.config import CONFIG, ChannelMapper
+        all_channels = ChannelMapper.get_all_human_names()
 
+        canvas = WellZarrCanvas(
+            well_row=well_row,
+            well_column=well_column,
+            wellplate_type=wellplate_type,
+            padding_mm=padding_mm,
+            base_path=str(experiment_path),  # Use experiment folder as base
+            pixel_size_xy_um=self.pixel_size_xy_um,
+            channels=all_channels,
+            rotation_angle_deg=CONFIG.STITCHING_ROTATION_ANGLE_DEG,
+            initial_timepoints=20,
+            timepoint_expansion_chunk=10
+        )
+
+        # Only cache if it's for the current experiment
+        if target_experiment == self.current_experiment:
             self.well_canvases[well_id] = canvas
-            logger.info(f"Created well canvas {well_row}{well_column} for experiment '{self.current_experiment}'")
+            logger.info(f"Created and cached well canvas {well_row}{well_column} for current experiment '{self.current_experiment}'")
+        else:
+            logger.info(f"Created well canvas {well_row}{well_column} for experiment '{target_experiment}' (not cached)")
 
-        return self.well_canvases[well_id]
+        return canvas
 
     def list_well_canvases(self):
         """

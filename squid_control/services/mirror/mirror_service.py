@@ -194,7 +194,7 @@ class MirrorMicroscopeService:
                     try:
                         service = await self.cloud_server.get_service(self.cloud_service_id)
                         # Try a simple operation to verify service is working
-                        ping_result = await asyncio.wait_for(service.ping(), timeout=10)
+                        ping_result = await asyncio.wait_for(service.ping(), timeout=60)
                         if ping_result != "pong":
                             logger.error(f"Cloud service health check failed: {ping_result}")
                             raise Exception("Cloud service not healthy")
@@ -213,7 +213,7 @@ class MirrorMicroscopeService:
                             raise Exception("Failed to connect to local service")
 
                     #logger.info("Checking local service health...")
-                    local_ping_result = await asyncio.wait_for(self.local_service.ping(), timeout=10)
+                    local_ping_result = await asyncio.wait_for(self.local_service.ping(), timeout=60)
                     #logger.info(f"Local service response: {local_ping_result}")
 
                     if local_ping_result != "pong":
@@ -436,7 +436,7 @@ class MirrorMicroscopeService:
 
         # Verify local service is working
         try:
-            ping_result = await asyncio.wait_for(self.local_service.ping(), timeout=10)
+            ping_result = await asyncio.wait_for(self.local_service.ping(), timeout=60)
             if ping_result != "pong":
                 raise Exception(f"Local service verification failed: {ping_result}")
             logger.info("Local service connection verified successfully")

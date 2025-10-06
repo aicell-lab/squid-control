@@ -1,6 +1,6 @@
 # Squid Control
 
-The Squid Control software is a Python package that provides a simple interface to control the Squid microscope, integrated with the [Hypha platform](https://hypha.aicell.io/) for remote access and distributed control.
+The Squid Control software is a Python package that provides a comprehensive interface to control the Squid microscope, integrated with the [Hypha platform](https://hypha.aicell.io/) for remote access and distributed control. Features include real-time video streaming, Zarr-based image stitching, and advanced well plate automation.
 
 ## Installation and Usage
 
@@ -69,6 +69,16 @@ python -m squid_control microscope --simulation
 
 The simulation mode includes a **virtual microscope sample** using Zarr data archives, allowing you to test the microscope software without physical hardware. The simulated sample data is uploaded on **Artifact Manager**, which is a feature on the Hypha platform for managing and sharing large datasets.
 
+## Video Buffering System
+
+The system features an advanced **video buffering system** that provides smooth, responsive WebRTC video streaming by decoupling frame acquisition from video streaming. This eliminates jerky video caused by slow frame acquisition and keeps microscope controls responsive during video streaming.
+
+### Key Features
+- **Background Frame Acquisition**: Continuous frame acquisition at configurable FPS
+- **Thread-Safe Buffering**: Smooth streaming without blocking operations
+- **Automatic Management**: Lazy initialization and idle timeout handling
+- **Performance Optimization**: Optimized for both real hardware and simulation modes
+
 ## Mirror Service
 
 The **Mirror Service** is a sophisticated proxy system that bridges cloud and local microscope control systems, enabling remote control of microscopes while maintaining full WebRTC video streaming capabilities.
@@ -118,16 +128,53 @@ The Squid Control system features advanced **Zarr Canvas & Image Stitching** cap
 #### **Multi-Scale Canvas Architecture**
 - **OME-Zarr Compliance**: Full OME-Zarr 0.4 specification support with proper metadata
 - **Multi-Scale Pyramid**: 4x downsampling between levels for efficient storage
-- **Well-Based Organization**: Individual well canvases for precise control
+- **Well-Based Organization**: Individual well canvases for precise control with `WellZarrCanvas` and `ExperimentManager`
 - **Real-Time Stitching**: Background processing for non-blocking operation
 - **Quick Scan Mode**: High-speed continuous scanning (up to 10fps)
+- **Coordinate Conversion**: Automatic well center calculation and stage coordinate mapping
 
 ### Configuration
 
 #### **Environment Variables**
 - `ZARR_PATH`: Base directory for zarr storage (default: `/tmp/zarr_canvas`)
-- Authentication token for cloud Hypha server
-- Authentication token for local Hypha server (if user have)
+- `REEF_WORKSPACE_TOKEN`: Authentication token for cloud Hypha server
+- `REEF_LOCAL_TOKEN`: Authentication token for local Hypha server (if available)
+
+## Testing
+
+The project includes a comprehensive test suite with 6,000+ lines of tests across 5 major test files:
+
+- **`test_squid_controller.py`**: Core controller functionality and simulation tests
+- **`test_hypha_service.py`**: API endpoints and service integration tests  
+- **`test_webrtc_e2e.py`**: End-to-end WebRTC video streaming tests
+- **`test_upload_and_endpoints.py`**: Zarr dataset upload and artifact management tests
+- **`test_mirror_service.py`**: Mirror service integration tests
+
+### Running Tests
+```bash
+# Run all tests
+pytest
+
+# Run specific test categories
+pytest -m simulation          # Simulation mode tests
+pytest -m "not slow"          # Fast tests only
+pytest tests/test_webrtc_e2e.py  # WebRTC tests
+```
+
+## Docker Support
+
+The system includes Docker containerization for easy deployment:
+
+```bash
+# Build Docker image
+docker build -t squid-control .
+
+# Run in simulation mode
+docker run -p 9527:9527 squid-control
+
+# Run with custom configuration
+docker run -e ZARR_PATH=/data -v /local/path:/data squid-control
+```
 
 ---
 

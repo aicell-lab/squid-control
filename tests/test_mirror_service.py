@@ -89,8 +89,6 @@ async def _create_test_microscope(test_id):
     # Create a simple datastore for testing
     microscope.datastore = SimpleTestDataStore()
 
-    # Disable similarity search service to avoid OpenAI costs
-    microscope.similarity_search_svc = None
 
     # Override setup method to avoid connecting to external services during tests
     async def mock_setup():
