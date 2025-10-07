@@ -174,3 +174,6 @@ config_parameters.txt
 configuration_HCS_v2.ini
 
 chunk_images/
+
+# Official Squid software (downloaded for reference)
+official-squid-software/

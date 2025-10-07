@@ -81,6 +81,10 @@ class SquidController:
         self.objectiveStore = core.ObjectiveStore()
         print(f"ObjectiveStore initialized with default objective: {self.objectiveStore.current_objective}")
         camera, camera_fc = get_camera(CONFIG.CAMERA_TYPE)
+        
+        # Initialize Squid+ specific hardware (will be initialized later after microcontroller setup)
+        self.filter_wheel = None
+        self.objective_switcher = None
         # load objects
         if self.is_simulation:
             if CONFIG.ENABLE_SPINNING_DISK_CONFOCAL and SERIAL_PERIPHERALS_AVAILABLE:
@@ -200,6 +204,9 @@ class SquidController:
                 print("z homing timeout, the program will exit")
                 exit()
         print("objective retracted")
+
+        # Initialize Squid+ hardware after basic setup
+        self._initialize_squid_plus_hardware()
 
         # set encoder arguments
         # set axis pid control enable
@@ -2678,30 +2685,59 @@ class SquidController:
         self._restore_original_velocity(CONFIG.MAX_VELOCITY_X_MM, CONFIG.MAX_VELOCITY_Y_MM)
         return {"success": True, "message": "Scan stop requested"}
 
-
-async def try_microscope():
-    squid_controller = SquidController(is_simulation=False)
-
-    custom_illumination_settings = [
-        {'channel': 'BF LED matrix full', 'intensity': 35.0, 'exposure_time': 15.0},
-        {'channel': 'Fluorescence 488 nm Ex', 'intensity': 50.0, 'exposure_time': 80.0},
-        {'channel': 'Fluorescence 561 nm Ex', 'intensity': 75.0, 'exposure_time': 120.0}
-    ]
-
-    squid_controller.scan_well_plate_new(
-        well_plate_type='96',
-        illumination_settings=custom_illumination_settings,
-        do_contrast_autofocus=False,
-        do_reflection_af=True,
-        scanning_zone=[(0,0),(1,1)],  # Scan wells A1 to B2
-        Nx=2,
-        Ny=2,
-        action_ID='customIlluminationTest'
-    )
-
-    squid_controller.close()
+    def _initialize_squid_plus_hardware(self):
+        """
+        Initialize Squid+ specific hardware components
+        """
+        try:
+            # Initialize Filter Wheel if enabled
+            if getattr(CONFIG, 'FILTER_CONTROLLER_ENABLE', False):
+                from squid_control.control.filter_wheel import FilterWheelController, FilterWheelSimulation
+                
+                if self.is_simulation:
+                    self.filter_wheel = FilterWheelSimulation()
+                    logger.info("Filter wheel initialized in simulation mode")
+                else:
+                    self.filter_wheel = FilterWheelController(
+                        microcontroller=self.microcontroller,
+                        is_simulation=False
+                    )
+                    logger.info("Filter wheel initialized with hardware")
+            else:
+                logger.info("Filter wheel not enabled in configuration")
+            
+            # Initialize Objective Switcher if enabled
+            if getattr(CONFIG, 'USE_XERYON', False):
+                from squid_control.control.objective_switcher import ObjectiveSwitcherController, ObjectiveSwitcherSimulation
+                
+                xeryon_sn = getattr(CONFIG, 'XERYON_SERIAL_NUMBER', '')
+                
+                if self.is_simulation:
+                    self.objective_switcher = ObjectiveSwitcherSimulation(stage=self.navigationController)
+                    logger.info("Objective switcher initialized in simulation mode")
+                else:
+                    if xeryon_sn:
+                        self.objective_switcher = ObjectiveSwitcherController(
+                            serial_number=xeryon_sn,
+                            stage=self.navigationController,
+                            is_simulation=False
+                        )
+                        logger.info(f"Objective switcher initialized with hardware (SN: {xeryon_sn})")
+                    else:
+                        logger.warning("Xeryon serial number not provided - objective switcher disabled")
+            else:
+                logger.info("Objective switcher not enabled in configuration")
+                
+        except Exception as e:
+            logger.error(f"Failed to initialize Squid+ hardware: {e}")
+            # Continue without Squid+ hardware if initialization fails
+            self.filter_wheel = None
+            self.objective_switcher = None
 
 
 if __name__ == "__main__":
-    asyncio.run(try_microscope())
+    # Example usage of SquidController
+    print("SquidController module loaded successfully")
+    print("Use: python -m squid_control microscope --simulation")
+    print("Or: python -m squid_control mirror")
 

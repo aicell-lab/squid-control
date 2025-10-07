@@ -668,6 +668,34 @@ class BaseConfig(BaseModel):
     Y_HOME_SWITCH_POLARITY: int = 1
     Z_HOME_SWITCH_POLARITY: int = 2
 
+    # Squid+ Specific Features
+    # Filter Wheel Control
+    FILTER_CONTROLLER_ENABLE: bool = False
+    
+    # Objective Switcher (Xeryon)
+    USE_XERYON: bool = False
+    XERYON_SERIAL_NUMBER: str = ""
+    XERYON_SPEED: int = 80
+    XERYON_OBJECTIVE_SWITCHER_POS_1: list = ['20x']
+    XERYON_OBJECTIVE_SWITCHER_POS_2: list = ['4x']
+    XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM: float = 1.0
+    
+    # Z Motor Configuration
+    Z_MOTOR_CONFIG: str = "STEPPER"
+    
+    # Camera Configuration for Squid+
+    ROI_OFFSET_X_DEFAULT: int = 0
+    ROI_OFFSET_Y_DEFAULT: int = 0
+    ROI_WIDTH_DEFAULT: int = 6208
+    ROI_HEIGHT_DEFAULT: int = 4168
+    CROP_WIDTH_UNBINNED: int = 4168
+    CROP_HEIGHT_UNBINNED: int = 4168
+    BINNING_FACTOR_DEFAULT: int = 2
+    PIXEL_FORMAT_DEFAULT: str = "MONO16"
+    TEMPERATURE_DEFAULT: int = 20
+    FAN_SPEED_DEFAULT: int = 1
+    BLACKLEVEL_VALUE_DEFAULT: int = 3
+
     # for 96 well plate
     NUMBER_OF_SKIP: int = 0
     WELL_SIZE_MM: float = 6.21

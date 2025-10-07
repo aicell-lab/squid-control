@@ -1828,6 +1828,16 @@ class MicroscopeHyphaService:
             "adjust_video_frame": self.adjust_video_frame,
             "start_video_buffering": self.start_video_buffering_api,
             "stop_video_buffering": self.stop_video_buffering_api,
+            # Squid+ specific endpoints
+            "set_filter_wheel_position": self.set_filter_wheel_position,
+            "get_filter_wheel_position": self.get_filter_wheel_position,
+            "next_filter_position": self.next_filter_position,
+            "previous_filter_position": self.previous_filter_position,
+            "home_filter_wheel": self.home_filter_wheel,
+            "move_to_objective_position": self.move_to_objective_position,
+            "get_current_objective_position": self.get_current_objective_position,
+            "set_objective_switcher_speed": self.set_objective_switcher_speed,
+            "get_available_objective_positions": self.get_available_objective_positions,
             "get_video_buffering_status": self.get_video_buffering_status,
             "set_video_fps": self.set_video_fps,
             "get_current_well_location": self.get_current_well_location,
@@ -4083,6 +4093,305 @@ class MicroscopeHyphaService:
             
         except Exception as e:
             logger.error(f"Error in offline stitching and upload service method: {e}")
+            raise e
+
+    # ===== Squid+ Specific API Methods =====
+    
+    @schema_function
+    async def set_filter_wheel_position(
+        self,
+        position: int = Field(..., description="Filter position (1-8)"),
+        context=None
+    ):
+        """
+        Set the filter wheel to a specific position (Squid+ only)
+        
+        Args:
+            position: Filter position number (1-8)
+            
+        Returns:
+            dict: Status with success flag and current position
+        """
+        try:
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
+            if self.squidController.filter_wheel is None:
+                raise Exception("Filter wheel not available on this microscope")
+            
+            success = self.squidController.filter_wheel.set_filter_position(position)
+            
+            if success:
+                logger.info(f"Filter wheel moved to position {position}")
+                return {
+                    "success": True,
+                    "position": position,
+                    "message": f"Filter wheel set to position {position}"
+                }
+            else:
+                raise Exception(f"Failed to set filter wheel to position {position}")
+                
+        except Exception as e:
+            logger.error(f"Error setting filter wheel position: {e}")
+            raise e
+    
+    @schema_function
+    async def get_filter_wheel_position(self, context=None):
+        """
+        Get the current filter wheel position (Squid+ only)
+        
+        Returns:
+            dict: Current filter position
+        """
+        try:
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
+            if self.squidController.filter_wheel is None:
+                raise Exception("Filter wheel not available on this microscope")
+            
+            position = self.squidController.filter_wheel.get_filter_position()
+            return {
+                "success": True,
+                "position": position
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting filter wheel position: {e}")
+            raise e
+    
+    @schema_function
+    async def next_filter_position(self, context=None):
+        """
+        Move to the next filter position (Squid+ only)
+        
+        Returns:
+            dict: Status with new position
+        """
+        try:
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
+            if self.squidController.filter_wheel is None:
+                raise Exception("Filter wheel not available on this microscope")
+            
+            success = self.squidController.filter_wheel.next_position()
+            
+            if success:
+                position = self.squidController.filter_wheel.get_filter_position()
+                return {
+                    "success": True,
+                    "position": position,
+                    "message": f"Moved to filter position {position}"
+                }
+            else:
+                raise Exception("Failed to move to next filter position")
+                
+        except Exception as e:
+            logger.error(f"Error moving to next filter position: {e}")
+            raise e
+    
+    @schema_function
+    async def previous_filter_position(self, context=None):
+        """
+        Move to the previous filter position (Squid+ only)
+        
+        Returns:
+            dict: Status with new position
+        """
+        try:
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
+            if self.squidController.filter_wheel is None:
+                raise Exception("Filter wheel not available on this microscope")
+            
+            success = self.squidController.filter_wheel.previous_position()
+            
+            if success:
+                position = self.squidController.filter_wheel.get_filter_position()
+                return {
+                    "success": True,
+                    "position": position,
+                    "message": f"Moved to filter position {position}"
+                }
+            else:
+                raise Exception("Failed to move to previous filter position")
+                
+        except Exception as e:
+            logger.error(f"Error moving to previous filter position: {e}")
+            raise e
+    
+    @schema_function
+    async def home_filter_wheel(self, context=None):
+        """
+        Home the filter wheel to position 1 (Squid+ only)
+        
+        Returns:
+            dict: Status message
+        """
+        try:
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
+            if self.squidController.filter_wheel is None:
+                raise Exception("Filter wheel not available on this microscope")
+            
+            success = self.squidController.filter_wheel.home()
+            
+            if success:
+                return {
+                    "success": True,
+                    "message": "Filter wheel homed to position 1"
+                }
+            else:
+                raise Exception("Failed to home filter wheel")
+                
+        except Exception as e:
+            logger.error(f"Error homing filter wheel: {e}")
+            raise e
+    
+    @schema_function
+    async def move_to_objective_position(
+        self,
+        position: int = Field(..., description="Objective position (1 or 2)"),
+        move_z: bool = Field(True, description="Whether to adjust Z stage for objective change"),
+        context=None
+    ):
+        """
+        Move to a specific objective position using the objective switcher (Squid+ only)
+        
+        Args:
+            position: Objective position (1 or 2)
+            move_z: Whether to adjust Z stage for objective height difference
+            
+        Returns:
+            dict: Status with current position and objective name
+        """
+        try:
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
+            if self.squidController.objective_switcher is None:
+                raise Exception("Objective switcher not available on this microscope")
+            
+            if position == 1:
+                success = self.squidController.objective_switcher.move_to_position_1(move_z=move_z)
+            elif position == 2:
+                success = self.squidController.objective_switcher.move_to_position_2(move_z=move_z)
+            else:
+                raise Exception(f"Invalid objective position: {position}. Must be 1 or 2")
+            
+            if success:
+                position_names = self.squidController.objective_switcher.get_position_names()
+                objective_name = position_names.get(position, f"Position {position}")
+                
+                logger.info(f"Objective switcher moved to position {position} ({objective_name})")
+                return {
+                    "success": True,
+                    "position": position,
+                    "objective_name": objective_name,
+                    "message": f"Moved to objective {objective_name}"
+                }
+            else:
+                raise Exception(f"Failed to move to objective position {position}")
+                
+        except Exception as e:
+            logger.error(f"Error moving to objective position: {e}")
+            raise e
+    
+    @schema_function
+    async def get_current_objective_position(self, context=None):
+        """
+        Get the current objective position (Squid+ only)
+        
+        Returns:
+            dict: Current objective position and name
+        """
+        try:
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
+            if self.squidController.objective_switcher is None:
+                raise Exception("Objective switcher not available on this microscope")
+            
+            position = self.squidController.objective_switcher.get_current_position()
+            position_names = self.squidController.objective_switcher.get_position_names()
+            objective_name = position_names.get(position, "Unknown") if position else "Not set"
+            
+            return {
+                "success": True,
+                "position": position,
+                "objective_name": objective_name
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting current objective position: {e}")
+            raise e
+    
+    @schema_function
+    async def set_objective_switcher_speed(
+        self,
+        speed: float = Field(..., description="Speed value for objective switcher"),
+        context=None
+    ):
+        """
+        Set the movement speed of the objective switcher (Squid+ only)
+        
+        Args:
+            speed: Speed value
+            
+        Returns:
+            dict: Status message
+        """
+        try:
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
+            if self.squidController.objective_switcher is None:
+                raise Exception("Objective switcher not available on this microscope")
+            
+            success = self.squidController.objective_switcher.set_speed(speed)
+            
+            if success:
+                return {
+                    "success": True,
+                    "speed": speed,
+                    "message": f"Objective switcher speed set to {speed}"
+                }
+            else:
+                raise Exception("Failed to set objective switcher speed")
+                
+        except Exception as e:
+            logger.error(f"Error setting objective switcher speed: {e}")
+            raise e
+    
+    @schema_function
+    async def get_available_objective_positions(self, context=None):
+        """
+        Get available objective positions and their names (Squid+ only)
+        
+        Returns:
+            dict: Available positions with objective names
+        """
+        try:
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
+            if self.squidController.objective_switcher is None:
+                raise Exception("Objective switcher not available on this microscope")
+            
+            positions = self.squidController.objective_switcher.get_available_positions()
+            position_names = self.squidController.objective_switcher.get_position_names()
+            
+            return {
+                "success": True,
+                "positions": positions,
+                "position_names": position_names
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting available objective positions: {e}")
             raise e
 
 # Global variable to hold the microscope instance

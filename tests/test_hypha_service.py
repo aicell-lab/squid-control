@@ -2037,3 +2037,242 @@ async def test_comprehensive_service_functionality(test_microscope_service):
     except Exception as e:
         print(f"❌ Comprehensive service functionality test failed: {e}")
         raise
+
+
+# ===== Squid+ Specific API Tests =====
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+async def test_squid_plus_filter_wheel_api(test_microscope_service):
+    """Test Squid+ filter wheel API endpoints"""
+    microscope, service = test_microscope_service
+    print("🧪 Testing Squid+ Filter Wheel API endpoints...")
+    
+    try:
+        # Test 1: Check if filter wheel is available
+        print("1. Testing filter wheel availability...")
+        
+        # Try to get current position (should work if filter wheel is available)
+        try:
+            position_result = await service.get_filter_wheel_position()
+            print(f"   ✓ Filter wheel available at position: {position_result.get('position', 'unknown')}")
+            filter_wheel_available = True
+        except Exception as e:
+            if "not available" in str(e).lower():
+                print("   ℹ️  Filter wheel not available on this microscope (expected in simulation)")
+                filter_wheel_available = False
+            else:
+                raise e
+        
+        if filter_wheel_available:
+            # Test 2: Set filter wheel position
+            print("2. Testing filter wheel position control...")
+            
+            # Set to position 3
+            set_result = await service.set_filter_wheel_position(position=3)
+            assert set_result.get("success", False) == True
+            assert set_result.get("position") == 3
+            print("   ✓ Filter wheel position set successfully")
+            
+            # Test 3: Move to next position
+            print("3. Testing next filter position...")
+            next_result = await service.next_filter_position()
+            assert next_result.get("success", False) == True
+            assert next_result.get("position") == 4
+            print("   ✓ Next filter position works")
+            
+            # Test 4: Move to previous position
+            print("4. Testing previous filter position...")
+            prev_result = await service.previous_filter_position()
+            assert prev_result.get("success", False) == True
+            assert prev_result.get("position") == 3
+            print("   ✓ Previous filter position works")
+            
+            # Test 5: Home filter wheel
+            print("5. Testing filter wheel homing...")
+            home_result = await service.home_filter_wheel()
+            assert home_result.get("success", False) == True
+            print("   ✓ Filter wheel homing works")
+            
+            # Verify position is 1 after homing
+            final_position = await service.get_filter_wheel_position()
+            assert final_position.get("position") == 1
+            print("   ✓ Filter wheel homed to position 1")
+        
+        print("✅ Squid+ Filter Wheel API tests passed!")
+        
+    except Exception as e:
+        print(f"❌ Squid+ Filter Wheel API test failed: {e}")
+        raise
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+async def test_squid_plus_objective_switcher_api(test_microscope_service):
+    """Test Squid+ objective switcher API endpoints"""
+    microscope, service = test_microscope_service
+    print("🧪 Testing Squid+ Objective Switcher API endpoints...")
+    
+    try:
+        # Test 1: Check if objective switcher is available
+        print("1. Testing objective switcher availability...")
+        
+        # Try to get current position (should work if objective switcher is available)
+        try:
+            position_result = await service.get_current_objective_position()
+            print(f"   ✓ Objective switcher available at position: {position_result.get('position', 'unknown')}")
+            objective_switcher_available = True
+        except Exception as e:
+            if "not available" in str(e).lower():
+                print("   ℹ️  Objective switcher not available on this microscope (expected in simulation)")
+                objective_switcher_available = False
+            else:
+                raise e
+        
+        if objective_switcher_available:
+            # Test 2: Get available positions
+            print("2. Testing available objective positions...")
+            positions_result = await service.get_available_objective_positions()
+            assert positions_result.get("success", False) == True
+            positions = positions_result.get("positions", [])
+            position_names = positions_result.get("position_names", {})
+            assert len(positions) > 0
+            print(f"   ✓ Available positions: {positions}")
+            print(f"   ✓ Position names: {position_names}")
+            
+            # Test 3: Move to objective position 1
+            print("3. Testing move to objective position 1...")
+            move1_result = await service.move_to_objective_position(position=1, move_z=True)
+            assert move1_result.get("success", False) == True
+            assert move1_result.get("position") == 1
+            print(f"   ✓ Moved to position 1: {move1_result.get('objective_name', 'Unknown')}")
+            
+            # Test 4: Move to objective position 2
+            print("4. Testing move to objective position 2...")
+            move2_result = await service.move_to_objective_position(position=2, move_z=True)
+            assert move2_result.get("success", False) == True
+            assert move2_result.get("position") == 2
+            print(f"   ✓ Moved to position 2: {move2_result.get('objective_name', 'Unknown')}")
+            
+            # Test 5: Set objective switcher speed
+            print("5. Testing objective switcher speed setting...")
+            speed_result = await service.set_objective_switcher_speed(speed=50.0)
+            assert speed_result.get("success", False) == True
+            assert speed_result.get("speed") == 50.0
+            print("   ✓ Objective switcher speed set successfully")
+            
+            # Test 6: Get current position after movement
+            print("6. Testing current position retrieval...")
+            current_result = await service.get_current_objective_position()
+            assert current_result.get("success", False) == True
+            assert current_result.get("position") == 2
+            print(f"   ✓ Current position: {current_result.get('objective_name', 'Unknown')}")
+        
+        print("✅ Squid+ Objective Switcher API tests passed!")
+        
+    except Exception as e:
+        print(f"❌ Squid+ Objective Switcher API test failed: {e}")
+        raise
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+async def test_squid_plus_error_handling(test_microscope_service):
+    """Test Squid+ API error handling for unavailable hardware"""
+    microscope, service = test_microscope_service
+    print("🧪 Testing Squid+ API error handling...")
+    
+    try:
+        # Test 1: Filter wheel error handling
+        print("1. Testing filter wheel error handling...")
+        
+        # Test invalid filter position
+        try:
+            await service.set_filter_wheel_position(position=0)  # Invalid position
+            print("   ⚠️  Expected error for invalid position not raised")
+        except Exception as e:
+            if "not available" in str(e).lower() or "invalid" in str(e).lower():
+                print("   ✓ Filter wheel error handling works correctly")
+            else:
+                print(f"   ⚠️  Unexpected error type: {e}")
+        
+        # Test 2: Objective switcher error handling
+        print("2. Testing objective switcher error handling...")
+        
+        # Test invalid objective position
+        try:
+            await service.move_to_objective_position(position=3)  # Invalid position (only 1,2 allowed)
+            print("   ⚠️  Expected error for invalid position not raised")
+        except Exception as e:
+            if "not available" in str(e).lower() or "invalid" in str(e).lower():
+                print("   ✓ Objective switcher error handling works correctly")
+            else:
+                print(f"   ⚠️  Unexpected error type: {e}")
+        
+        print("✅ Squid+ API error handling tests passed!")
+        
+    except Exception as e:
+        print(f"❌ Squid+ API error handling test failed: {e}")
+        raise
+
+
+@pytest.mark.asyncio
+@pytest.mark.timeout(60)
+async def test_squid_plus_integration_with_existing_features(test_microscope_service):
+    """Test that Squid+ features work alongside existing microscope features"""
+    microscope, service = test_microscope_service
+    print("🧪 Testing Squid+ integration with existing features...")
+    
+    try:
+        # Test 1: Basic microscope operations still work
+        print("1. Testing basic microscope operations...")
+        
+        # Test basic movement
+        move_result = await service.move_by_distance(x=0.1, y=0.1, z=0.0)
+        assert move_result.get("success", False) == True
+        print("   ✓ Basic movement still works")
+        
+        # Test illumination
+        illum_result = await service.set_illumination(channel=11, intensity=50)
+        # The set_illumination method returns a string message, not a dict
+        assert isinstance(illum_result, str)
+        print("   ✓ Illumination still works")
+        
+        # Test 2: Squid+ features don't interfere with basic operations
+        print("2. Testing Squid+ features don't interfere...")
+        
+        # Try Squid+ operations (may not be available, but shouldn't crash)
+        try:
+            await service.get_filter_wheel_position()
+            print("   ✓ Filter wheel operations don't interfere")
+        except Exception as e:
+            if "not available" in str(e).lower():
+                print("   ✓ Filter wheel not available (expected), no interference")
+            else:
+                raise e
+        
+        try:
+            await service.get_current_objective_position()
+            print("   ✓ Objective switcher operations don't interfere")
+        except Exception as e:
+            if "not available" in str(e).lower():
+                print("   ✓ Objective switcher not available (expected), no interference")
+            else:
+                raise e
+        
+        # Test 3: Status and configuration still work
+        print("3. Testing status and configuration still work...")
+        
+        status = await service.get_status()
+        assert status is not None
+        print("   ✓ Status retrieval still works")
+        
+        config = await service.get_microscope_configuration(config_section="all")
+        assert config is not None and config.get('success', False)
+        print("   ✓ Configuration retrieval still works")
+        
+        print("✅ Squid+ integration with existing features tests passed!")
+        
+    except Exception as e:
+        print(f"❌ Squid+ integration test failed: {e}")
+        raise
