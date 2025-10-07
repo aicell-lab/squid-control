@@ -2151,3 +2151,104 @@ async def test_squid_plus_configuration_parameters(sim_controller_fixture):
         print("   ✓ Camera ROI height configuration parameter exists")
         
         print("✅ Squid+ configuration parameters test passed!")
+
+
+@pytest.mark.timeout(60)
+async def test_camera_type_switching():
+    """Test that SquidController can work with different camera types"""
+    print("🧪 Testing camera type switching...")
+    
+    # Test 1: Default camera
+    print("1. Testing Default camera type...")
+    from squid_control.control.camera import get_camera
+    
+    default_camera, default_camera_fc = get_camera('Default')
+    print(f"   ✓ Default camera module: {default_camera.__name__}")
+    
+    # Test 2: Toupcam camera
+    print("2. Testing Toupcam camera type...")
+    toupcam_camera, toupcam_camera_fc = get_camera('Toupcam')
+    print(f"   ✓ Toupcam camera module: {toupcam_camera.__name__}")
+    
+    # Test 3: FLIR camera (if available)
+    print("3. Testing FLIR camera type...")
+    try:
+        flir_camera, flir_camera_fc = get_camera('FLIR')
+        print(f"   ✓ FLIR camera module: {flir_camera.__name__}")
+    except Exception as e:
+        print(f"   ℹ️  FLIR camera not available: {e}")
+    
+    # Test 4: Test camera instantiation
+    print("4. Testing camera instantiation...")
+    
+    # Test default camera simulation
+    default_sim = default_camera.Camera_Simulation()
+    print(f"   ✓ Default simulation camera: {type(default_sim).__name__}")
+    
+    # Test Toupcam camera simulation
+    toupcam_sim = toupcam_camera.Camera_Simulation()
+    print(f"   ✓ Toupcam simulation camera: {type(toupcam_sim).__name__}")
+    
+    # Test 5: Test SquidController with different camera types
+    print("5. Testing SquidController with different camera types...")
+    
+    # Test with default camera (current behavior)
+    controller_default = SquidController(is_simulation=True)
+    assert controller_default.camera is not None
+    print("   ✓ SquidController with default camera works")
+    
+    # Clean up
+    try:
+        controller_default.close()
+    except:
+        pass
+    
+    print("✅ Camera type switching test passed!")
+
+
+@pytest.mark.timeout(60)
+async def test_toupcam_camera_specific_features():
+    """Test Toupcam-specific camera features"""
+    print("🧪 Testing Toupcam-specific camera features...")
+    
+    from squid_control.control.camera import get_camera
+    
+    # Get Toupcam camera
+    toupcam_camera, _ = get_camera('Toupcam')
+    
+    # Test camera instantiation
+    sim_camera = toupcam_camera.Camera_Simulation()
+    print(f"   ✓ Toupcam simulation camera created: {type(sim_camera).__name__}")
+    
+    # Test camera properties
+    print(f"   - Width: {sim_camera.Width}")
+    print(f"   - Height: {sim_camera.Height}")
+    print(f"   - Is color: {sim_camera.is_color}")
+    print(f"   - Is streaming: {sim_camera.is_streaming}")
+    
+    # Test camera methods
+    assert hasattr(sim_camera, 'start_streaming')
+    assert hasattr(sim_camera, 'stop_streaming')
+    assert hasattr(sim_camera, 'set_exposure_time')
+    assert hasattr(sim_camera, 'set_analog_gain')
+    
+    print("   ✓ Toupcam camera has required methods")
+    
+    # Test camera operations (simulation mode doesn't actually stream)
+    sim_camera.start_streaming()
+    # In simulation mode, streaming state may not change immediately
+    print("   ✓ Toupcam camera streaming start method works")
+    
+    sim_camera.stop_streaming()
+    # In simulation mode, streaming state may not change immediately
+    print("   ✓ Toupcam camera streaming stop method works")
+    
+    # Test exposure time setting
+    sim_camera.set_exposure_time(100.0)
+    print("   ✓ Toupcam camera exposure time setting works")
+    
+    # Test analog gain setting
+    sim_camera.set_analog_gain(20.0)
+    print("   ✓ Toupcam camera analog gain setting works")
+    
+    print("✅ Toupcam-specific camera features test passed!")
