@@ -35,6 +35,7 @@ class AXIS:
     Z = 2
     THETA = 3
     XY = 4
+    W = 5  # W axis (filter wheel)
 
 
 class CMD_SET:
@@ -42,6 +43,7 @@ class CMD_SET:
     MOVE_Y = 1
     MOVE_Z = 2
     MOVE_THETA = 3
+    MOVE_W = 4  # W axis (filter wheel)
     HOME_OR_ZERO = 5
     TURN_ON_ILLUMINATION = 10
     TURN_OFF_ILLUMINATION = 11
