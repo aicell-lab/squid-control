@@ -730,4 +730,8 @@ class Camera_Simulation(object):
         self.is_color = False
         self.is_streaming = False
         self.callback_is_enabled = False
+        
+        # Copy rotation and flip attributes
+        self.rotate_image_angle = rotate_image_angle
+        self.flip_image = flip_image
 

@@ -306,6 +306,13 @@ class CameraConfig(BaseModel):
     ROI_OFFSET_Y_DEFAULT: int = 0
     ROI_WIDTH_DEFAULT: int = 3104
     ROI_HEIGHT_DEFAULT: int = 2084
+    CROP_WIDTH_UNBINNED: int = 4168
+    CROP_HEIGHT_UNBINNED: int = 4168
+    BINNING_FACTOR_DEFAULT: int = 2
+    PIXEL_FORMAT_DEFAULT: str = "MONO16"
+    TEMPERATURE_DEFAULT: int = 20
+    FAN_SPEED_DEFAULT: int = 1
+    BLACKLEVEL_VALUE_DEFAULT: int = 3
 
 
 class PlateReaderSetting(BaseModel):
