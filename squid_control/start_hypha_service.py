@@ -293,6 +293,9 @@ class MicroscopeHyphaService:
         self.is_local = is_local
         self.squidController = SquidController(is_simulation=is_simulation)
         self.squidController.move_to_well('C',3)
+        
+        # Determine if this is a Squid+ microscope
+        self.is_squid_plus = self._is_squid_plus_microscope()
         self.dx = 1
         self.dy = 1
         self.dz = 1
@@ -322,7 +325,7 @@ class MicroscopeHyphaService:
         self.authorized_emails = self.load_authorized_emails()
         logger.info(f"Authorized emails: {self.authorized_emails}")
         self.datastore = None
-        self.server_url = "http://192.168.2.1:9527" if is_local else "https://hypha.aicell.io/"
+        self.server_url =  "http://192.168.2.1:9527" if is_local else "https://hypha.aicell.io/"
         self.server = None
         self.service_id = os.environ.get("MICROSCOPE_SERVICE_ID")
         self.setup_task = None  # Track the setup task
@@ -422,6 +425,32 @@ class MicroscopeHyphaService:
         if self.authorized_emails is None or user["email"] in self.authorized_emails:
             return True
         else:
+            return False
+
+    def _is_squid_plus_microscope(self):
+        """
+        Determine if this is a Squid+ microscope based on configuration settings.
+        Squid+ microscopes have specific features like filter wheel and objective switcher.
+        """
+        try:
+            from squid_control.control.config import CONFIG
+            
+            # Check for Squid+ specific configuration settings
+            has_filter_wheel = getattr(CONFIG, 'FILTER_CONTROLLER_ENABLE', False)
+            has_objective_switcher = getattr(CONFIG, 'USE_XERYON', False)
+            
+            # If either Squid+ specific feature is enabled, it's a Squid+ microscope
+            is_squid_plus = has_filter_wheel or has_objective_switcher
+            
+            if is_squid_plus:
+                logger.info("🔬 Detected Squid+ microscope - Squid+ specific endpoints will be registered")
+            else:
+                logger.info("🔬 Detected original Squid microscope - Squid+ specific endpoints will not be registered")
+                
+            return is_squid_plus
+            
+        except Exception as e:
+            logger.warning(f"Could not determine microscope type: {e} - assuming original Squid")
             return False
 
     async def is_service_healthy(self, context=None):
@@ -1670,6 +1699,35 @@ class MicroscopeHyphaService:
         velocity_x_mm_per_s: Optional[float] = Field(None, description="Maximum velocity for X axis in mm/s (default: uses configuration value)")
         velocity_y_mm_per_s: Optional[float] = Field(None, description="Maximum velocity for Y axis in mm/s (default: uses configuration value)")
 
+    # ===== Squid+ Specific Input Models =====
+    
+    class SetFilterWheelPositionInput(BaseModel):
+        """Set filter wheel to a specific position."""
+        position: int = Field(..., description="Filter position (1-8)", ge=1, le=8)
+    
+    class SwitchObjectiveInput(BaseModel):
+        """Switch to a specific objective."""
+        objective_name: str = Field(..., description="Objective name (e.g., '4x', '20x')")
+        move_z: bool = Field(True, description="Whether to adjust Z stage for objective change")
+    
+    class GetFilterWheelPositionInput(BaseModel):
+        """Get current filter wheel position."""
+    
+    class NextFilterPositionInput(BaseModel):
+        """Move to next filter position."""
+    
+    class PreviousFilterPositionInput(BaseModel):
+        """Move to previous filter position."""
+    
+    class HomeFilterWheelInput(BaseModel):
+        """Home filter wheel to position 1."""
+    
+    class GetCurrentObjectiveInput(BaseModel):
+        """Get current objective name and position."""
+    
+    class GetAvailableObjectivesInput(BaseModel):
+        """Get available objectives and their positions."""
+
     async def inspect_tool(self, images: List[dict], query: str, context_description: str) -> str:
         image_infos = [
             self.ImageInfo(url=image_dict['http_url'], title=image_dict.get('title'))
@@ -1752,7 +1810,7 @@ class MicroscopeHyphaService:
         return {"result": response}
 
     def get_schema(self, context=None):
-        return {
+        schema = {
             "move_by_distance": self.MoveByDistanceInput.model_json_schema(),
             "move_to_position": self.MoveToPositionInput.model_json_schema(),
             "home_stage": self.HomeStageInput.model_json_schema(),
@@ -1771,6 +1829,22 @@ class MicroscopeHyphaService:
             "get_microscope_configuration": self.GetMicroscopeConfigurationInput.model_json_schema(),
             "set_stage_velocity": self.SetStageVelocityInput.model_json_schema(),
         }
+        
+        # Add Squid+ specific schemas if this is a Squid+ microscope
+        if self.is_squid_plus:
+            squid_plus_schemas = {
+                "set_filter_wheel_position": self.SetFilterWheelPositionInput.model_json_schema(),
+                "get_filter_wheel_position": self.GetFilterWheelPositionInput.model_json_schema(),
+                "next_filter_position": self.NextFilterPositionInput.model_json_schema(),
+                "previous_filter_position": self.PreviousFilterPositionInput.model_json_schema(),
+                "home_filter_wheel": self.HomeFilterWheelInput.model_json_schema(),
+                "switch_objective": self.SwitchObjectiveInput.model_json_schema(),
+                "get_current_objective": self.GetCurrentObjectiveInput.model_json_schema(),
+                "get_available_objectives": self.GetAvailableObjectivesInput.model_json_schema(),
+            }
+            schema.update(squid_plus_schemas)
+        
+        return schema
 
     async def start_hypha_service(self, server, service_id, run_in_executor=None):
         self.server = server
@@ -1828,16 +1902,6 @@ class MicroscopeHyphaService:
             "adjust_video_frame": self.adjust_video_frame,
             "start_video_buffering": self.start_video_buffering_api,
             "stop_video_buffering": self.stop_video_buffering_api,
-            # Squid+ specific endpoints
-            "set_filter_wheel_position": self.set_filter_wheel_position,
-            "get_filter_wheel_position": self.get_filter_wheel_position,
-            "next_filter_position": self.next_filter_position,
-            "previous_filter_position": self.previous_filter_position,
-            "home_filter_wheel": self.home_filter_wheel,
-            "move_to_objective_position": self.move_to_objective_position,
-            "get_current_objective_position": self.get_current_objective_position,
-            "set_objective_switcher_speed": self.set_objective_switcher_speed,
-            "get_available_objective_positions": self.get_available_objective_positions,
             "get_video_buffering_status": self.get_video_buffering_status,
             "set_video_fps": self.set_video_fps,
             "get_current_well_location": self.get_current_well_location,
@@ -1862,6 +1926,21 @@ class MicroscopeHyphaService:
             # Offline processing functions
             "offline_stitch_and_upload_timelapse": self.offline_stitch_and_upload_timelapse,
         }
+        
+        # Conditionally register Squid+ specific endpoints
+        if self.is_squid_plus:
+            squid_plus_endpoints = {
+                "set_filter_wheel_position": self.set_filter_wheel_position,
+                "get_filter_wheel_position": self.get_filter_wheel_position,
+                "next_filter_position": self.next_filter_position,
+                "previous_filter_position": self.previous_filter_position,
+                "home_filter_wheel": self.home_filter_wheel,
+                "switch_objective": self.switch_objective,
+                "get_current_objective": self.get_current_objective,
+                "get_available_objectives": self.get_available_objectives,
+            }
+            service_config.update(squid_plus_endpoints)
+            logger.info(f"Registered {len(squid_plus_endpoints)} Squid+ specific endpoints")
 
         # Only register get_canvas_chunk when not in local mode
         if not self.is_local:
@@ -1910,6 +1989,20 @@ class MicroscopeHyphaService:
                 "set_stage_velocity": self.set_stage_velocity_schema,
             }
         }
+        
+        # Add Squid+ specific tools if this is a Squid+ microscope
+        if self.is_squid_plus:
+            squid_plus_tools = {
+                "set_filter_wheel_position": self.set_filter_wheel_position_schema,
+                "get_filter_wheel_position": self.get_filter_wheel_position_schema,
+                "next_filter_position": self.next_filter_position_schema,
+                "previous_filter_position": self.previous_filter_position_schema,
+                "home_filter_wheel": self.home_filter_wheel_schema,
+                "switch_objective": self.switch_objective_schema,
+                "get_current_objective": self.get_current_objective_schema,
+                "get_available_objectives": self.get_available_objectives_schema,
+            }
+            chatbot_extension["tools"].update(squid_plus_tools)
 
         svc = await server.register_service(chatbot_extension)
         self.chatbot_service_url = f"https://bioimage.io/chat?server=https://chat.bioimage.io&extension={svc.id}&assistant=Skyler"
@@ -3203,6 +3296,40 @@ class MicroscopeHyphaService:
         """Set the maximum velocity for X and Y stage axes with schema validation."""
         return self.set_stage_velocity(config.velocity_x_mm_per_s, config.velocity_y_mm_per_s, context)
 
+    # ===== Squid+ Specific Schema Methods =====
+    
+    def set_filter_wheel_position_schema(self, config: SetFilterWheelPositionInput, context=None):
+        """Set filter wheel position with schema validation."""
+        return self.set_filter_wheel_position(config.position, context)
+    
+    def get_filter_wheel_position_schema(self, context=None):
+        """Get current filter wheel position with schema validation."""
+        return self.get_filter_wheel_position(context)
+    
+    def next_filter_position_schema(self, context=None):
+        """Move to next filter position with schema validation."""
+        return self.next_filter_position(context)
+    
+    def previous_filter_position_schema(self, context=None):
+        """Move to previous filter position with schema validation."""
+        return self.previous_filter_position(context)
+    
+    def home_filter_wheel_schema(self, context=None):
+        """Home filter wheel with schema validation."""
+        return self.home_filter_wheel(context)
+    
+    def switch_objective_schema(self, config: SwitchObjectiveInput, context=None):
+        """Switch objective with schema validation."""
+        return self.switch_objective(config.objective_name, config.move_z, context)
+    
+    def get_current_objective_schema(self, context=None):
+        """Get current objective with schema validation."""
+        return self.get_current_objective(context)
+    
+    def get_available_objectives_schema(self, context=None):
+        """Get available objectives with schema validation."""
+        return self.get_available_objectives(context)
+
     @schema_function(skip_self=True)
     async def normal_scan_with_stitching(self, start_x_mm: float = Field(20, description="Starting X position in millimeters"),
                                        start_y_mm: float = Field(20, description="Starting Y position in millimeters"),
@@ -4252,21 +4379,21 @@ class MicroscopeHyphaService:
             raise e
     
     @schema_function
-    async def move_to_objective_position(
+    async def switch_objective(
         self,
-        position: int = Field(..., description="Objective position (1 or 2)"),
+        objective_name: str = Field(..., description="Objective name (e.g., '4x', '20x')"),
         move_z: bool = Field(True, description="Whether to adjust Z stage for objective change"),
         context=None
     ):
         """
-        Move to a specific objective position using the objective switcher (Squid+ only)
+        Switch to a specific objective using the objective switcher (Squid+ only)
         
         Args:
-            position: Objective position (1 or 2)
+            objective_name: Objective name (e.g., '4x', '20x')
             move_z: Whether to adjust Z stage for objective height difference
             
         Returns:
-            dict: Status with current position and objective name
+            dict: Status with current objective name and position
         """
         try:
             if context and not self.check_permission(context.get("user", {})):
@@ -4275,38 +4402,50 @@ class MicroscopeHyphaService:
             if self.squidController.objective_switcher is None:
                 raise Exception("Objective switcher not available on this microscope")
             
+            # Get available objectives and their positions
+            position_names = self.squidController.objective_switcher.get_position_names()
+            
+            # Find the position for the requested objective
+            position = None
+            for pos, name in position_names.items():
+                if name.lower() == objective_name.lower():
+                    position = pos
+                    break
+            
+            if position is None:
+                available_objectives = list(position_names.values())
+                raise Exception(f"Objective '{objective_name}' not found. Available objectives: {available_objectives}")
+            
+            # Move to the found position
             if position == 1:
                 success = self.squidController.objective_switcher.move_to_position_1(move_z=move_z)
             elif position == 2:
                 success = self.squidController.objective_switcher.move_to_position_2(move_z=move_z)
             else:
-                raise Exception(f"Invalid objective position: {position}. Must be 1 or 2")
+                raise Exception(f"Invalid objective position: {position}")
             
             if success:
-                position_names = self.squidController.objective_switcher.get_position_names()
-                objective_name = position_names.get(position, f"Position {position}")
-                
-                logger.info(f"Objective switcher moved to position {position} ({objective_name})")
+                logger.info(f"Objective switcher switched to {objective_name} (position {position})")
                 return {
                     "success": True,
-                    "position": position,
                     "objective_name": objective_name,
-                    "message": f"Moved to objective {objective_name}"
+                    "position": position,
+                    "message": f"Switched to objective {objective_name}"
                 }
             else:
-                raise Exception(f"Failed to move to objective position {position}")
+                raise Exception(f"Failed to switch to objective {objective_name}")
                 
         except Exception as e:
-            logger.error(f"Error moving to objective position: {e}")
+            logger.error(f"Error switching objective: {e}")
             raise e
     
     @schema_function
-    async def get_current_objective_position(self, context=None):
+    async def get_current_objective(self, context=None):
         """
-        Get the current objective position (Squid+ only)
+        Get the current objective name and position (Squid+ only)
         
         Returns:
-            dict: Current objective position and name
+            dict: Current objective name, position, and available objectives
         """
         try:
             if context and not self.check_permission(context.get("user", {})):
@@ -4319,14 +4458,19 @@ class MicroscopeHyphaService:
             position_names = self.squidController.objective_switcher.get_position_names()
             objective_name = position_names.get(position, "Unknown") if position else "Not set"
             
+            # Get all available objectives
+            available_objectives = list(position_names.values())
+            
             return {
                 "success": True,
+                "current_objective": objective_name,
                 "position": position,
-                "objective_name": objective_name
+                "available_objectives": available_objectives,
+                "message": f"Current objective: {objective_name}"
             }
             
         except Exception as e:
-            logger.error(f"Error getting current objective position: {e}")
+            logger.error(f"Error getting current objective: {e}")
             raise e
     
     @schema_function
@@ -4367,12 +4511,12 @@ class MicroscopeHyphaService:
             raise e
     
     @schema_function
-    async def get_available_objective_positions(self, context=None):
+    async def get_available_objectives(self, context=None):
         """
-        Get available objective positions and their names (Squid+ only)
+        Get available objectives and their positions (Squid+ only)
         
         Returns:
-            dict: Available positions with objective names
+            dict: Available objectives with their positions and names
         """
         try:
             if context and not self.check_permission(context.get("user", {})):
@@ -4384,14 +4528,25 @@ class MicroscopeHyphaService:
             positions = self.squidController.objective_switcher.get_available_positions()
             position_names = self.squidController.objective_switcher.get_position_names()
             
+            # Create a more user-friendly response
+            available_objectives = []
+            for pos in positions:
+                objective_name = position_names.get(pos, f"Position {pos}")
+                available_objectives.append({
+                    "position": pos,
+                    "objective_name": objective_name
+                })
+            
             return {
                 "success": True,
+                "available_objectives": available_objectives,
+                "objective_names": list(position_names.values()),
                 "positions": positions,
-                "position_names": position_names
+                "message": f"Available objectives: {list(position_names.values())}"
             }
             
         except Exception as e:
-            logger.error(f"Error getting available objective positions: {e}")
+            logger.error(f"Error getting available objectives: {e}")
             raise e
 
 # Global variable to hold the microscope instance

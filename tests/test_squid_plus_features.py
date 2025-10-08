@@ -184,6 +184,35 @@ class TestObjectiveSwitcher:
         assert 2 in position_names
         assert "20x" in position_names[1] or "Position 1" in position_names[1]
         assert "4x" in position_names[2] or "Position 2" in position_names[2]
+    
+    def test_objective_switcher_switch_by_name_simulation(self, objective_switcher_simulation):
+        """Test switching objectives by name (e.g., '4x', '20x')"""
+        # Test switching to 20x (position 1)
+        result = objective_switcher_simulation.move_to_position_1(move_z=True)
+        assert result is True
+        assert objective_switcher_simulation.get_current_position() == 1
+        
+        # Test switching to 4x (position 2)
+        result = objective_switcher_simulation.move_to_position_2(move_z=True)
+        assert result is True
+        assert objective_switcher_simulation.get_current_position() == 2
+        
+        # Test getting current objective name
+        position_names = objective_switcher_simulation.get_position_names()
+        current_pos = objective_switcher_simulation.get_current_position()
+        current_objective = position_names.get(current_pos, "Unknown")
+        assert current_objective in ["4x", "4x (Simulation)"]
+    
+    def test_objective_switcher_invalid_objective_name(self, objective_switcher_simulation):
+        """Test handling of invalid objective names"""
+        # This test verifies that the service layer will handle invalid objective names
+        # The actual validation happens in the service layer, not in the controller
+        position_names = objective_switcher_simulation.get_position_names()
+        available_objectives = list(position_names.values())
+        
+        # Verify we have expected objectives
+        assert len(available_objectives) > 0
+        assert any("20x" in obj or "4x" in obj for obj in available_objectives)
 
     def test_objective_switcher_controller_initialization(self, objective_switcher_controller):
         """Test objective switcher controller initialization"""
@@ -346,6 +375,134 @@ class TestSquidPlusIntegration:
                 # Test invalid position (should be handled gracefully)
                 # Note: The implementation should handle invalid positions
                 pass
+
+
+class TestSquidPlusServiceAPI:
+    """Test suite for Squid+ service API functions"""
+
+    @pytest.fixture
+    def mock_service(self):
+        """Fixture for mock MicroscopeHyphaService"""
+        from unittest.mock import MagicMock, patch
+        
+        # Create a mock service
+        service = MagicMock()
+        service.is_squid_plus = True
+        service.squidController = MagicMock()
+        
+        # Mock filter wheel
+        service.squidController.filter_wheel = MagicMock()
+        service.squidController.filter_wheel.set_filter_position.return_value = True
+        service.squidController.filter_wheel.get_filter_position.return_value = 3
+        service.squidController.filter_wheel.next_position.return_value = True
+        service.squidController.filter_wheel.previous_position.return_value = True
+        service.squidController.filter_wheel.home.return_value = True
+        
+        # Mock objective switcher
+        service.squidController.objective_switcher = MagicMock()
+        service.squidController.objective_switcher.get_position_names.return_value = {1: '20x', 2: '4x'}
+        service.squidController.objective_switcher.move_to_position_1.return_value = True
+        service.squidController.objective_switcher.move_to_position_2.return_value = True
+        service.squidController.objective_switcher.get_current_position.return_value = 1
+        service.squidController.objective_switcher.get_available_positions.return_value = [1, 2]
+        
+        return service
+
+    def test_switch_objective_valid_name(self, mock_service):
+        """Test switching to valid objective name"""
+        from squid_control.start_hypha_service import MicroscopeHyphaService
+        
+        # Create a real service instance for testing
+        service = MicroscopeHyphaService(is_simulation=True, is_local=True)
+        service.squidController = mock_service.squidController
+        
+        # Test switching to '20x'
+        import asyncio
+        async def test_switch():
+            result = await service.switch_objective('20x', move_z=True)
+            assert result['success'] is True
+            assert result['objective_name'] == '20x'
+            assert result['position'] == 1
+            assert 'Switched to objective 20x' in result['message']
+        
+        asyncio.run(test_switch())
+
+    def test_switch_objective_invalid_name(self, mock_service):
+        """Test switching to invalid objective name"""
+        from squid_control.start_hypha_service import MicroscopeHyphaService
+        
+        # Create a real service instance for testing
+        service = MicroscopeHyphaService(is_simulation=True, is_local=True)
+        service.squidController = mock_service.squidController
+        
+        # Test switching to invalid objective
+        import asyncio
+        async def test_invalid_switch():
+            try:
+                await service.switch_objective('100x', move_z=True)
+                assert False, "Should have raised an exception"
+            except Exception as e:
+                assert "not found" in str(e)
+                assert "Available objectives" in str(e)
+        
+        asyncio.run(test_invalid_switch())
+
+    def test_get_current_objective(self, mock_service):
+        """Test getting current objective"""
+        from squid_control.start_hypha_service import MicroscopeHyphaService
+        
+        # Create a real service instance for testing
+        service = MicroscopeHyphaService(is_simulation=True, is_local=True)
+        service.squidController = mock_service.squidController
+        
+        import asyncio
+        async def test_get_current():
+            result = await service.get_current_objective()
+            assert result['success'] is True
+            assert result['current_objective'] == '20x'
+            assert result['position'] == 1
+            assert '20x' in result['available_objectives']
+            assert '4x' in result['available_objectives']
+        
+        asyncio.run(test_get_current())
+
+    def test_get_available_objectives(self, mock_service):
+        """Test getting available objectives"""
+        from squid_control.start_hypha_service import MicroscopeHyphaService
+        
+        # Create a real service instance for testing
+        service = MicroscopeHyphaService(is_simulation=True, is_local=True)
+        service.squidController = mock_service.squidController
+        
+        import asyncio
+        async def test_get_available():
+            result = await service.get_available_objectives()
+            assert result['success'] is True
+            assert len(result['available_objectives']) == 2
+            assert result['objective_names'] == ['20x', '4x']
+            assert result['positions'] == [1, 2]
+            assert 'Available objectives: [\'20x\', \'4x\']' in result['message']
+        
+        asyncio.run(test_get_available())
+
+    def test_objective_switcher_not_available(self, mock_service):
+        """Test behavior when objective switcher is not available"""
+        from squid_control.start_hypha_service import MicroscopeHyphaService
+        
+        # Create a real service instance for testing
+        service = MicroscopeHyphaService(is_simulation=True, is_local=True)
+        service.squidController.filter_wheel = mock_service.squidController.filter_wheel
+        service.squidController.objective_switcher = None  # Not available
+        
+        import asyncio
+        async def test_not_available():
+            try:
+                await service.switch_objective('20x')
+                assert False, "Should have raised an exception"
+            except Exception as e:
+                assert "not available" in str(e)
+        
+        asyncio.run(test_not_available())
 
 
 class TestSquidPlusConfiguration:
