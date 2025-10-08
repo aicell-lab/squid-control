@@ -2727,6 +2727,53 @@ class SquidController:
         self._restore_original_velocity(CONFIG.MAX_VELOCITY_X_MM, CONFIG.MAX_VELOCITY_Y_MM)
         return {"success": True, "message": "Scan stop requested"}
 
+    def initialize_objective_switcher(self):
+        """
+        Initialize and home the objective switcher.
+        This should be called AFTER the service/GUI is fully started.
+        Matches the official software pattern where homing happens after GUI init.
+        """
+        if not hasattr(self, 'objective_switcher') or self.objective_switcher is None:
+            logger.warning("No objective switcher to initialize")
+            return False
+        
+        try:
+            xeryon_speed = getattr(CONFIG, 'XERYON_SPEED', 80)
+            
+            logger.info("Homing objective switcher...")
+            self.objective_switcher.home()
+            logger.info("✓ Objective switcher homed successfully")
+            
+            # Set the speed
+            self.objective_switcher.set_speed(xeryon_speed)
+            logger.info(f"Objective switcher speed set to {xeryon_speed}")
+            
+            # Move to initial position based on default objective
+            default_obj = self.objectiveStore.current_objective if hasattr(self, 'objectiveStore') else getattr(CONFIG, 'DEFAULT_OBJECTIVE', '20x')
+            pos1_objs = getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_1', ['20x'])
+            pos2_objs = getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_2', ['4x'])
+            
+            logger.info(f"Default objective: '{default_obj}', Position 1: {pos1_objs}, Position 2: {pos2_objs}")
+            
+            # Check which position the default objective belongs to
+            if default_obj and default_obj in pos1_objs:
+                logger.info(f"Moving to position 1 for default objective: {default_obj}")
+                self.objective_switcher.move_to_position_1(move_z=False)
+            elif default_obj and default_obj in pos2_objs:
+                logger.info(f"Moving to position 2 for default objective: {default_obj}")
+                self.objective_switcher.move_to_position_2(move_z=False)
+            else:
+                # Default to position 1 if no match found
+                logger.warning(f"Default objective '{default_obj}' not found in position lists, defaulting to position 1")
+                self.objective_switcher.move_to_position_1(move_z=False)
+            
+            logger.info("✓ Objective switcher ready")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize objective switcher: {e}")
+            return False
+    
     def _initialize_squid_plus_hardware(self):
         """
         Initialize Squid+ specific hardware components
@@ -2766,35 +2813,7 @@ class SquidController:
                             is_simulation=False
                         )
                         logger.info(f"Objective switcher initialized with hardware (SN: {xeryon_sn})")
-                        
-                        # CRITICAL: Home the objective switcher before use
-                        logger.info("Homing objective switcher...")
-                        self.objective_switcher.home()
-                        
-                        # Set the speed
-                        self.objective_switcher.set_speed(xeryon_speed)
-                        logger.info(f"Objective switcher speed set to {xeryon_speed}")
-                        
-                        # Move to initial position based on default objective
-                        default_obj = self.objectiveStore.current_objective if hasattr(self, 'objectiveStore') else getattr(CONFIG, 'DEFAULT_OBJECTIVE', '20x')
-                        pos1_objs = getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_1', ['20x'])
-                        pos2_objs = getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_2', ['4x'])
-                        
-                        logger.info(f"Default objective: '{default_obj}', Position 1: {pos1_objs}, Position 2: {pos2_objs}")
-                        
-                        # Check which position the default objective belongs to
-                        if default_obj and default_obj in pos1_objs:
-                            logger.info(f"Moving to position 1 for default objective: {default_obj}")
-                            self.objective_switcher.move_to_position_1(move_z=False)
-                        elif default_obj and default_obj in pos2_objs:
-                            logger.info(f"Moving to position 2 for default objective: {default_obj}")
-                            self.objective_switcher.move_to_position_2(move_z=False)
-                        else:
-                            # Default to position 1 if no match found
-                            logger.warning(f"Default objective '{default_obj}' not found in position lists, defaulting to position 1")
-                            self.objective_switcher.move_to_position_1(move_z=False)
-                        
-                        logger.info("✓ Objective switcher ready")
+                        logger.info("⚠️  Objective switcher will be homed after service starts (call initialize_objective_switcher())")
                     else:
                         logger.warning("Xeryon serial number not provided - objective switcher disabled")
             else:

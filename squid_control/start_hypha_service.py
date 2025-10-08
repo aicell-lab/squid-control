@@ -2207,6 +2207,12 @@ class MicroscopeHyphaService:
         webrtc_id = f"video-track-{self.service_id}"
         if not self.is_local: # only start webrtc service in remote mode
             await self.start_webrtc_service(self.server, webrtc_id)
+        
+        # Initialize objective switcher AFTER all services are started (matches official software pattern)
+        if hasattr(self.squidController, 'objective_switcher') and self.squidController.objective_switcher is not None:
+            logger.info("Initializing objective switcher after service startup...")
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, self.squidController.initialize_objective_switcher)
 
 
     async def initialize_zarr_manager(self, camera):
