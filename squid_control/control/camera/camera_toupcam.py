@@ -257,10 +257,13 @@ class Camera(object):
             
             # Set temperature and fan if available
             if self._capabilities['has_TEC']:
-                fan_speed = getattr(CONFIG, 'FAN_SPEED_DEFAULT', 1)
-                temp = getattr(CONFIG, 'TEMPERATURE_DEFAULT', 20)
-                self._set_fan_speed(fan_speed)
-                self.set_temperature(temp)
+                try:
+                    fan_speed = getattr(CONFIG, 'FAN_SPEED_DEFAULT', 1)
+                    temp = getattr(CONFIG, 'TEMPERATURE_DEFAULT', 20)
+                    self._set_fan_speed(fan_speed)
+                    self.set_temperature(temp)
+                except Exception as e:
+                    logger.warning(f"Failed to configure temperature/fan (continuing anyway): {e}")
             
             # Set frame format to RAW
             self.camera.put_Option(toupcam.TOUPCAM_OPTION_RAW, 1)  # 1 = RAW mode
@@ -275,17 +278,14 @@ class Camera(object):
                 self._set_black_level(black_level)
             
             # Set binning from CONFIG
+            # This automatically sets the resolution to match the binning level
             binning = getattr(CONFIG, 'BINNING_FACTOR_DEFAULT', 2)
             self.set_binning(binning)
             
-            # Set ROI from CONFIG if specified
-            roi_x = getattr(CONFIG, 'ROI_OFFSET_X_DEFAULT', 0)
-            roi_y = getattr(CONFIG, 'ROI_OFFSET_Y_DEFAULT', 0)
-            roi_w = getattr(CONFIG, 'ROI_WIDTH_DEFAULT', self.WidthMax)
-            roi_h = getattr(CONFIG, 'ROI_HEIGHT_DEFAULT', self.HeightMax)
-            
-            if roi_x != 0 or roi_y != 0 or roi_w != self.WidthMax or roi_h != self.HeightMax:
-                self.set_ROI(roi_x, roi_y, roi_w, roi_h)
+            # NOTE: ROI setting is intentionally skipped here to match official Squid software behavior.
+            # Setting ROI after binning causes errors because ROI dimensions from config are for unbinned resolution.
+            # The binning operation already sets the camera to the correct resolution for the binning level.
+            # Hardware cropping (ROI) should be implemented separately if needed, with binning-aware calculations.
             
             logger.info("Camera configuration complete")
             
@@ -421,9 +421,10 @@ class Camera(object):
                 self.current_frame = current_image
                 
                 # Call external callback if set and enabled
-                if self.new_image_callback_external is not None and self.callback_is_enabled and self.is_live:
+                # Note: Toupcam doesn't use is_live flag - callback fires for all frames when enabled
+                if self.new_image_callback_external is not None and self.callback_is_enabled:
                     try:
-                        self.new_image_callback_external(current_image)
+                        self.new_image_callback_external(self)  # Pass self (camera object) like default camera does
                     except Exception as e:
                         logger.error(f"External callback error: {e}")
                 
@@ -433,13 +434,25 @@ class Camera(object):
                 logger.error(f"Frame callback error: {e}")
 
     def start_streaming(self):
-        """Start camera streaming."""
+        """
+        Start camera streaming.
+        
+        Note: If a callback has been set via set_callback(), it will be automatically
+        enabled when streaming starts. This matches the Toupcam usage pattern.
+        """
         if not self._raw_camera_stream_started:
             try:
                 self.camera.StartPullModeWithCallback(self._event_callback, self)
                 self._raw_camera_stream_started = True
                 self.is_streaming = True
-                logger.info("Streaming started")
+                
+                # Auto-enable callback if one has been set
+                if self.new_image_callback_external is not None:
+                    self.callback_is_enabled = True
+                    logger.info("Streaming started with callback enabled")
+                else:
+                    logger.info("Streaming started")
+                    
             except toupcam.HRESULTException as ex:
                 logger.error(f"Failed to start streaming: {ex}")
                 raise
@@ -695,13 +708,38 @@ class Camera(object):
         
         return True
 
-    def read_frame(self):
+    def read_frame(self, timeout_s=None):
         """
-        Read the most recent frame from the camera.
+        Read a frame from the camera, waiting if necessary for a new frame.
+        
+        This method waits for a NEW frame to arrive after being called, rather than
+        just returning whatever was last captured. This ensures we get a fresh frame
+        after each trigger.
+        
+        Args:
+            timeout_s: Maximum time to wait for a frame in seconds. If None, 
+                      calculates based on exposure time.
         
         Returns:
-            numpy array with the image, or None if no frame available
+            numpy array with the image, or None if timeout occurs
         """
+        # Calculate timeout based on exposure time if not provided
+        if timeout_s is None:
+            timeout_s = (self.exposure_time / 1000) * 1.02 + 4  # exposure in ms, add margin
+        
+        timeout_end_time_s = time.time() + timeout_s
+        starting_frame_id = self.frame_ID
+        
+        # Wait for a NEW frame (frame ID changes)
+        while time.time() < timeout_end_time_s:
+            if self.frame_ID != starting_frame_id and self.current_frame is not None:
+                return self.current_frame
+            time.sleep(0.001)  # Small sleep to prevent CPU spinning
+        
+        # Timeout occurred
+        logger.warning(f"Timed out after {timeout_s:.2f}s waiting for a frame (starting_frame_id={starting_frame_id}, current_frame_id={self.frame_ID})")
+        
+        # Return current frame even if old, better than None
         return self.current_frame
 
 

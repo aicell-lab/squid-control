@@ -106,7 +106,10 @@ class SquidController:
         # Create objects after configuration is loaded to use updated CONFIG values
         self.objectiveStore = core.ObjectiveStore()
         print(f"ObjectiveStore initialized with default objective: {self.objectiveStore.current_objective}")
-        camera, camera_fc = get_camera(CONFIG.CAMERA_TYPE)
+        
+        # Get camera modules - use separate camera types for main and focus cameras
+        focus_camera_type = getattr(CONFIG, 'FOCUS_CAMERA_TYPE', CONFIG.CAMERA_TYPE)
+        camera, camera_fc = get_camera(CONFIG.CAMERA_TYPE, focus_camera_type)
         
         # Initialize Squid+ specific hardware (will be initialized later after microcontroller setup)
         self.filter_wheel = None
@@ -136,28 +139,42 @@ class SquidController:
                     sn_camera_focus = camera_fc.get_sn_by_model(
                         CONFIG.FOCUS_CAMERA_MODEL
                     )
+                    
+                    # Open main camera
                     self.camera = camera.Camera(
                         sn=sn_camera_main,
                         rotate_image_angle=CONFIG.ROTATE_IMAGE_ANGLE,
                         flip_image=CONFIG.FLIP_IMAGE,
                     )
                     self.camera.open()
-                    self.camera_focus = camera_fc.Camera(sn=sn_camera_focus)
-                    self.camera_focus.open()
+                    
+                    # Open focus camera only if it was found
+                    if sn_camera_focus is not None:
+                        print(f"Found focus camera: {CONFIG.FOCUS_CAMERA_MODEL} (SN: {sn_camera_focus})")
+                        self.camera_focus = camera_fc.Camera(sn=sn_camera_focus)
+                        self.camera_focus.open()
+                    else:
+                        print(f"⚠️  Focus camera not found: {CONFIG.FOCUS_CAMERA_MODEL}")
+                        print(f"   Laser autofocus will not be available.")
+                        print(f"   Using simulated focus camera instead.")
+                        self.camera_focus = camera_fc.Camera_Simulation()
+                        self.camera_focus.open()
                 else:
                     self.camera = camera.Camera(
                         rotate_image_angle=CONFIG.ROTATE_IMAGE_ANGLE,
                         flip_image=CONFIG.FLIP_IMAGE,
                     )
                     self.camera.open()
-            except:
+            except Exception as e:
+                print(f"! Camera initialization failed: {e}")
+                print("! Using simulated camera instead !")
                 if CONFIG.SUPPORT_LASER_AUTOFOCUS:
                     self.camera = camera.Camera_Simulation(
                         rotate_image_angle=CONFIG.ROTATE_IMAGE_ANGLE,
                         flip_image=CONFIG.FLIP_IMAGE,
                     )
                     self.camera.open()
-                    self.camera_focus = camera.Camera_Simulation()
+                    self.camera_focus = camera_fc.Camera_Simulation()
                     self.camera_focus.open()
                 else:
                     self.camera = camera.Camera_Simulation(
@@ -165,7 +182,6 @@ class SquidController:
                         flip_image=CONFIG.FLIP_IMAGE,
                     )
                     self.camera.open()
-                print("! camera not detected, using simulated camera !")
             self.microcontroller = microcontroller.Microcontroller(
                 version=CONFIG.CONTROLLER_VERSION
             )
