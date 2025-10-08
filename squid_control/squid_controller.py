@@ -62,7 +62,7 @@ logger = setup_logging("squid_controller.log")
 class SquidController:
     fps_software_trigger= 10
 
-    def __init__(self,is_simulation, *args, **kwargs):
+    def __init__(self, is_simulation, *args, **kwargs):
         super().__init__(*args,**kwargs)
         self.data_channel = None
         self.is_simulation = is_simulation
@@ -72,7 +72,33 @@ class SquidController:
         if is_simulation:
             config_path = os.path.join(os.path.dirname(path), 'config', 'configuration_HCS_v2_example.ini')
         else:
-            config_path = os.path.join(os.path.dirname(path), 'config', 'configuration_HCS_v2.ini')
+            # Auto-detect configuration file based on available files
+            # Check main squid_control directory first
+            squid_plus_config_main = os.path.join(os.path.dirname(path), 'configuration_Squid+.ini')
+            hcs_config_main = os.path.join(os.path.dirname(path), 'configuration_HCS_v2.ini')
+            
+            if os.path.exists(squid_plus_config_main):
+                config_path = squid_plus_config_main
+                print("🔬 Detected Squid+ microscope - using Squid+ configuration")
+            elif os.path.exists(hcs_config_main):
+                config_path = hcs_config_main
+                print("🔬 Detected original Squid microscope - using HCS_v2 configuration")
+            else:
+                # Fall back to config directory
+                config_dir = os.path.join(os.path.dirname(path), 'config')
+                squid_plus_config = os.path.join(config_dir, 'configuration_Squid+.ini')
+                hcs_config = os.path.join(config_dir, 'configuration_HCS_v2.ini')
+                
+                if os.path.exists(squid_plus_config):
+                    config_path = squid_plus_config
+                    print("🔬 Detected Squid+ microscope - using Squid+ configuration from config directory")
+                elif os.path.exists(hcs_config):
+                    config_path = hcs_config
+                    print("🔬 Detected original Squid microscope - using HCS_v2 configuration from config directory")
+                else:
+                    # Final fallback
+                    config_path = hcs_config
+                    print("⚠️  No configuration file found, using default path (may fail)")
 
         print(f"Loading configuration from: {config_path}")
         load_config(config_path, False)

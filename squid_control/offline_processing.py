@@ -43,17 +43,43 @@ class OfflineProcessor:
         self._ensure_config_loaded()
 
     def _ensure_config_loaded(self):
-        """Ensure the configuration is properly loaded."""
+        """Ensure the configuration is properly loaded with auto-detection."""
         from squid_control.control.config import CONFIG, load_config
         import os
         
         # Check if DEFAULT_SAVING_PATH is already loaded
         if not CONFIG.DEFAULT_SAVING_PATH:
-            print("Configuration not loaded, attempting to load HCS_v2 config...")
+            print("Configuration not loaded, attempting auto-detection...")
             try:
-                # Try to load the config file
+                # Use the same auto-detection logic as SquidController
                 current_dir = Path(__file__).parent
-                config_path = current_dir / "config" / "configuration_HCS_v2.ini"
+                
+                # Check main squid_control directory first
+                squid_plus_config_main = current_dir / "configuration_Squid+.ini"
+                hcs_config_main = current_dir / "configuration_HCS_v2.ini"
+                
+                if squid_plus_config_main.exists():
+                    config_path = squid_plus_config_main
+                    print("🔬 OfflineProcessor detected Squid+ microscope - using Squid+ configuration")
+                elif hcs_config_main.exists():
+                    config_path = hcs_config_main
+                    print("🔬 OfflineProcessor detected original Squid microscope - using HCS_v2 configuration")
+                else:
+                    # Fall back to config directory
+                    squid_plus_config = current_dir / "config" / "configuration_Squid+.ini"
+                    hcs_config = current_dir / "config" / "configuration_HCS_v2.ini"
+                    
+                    if squid_plus_config.exists():
+                        config_path = squid_plus_config
+                        print("🔬 OfflineProcessor detected Squid+ microscope - using Squid+ configuration from config directory")
+                    elif hcs_config.exists():
+                        config_path = hcs_config
+                        print("🔬 OfflineProcessor detected original Squid microscope - using HCS_v2 configuration from config directory")
+                    else:
+                        # Final fallback
+                        config_path = hcs_config
+                        print("⚠️ OfflineProcessor: No configuration file found, using default path (may fail)")
+                
                 if config_path.exists():
                     load_config(str(config_path), None)
                     print(f"Configuration loaded: DEFAULT_SAVING_PATH = {CONFIG.DEFAULT_SAVING_PATH}")
