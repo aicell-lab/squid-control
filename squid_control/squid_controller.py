@@ -2776,18 +2776,23 @@ class SquidController:
                         logger.info(f"Objective switcher speed set to {xeryon_speed}")
                         
                         # Move to initial position based on default objective
-                        default_obj = getattr(CONFIG, 'DEFAULT_OBJECTIVE', '20x')
+                        default_obj = self.objectiveStore.current_objective if hasattr(self, 'objectiveStore') else getattr(CONFIG, 'DEFAULT_OBJECTIVE', '20x')
                         pos1_objs = getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_1', ['20x'])
                         pos2_objs = getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_2', ['4x'])
                         
-                        if default_obj in pos1_objs:
+                        logger.info(f"Default objective: '{default_obj}', Position 1: {pos1_objs}, Position 2: {pos2_objs}")
+                        
+                        # Check which position the default objective belongs to
+                        if default_obj and default_obj in pos1_objs:
                             logger.info(f"Moving to position 1 for default objective: {default_obj}")
                             self.objective_switcher.move_to_position_1(move_z=False)
-                        elif default_obj in pos2_objs:
+                        elif default_obj and default_obj in pos2_objs:
                             logger.info(f"Moving to position 2 for default objective: {default_obj}")
                             self.objective_switcher.move_to_position_2(move_z=False)
                         else:
-                            logger.warning(f"Default objective '{default_obj}' not found in position lists, staying at home")
+                            # Default to position 1 if no match found
+                            logger.warning(f"Default objective '{default_obj}' not found in position lists, defaulting to position 1")
+                            self.objective_switcher.move_to_position_1(move_z=False)
                         
                         logger.info("✓ Objective switcher ready")
                     else:

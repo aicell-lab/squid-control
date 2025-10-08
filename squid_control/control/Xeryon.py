@@ -6,7 +6,8 @@ import math
 import serial.tools.list_ports
 import re
 
-SETTINGS_FILENAME = "control/Xeryon_settings.txt"
+import os
+SETTINGS_FILENAME = os.path.join(os.path.dirname(__file__), "Xeryon_settings.txt")
 LIBRARY_VERSION = "v1.88"
 
 # DEBUG MODE
