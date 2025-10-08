@@ -16,21 +16,23 @@ logger = logging.getLogger(__name__)
 class ObjectiveSwitcherController:
     """
     Controller for Xeryon objective switcher in Squid+ microscope
-    Supports both real hardware and simulation modes
+    Matches the official ObjectiveChanger2PosController implementation
     
-    This class interfaces with the Xeryon linear actuator to switch between objectives.
+    CRITICAL: You MUST call home() before using any movement commands!
     """
     
     def __init__(self, serial_number: str = None, stage=None, is_simulation=False):
+        super().__init__()
         self.serial_number = serial_number
         self.stage = stage
         self.is_simulation = is_simulation
         
         # Position settings (in mm) - these are the DPOS values sent to Xeryon
+        # These MUST match the positions in Xeryon_settings.txt LLIM and HLIM
         self.position1 = -19  # Position 1 (e.g., 20x objective)
-        self.position2 = 19    # Position 2 (e.g., 4x objective)
+        self.position2 = 19   # Position 2 (e.g., 4x objective)
         self.current_position = None
-        self.retracted = False
+        self.retracted = False  # Track if Z was retracted for position 2
         
         # Get offset from configuration
         self.position2_offset = getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM', 2.0)
@@ -64,7 +66,7 @@ class ObjectiveSwitcherController:
             if port is None:
                 raise Exception(f"Xeryon objective switcher with SN {serial_number} not found")
             
-            # Initialize Xeryon controller - exact same as official software
+            # Initialize Xeryon controller - EXACT same as official software
             logger.info(f"Connecting to Xeryon objective switcher on port {port}")
             self.controller = Xeryon(port, 115200)
             self.axisX = self.controller.addAxis(Stage.XLA_1250_3N, "Z")
@@ -72,6 +74,7 @@ class ObjectiveSwitcherController:
             self.controller.reset()
             
             logger.info("Xeryon objective switcher initialized successfully")
+            logger.warning("⚠️  You MUST call home() before using movement commands!")
             
         except Exception as e:
             logger.error(f"Failed to initialize Xeryon objective switcher: {e}")
@@ -79,7 +82,8 @@ class ObjectiveSwitcherController:
     
     def home(self) -> bool:
         """
-        Home the objective switcher
+        Home the objective switcher - CRITICAL step before any movements!
+        This finds the index position and establishes the reference point.
         
         Returns:
             bool: True if successful, False otherwise
@@ -90,19 +94,45 @@ class ObjectiveSwitcherController:
                 self.current_position = 0
                 return True
             else:
-                # Real hardware homing - use Xeryon's findIndex method
-                logger.info("Homing objective switcher")
+                # Real hardware homing - EXACT same as official software
+                logger.info("Homing objective switcher (this will take a few seconds)...")
                 self.axisX.stopScan()
                 self.axisX.findIndex()
                 self.current_position = 0
+                logger.info("✓ Objective switcher homed successfully")
                 return True
         except Exception as e:
             logger.error(f"Failed to home objective switcher: {e}")
             return False
     
+    def move_to_zero(self) -> bool:
+        """
+        Move to the zero position (home position)
+        
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            if self.is_simulation:
+                logger.info("Simulation: Moving to zero position")
+                self.current_position = 0
+                return True
+            else:
+                logger.info("Moving to zero position")
+                self.axisX.setDPOS(0)
+                self.current_position = 0
+                return True
+        except Exception as e:
+            logger.error(f"Failed to move to zero: {e}")
+            return False
+    
     def move_to_position_1(self, move_z: bool = True) -> bool:
         """
         Move to position 1 (e.g., 20x objective)
+        
+        CRITICAL ORDER:
+        1. Move Xeryon axis first
+        2. THEN restore Z if coming from position 2
         
         Args:
             move_z (bool): Whether to move Z stage to compensate for objective change
@@ -121,21 +151,22 @@ class ObjectiveSwitcherController:
                 self.current_position = 1
                 return True
             else:
-                # Real hardware movement - use Xeryon's setDPOS method
-                logger.info(f"Moving to objective position 1 (DPOS={self.position1}mm)")
+                # Real hardware movement - EXACT same sequence as official software
+                logger.info(f"Moving objective switcher to position 1 (DPOS={self.position1}mm)...")
                 
-                # Move the Xeryon axis to position 1
+                # STEP 1: Move the Xeryon axis FIRST
                 self.axisX.setDPOS(self.position1)
                 
-                # Handle Z stage compensation if switching from position 2
-                if self.stage and self.current_position == 2 and self.retracted:
+                # STEP 2: Then handle Z stage compensation if switching from position 2
+                if self.stage is not None and self.current_position == 2 and self.retracted:
+                    # Revert retracting Z by position2_offset
                     if move_z:
                         logger.info(f"Reverting Z retraction: moving Z by +{self.position2_offset}mm")
                         self.stage.move_z(self.position2_offset)
                     self.retracted = False
                 
                 self.current_position = 1
-                logger.info("Successfully moved to objective position 1")
+                logger.info("✓ Successfully moved to objective position 1")
                 return True
         except Exception as e:
             logger.error(f"Failed to move to position 1: {e}")
@@ -144,6 +175,10 @@ class ObjectiveSwitcherController:
     def move_to_position_2(self, move_z: bool = True) -> bool:
         """
         Move to position 2 (e.g., 4x objective)
+        
+        CRITICAL ORDER (opposite of position 1!):
+        1. Retract Z stage FIRST (to avoid collision)
+        2. THEN move Xeryon axis
         
         Args:
             move_z (bool): Whether to move Z stage to compensate for objective change
@@ -162,22 +197,22 @@ class ObjectiveSwitcherController:
                 self.current_position = 2
                 return True
             else:
-                # Real hardware movement - use Xeryon's setDPOS method
-                logger.info(f"Moving to objective position 2 (DPOS={self.position2}mm)")
+                # Real hardware movement - EXACT same sequence as official software
+                logger.info(f"Moving objective switcher to position 2 (DPOS={self.position2}mm)...")
                 
-                # Handle Z stage compensation BEFORE moving the objective
-                # This is important to avoid collision
-                if self.stage and self.current_position == 1:
+                # STEP 1: Move the Xeryon axis FIRST
+                self.axisX.setDPOS(self.position2)
+                
+                # STEP 2: Then handle Z stage compensation if switching from position 1
+                if self.stage is not None and self.current_position == 1:
+                    # Retract Z by position2_offset to avoid collision
                     if move_z:
                         logger.info(f"Retracting Z stage: moving Z by -{self.position2_offset}mm")
                         self.stage.move_z(-self.position2_offset)
                     self.retracted = True
                 
-                # Move the Xeryon axis to position 2
-                self.axisX.setDPOS(self.position2)
-                
                 self.current_position = 2
-                logger.info("Successfully moved to objective position 2")
+                logger.info("✓ Successfully moved to objective position 2")
                 return True
         except Exception as e:
             logger.error(f"Failed to move to position 2: {e}")
@@ -188,7 +223,7 @@ class ObjectiveSwitcherController:
         Get the current objective position
         
         Returns:
-            Optional[int]: Current position (1, 2, or None if unknown)
+            Optional[int]: Current position (0=home, 1=position1, 2=position2, or None if unknown)
         """
         return self.current_position
     
@@ -197,7 +232,7 @@ class ObjectiveSwitcherController:
         Set the movement speed of the objective switcher
         
         Args:
-            speed (float): Speed value
+            speed (float): Speed value (typically 80-100)
             
         Returns:
             bool: True if successful, False otherwise
@@ -207,7 +242,7 @@ class ObjectiveSwitcherController:
                 logger.info(f"Simulation: Setting objective switcher speed to {speed}")
                 return True
             else:
-                # Real hardware speed setting - use Xeryon's setSpeed method
+                # Real hardware speed setting - EXACT same as official software
                 logger.info(f"Setting objective switcher speed to {speed}")
                 self.axisX.setSpeed(speed)
                 return True
@@ -252,13 +287,20 @@ class ObjectiveSwitcherController:
 class ObjectiveSwitcherSimulation:
     """
     Simulation mode for objective switcher controller
+    Matches the official ObjectiveChanger2PosController_Simulation implementation
     """
     
     def __init__(self, stage=None):
+        super().__init__()
         self.stage = stage
         self.current_position = None
         self.retracted = False
-        self.position2_offset = 2.0  # Default offset
+        
+        # Position settings
+        self.position1 = -19
+        self.position2 = 19
+        self.position2_offset = getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM', 2.0)
+        
         logger.info("Objective switcher simulation initialized")
     
     def home(self) -> bool:
@@ -267,10 +309,17 @@ class ObjectiveSwitcherSimulation:
         self.current_position = 0
         return True
     
+    def move_to_zero(self) -> bool:
+        """Simulation version of move_to_zero"""
+        logger.info("Simulation: Moving to zero position")
+        self.current_position = 0
+        return True
+    
     def move_to_position_1(self, move_z: bool = True) -> bool:
         """Simulation version of move_to_position_1"""
         logger.info("Simulation: Moving to objective position 1")
-        if self.stage and self.current_position == 2 and self.retracted:
+        if self.stage is not None and self.current_position == 2 and self.retracted:
+            # Revert retracting Z by position2_offset
             if move_z:
                 self.stage.move_z(self.position2_offset)
             self.retracted = False
@@ -280,7 +329,8 @@ class ObjectiveSwitcherSimulation:
     def move_to_position_2(self, move_z: bool = True) -> bool:
         """Simulation version of move_to_position_2"""
         logger.info("Simulation: Moving to objective position 2")
-        if self.stage and self.current_position == 1:
+        if self.stage is not None and self.current_position == 1:
+            # Retract Z by position2_offset
             if move_z:
                 self.stage.move_z(-self.position2_offset)
             self.retracted = True

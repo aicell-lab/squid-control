@@ -2753,6 +2753,7 @@ class SquidController:
                 from squid_control.control.objective_switcher import ObjectiveSwitcherController, ObjectiveSwitcherSimulation
                 
                 xeryon_sn = getattr(CONFIG, 'XERYON_SERIAL_NUMBER', '')
+                xeryon_speed = getattr(CONFIG, 'XERYON_SPEED', 80)
                 
                 if self.is_simulation:
                     self.objective_switcher = ObjectiveSwitcherSimulation(stage=self.navigationController)
@@ -2765,6 +2766,30 @@ class SquidController:
                             is_simulation=False
                         )
                         logger.info(f"Objective switcher initialized with hardware (SN: {xeryon_sn})")
+                        
+                        # CRITICAL: Home the objective switcher before use
+                        logger.info("Homing objective switcher...")
+                        self.objective_switcher.home()
+                        
+                        # Set the speed
+                        self.objective_switcher.set_speed(xeryon_speed)
+                        logger.info(f"Objective switcher speed set to {xeryon_speed}")
+                        
+                        # Move to initial position based on default objective
+                        default_obj = getattr(CONFIG, 'DEFAULT_OBJECTIVE', '20x')
+                        pos1_objs = getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_1', ['20x'])
+                        pos2_objs = getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_2', ['4x'])
+                        
+                        if default_obj in pos1_objs:
+                            logger.info(f"Moving to position 1 for default objective: {default_obj}")
+                            self.objective_switcher.move_to_position_1(move_z=False)
+                        elif default_obj in pos2_objs:
+                            logger.info(f"Moving to position 2 for default objective: {default_obj}")
+                            self.objective_switcher.move_to_position_2(move_z=False)
+                        else:
+                            logger.warning(f"Default objective '{default_obj}' not found in position lists, staying at home")
+                        
+                        logger.info("✓ Objective switcher ready")
                     else:
                         logger.warning("Xeryon serial number not provided - objective switcher disabled")
             else:
