@@ -546,6 +546,38 @@ class Microcontroller:
         self.send_command(cmd)
         # while self.mcu_cmd_execution_in_progress == True:
         #     time.sleep(self._motion_status_checking_interval)
+    
+    def move_w_usteps(self, usteps):
+        """
+        Move W axis (filter wheel) by microsteps.
+        Only used when filter wheel is enabled in Squid+ microscopes.
+        Safe to have on older microscopes - just won't be called.
+        """
+        direction = getattr(CONFIG, 'STAGE_MOVEMENT_SIGN_W', 1) * np.sign(usteps)
+        n_microsteps_abs = abs(usteps)
+        # if n_microsteps_abs exceed the max value that can be sent in one go
+        while n_microsteps_abs >= (2**32) / 2:
+            n_microsteps_partial_abs = (2**32) / 2 - 1
+            n_microsteps_partial = direction * n_microsteps_partial_abs
+            payload = self._int_to_payload(n_microsteps_partial, 4)
+            cmd = bytearray(self.tx_buffer_length)
+            cmd[1] = CMD_SET.MOVE_W
+            cmd[2] = payload >> 24
+            cmd[3] = (payload >> 16) & 0xFF
+            cmd[4] = (payload >> 8) & 0xFF
+            cmd[5] = payload & 0xFF
+            self.send_command(cmd)
+            n_microsteps_abs = n_microsteps_abs - n_microsteps_partial_abs
+
+        n_microsteps = direction * n_microsteps_abs
+        payload = self._int_to_payload(n_microsteps, 4)
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.MOVE_W
+        cmd[2] = payload >> 24
+        cmd[3] = (payload >> 16) & 0xFF
+        cmd[4] = (payload >> 8) & 0xFF
+        cmd[5] = payload & 0xFF
+        self.send_command(cmd)
 
     def set_off_set_velocity_x(self, off_set_velocity):
         # off_set_velocity is in mm/s
@@ -619,6 +651,20 @@ class Microcontroller:
         # while self.mcu_cmd_execution_in_progress == True:
         #     time.sleep(self._motion_status_checking_interval)
         #     # to do: add timeout
+    
+    def home_w(self):
+        """
+        Home W axis (filter wheel).
+        Only used when filter wheel is enabled in Squid+ microscopes.
+        Safe to have on older microscopes - just won't be called.
+        """
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.HOME_OR_ZERO
+        cmd[2] = AXIS.W
+        cmd[3] = int(
+            (getattr(CONFIG, 'STAGE_MOVEMENT_SIGN_W', 1) + 1) / 2
+        )  # "move backward" if SIGN is 1, "move forward" if SIGN is -1
+        self.send_command(cmd)
 
     def home_xy(self):
         cmd = bytearray(self.tx_buffer_length)
@@ -671,6 +717,18 @@ class Microcontroller:
         # while self.mcu_cmd_execution_in_progress == True:
         #     time.sleep(self._motion_status_checking_interval)
         #     # to do: add timeout
+    
+    def zero_w(self):
+        """
+        Zero W axis (filter wheel) position.
+        Only used when filter wheel is enabled in Squid+ microscopes.
+        Safe to have on older microscopes - just won't be called.
+        """
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.HOME_OR_ZERO
+        cmd[2] = AXIS.W
+        cmd[3] = HOME_OR_ZERO.ZERO
+        self.send_command(cmd)
 
     def configure_stage_pid(
         self, axis, transitions_per_revolution, flip_direction=False
@@ -803,6 +861,28 @@ class Microcontroller:
         self.set_limit_switch_polarity(AXIS.Y, CONFIG.Y_HOME_SWITCH_POLARITY)
         self.wait_till_operation_is_completed()
         self.set_limit_switch_polarity(AXIS.Z, CONFIG.Z_HOME_SWITCH_POLARITY)
+        self.wait_till_operation_is_completed()
+    
+    def configure_squidfilter(self):
+        """
+        Configure W axis motor for filter wheel (Squid+ only).
+        This should only be called when FILTER_CONTROLLER_ENABLE is True.
+        Safe to have on older microscopes - just won't be called.
+        """
+        self.set_leadscrew_pitch(AXIS.W, getattr(CONFIG, 'SCREW_PITCH_W_MM', 1.0))
+        self.wait_till_operation_is_completed()
+        self.configure_motor_driver(
+            AXIS.W,
+            getattr(CONFIG, 'MICROSTEPPING_DEFAULT_W', 64),
+            getattr(CONFIG, 'W_MOTOR_RMS_CURRENT_mA', 500),
+            getattr(CONFIG, 'W_MOTOR_I_HOLD', 0.5),
+        )
+        self.wait_till_operation_is_completed()
+        self.set_max_velocity_acceleration(
+            AXIS.W,
+            getattr(CONFIG, 'MAX_VELOCITY_W_mm', 10.0),
+            getattr(CONFIG, 'MAX_ACCELERATION_W_mm', 50.0),
+        )
         self.wait_till_operation_is_completed()
 
     def ack_joystick_button_pressed(self):

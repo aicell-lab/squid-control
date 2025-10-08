@@ -196,6 +196,13 @@ class SquidController:
 
         # configure the actuators
         self.microcontroller.configure_actuators()
+        
+        # Configure W-axis motor for filter wheel if enabled (Squid+ only)
+        if getattr(CONFIG, 'FILTER_CONTROLLER_ENABLE', False):
+            logger.info("Configuring W-axis motor for filter wheel...")
+            self.microcontroller.configure_squidfilter()
+            time.sleep(0.5)
+            logger.info("✓ Filter wheel motor configured")
 
         self.configurationManager = core.ConfigurationManager(
             filename=CONFIG.CHANNEL_CONFIGURATIONS_PATH

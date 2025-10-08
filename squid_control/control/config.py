@@ -676,8 +676,30 @@ class BaseConfig(BaseModel):
     Z_HOME_SWITCH_POLARITY: int = 2
 
     # Squid+ Specific Features
-    # Filter Wheel Control
+    # Filter Wheel Control (W Axis Motor)
     FILTER_CONTROLLER_ENABLE: bool = False
+    SQUID_FILTERWHEEL_MIN_INDEX: int = 1
+    SQUID_FILTERWHEEL_MAX_INDEX: int = 8
+    SQUID_FILTERWHEEL_OFFSET: float = 0.008  # mm offset after homing
+    SQUID_FILTERWHEEL_HOMING_ENABLED: bool = True
+    SQUID_FILTERWHEEL_MOTORSLOTINDEX: int = 3  # W axis = motor slot 3
+    SQUID_FILTERWHEEL_TRANSITIONS_PER_REVOLUTION: int = 4000  # For encoder PID
+    
+    # W Axis Configuration (Filter Wheel Motor)
+    SCREW_PITCH_W_MM: float = 1.0
+    MICROSTEPPING_DEFAULT_W: int = 64
+    FULLSTEPS_PER_REV_W: int = 200
+    STAGE_MOVEMENT_SIGN_W: int = 1
+    MAX_VELOCITY_W_mm: float = 10.0
+    MAX_ACCELERATION_W_mm: float = 50.0
+    W_MOTOR_RMS_CURRENT_mA: int = 500
+    W_MOTOR_I_HOLD: float = 0.5
+    HAS_ENCODER_W: bool = False
+    ENCODER_FLIP_DIR_W: bool = False
+    PID_P_W: int = 0
+    PID_I_W: int = 0
+    PID_D_W: int = 0
+    ENABLE_PID_W: bool = False
     
     # Objective Switcher (Xeryon)
     USE_XERYON: bool = False
