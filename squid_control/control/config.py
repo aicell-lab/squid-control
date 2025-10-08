@@ -1195,6 +1195,32 @@ def get_microscope_configuration_data(config_section="all", include_defaults=Tru
             }
         }
 
+    # Add microscope type and Squid+ features
+    if config_section.lower() == "all" or config_section.lower() == "microscope_type":
+        # Determine microscope type based on configuration
+        has_filter_wheel = getattr(CONFIG, 'FILTER_CONTROLLER_ENABLE', False)
+        has_objective_switcher = getattr(CONFIG, 'USE_XERYON', False)
+        is_squid_plus = has_filter_wheel or has_objective_switcher
+        
+        config_data["microscope_type"] = {
+            "type": "Squid+" if is_squid_plus else "Squid",
+            "is_squid_plus": is_squid_plus,
+            "features": {
+                "filter_wheel": {
+                    "enabled": has_filter_wheel,
+                    "description": "Automated filter wheel for fluorescence imaging" if has_filter_wheel else "Not available",
+                    "filter_positions": getattr(CONFIG, 'SQUID_FILTERWHEEL_MAX_INDEX', 8) if has_filter_wheel else 0
+                },
+                "objective_switcher": {
+                    "enabled": has_objective_switcher,
+                    "description": "Automated objective switching between different magnifications" if has_objective_switcher else "Not available",
+                    "available_objectives": getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_1', ["20x"]) + getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_2', ["4x"]) if has_objective_switcher else []
+                },
+                "inverted_objective": getattr(CONFIG, 'INVERTED_OBJECTIVE', False),
+                "description": "Squid+ microscope with advanced features for automated imaging" if is_squid_plus else "Standard Squid microscope for basic imaging"
+            }
+        }
+
     # Add metadata
     config_data["metadata"] = {
         "simulation_mode": is_simulation,

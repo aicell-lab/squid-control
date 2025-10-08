@@ -2805,11 +2805,11 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    def get_microscope_configuration(self, config_section: str = Field("all", description="Configuration section to retrieve ('all', 'camera', 'stage', 'illumination', 'acquisition', 'limits', 'hardware', 'wellplate', 'optics', 'autofocus')"), include_defaults: bool = Field(True, description="Whether to include default values from config.py"), context=None):
+    def get_microscope_configuration(self, config_section: str = Field("all", description="Configuration section to retrieve ('all', 'camera', 'stage', 'illumination', 'acquisition', 'limits', 'hardware', 'wellplate', 'optics', 'autofocus', 'microscope_type')"), include_defaults: bool = Field(True, description="Whether to include default values from config.py"), context=None):
         """
         Get microscope configuration information in JSON format.
-        Input: config_section: str = Field("all", description="Configuration section to retrieve ('all', 'camera', 'stage', 'illumination', 'acquisition', 'limits', 'hardware', 'wellplate', 'optics', 'autofocus')"), include_defaults: bool = Field(True, description="Whether to include default values from config.py")
-        Returns: Configuration data as a JSON object
+        Input: config_section: str = Field("all", description="Configuration section to retrieve ('all', 'camera', 'stage', 'illumination', 'acquisition', 'limits', 'hardware', 'wellplate', 'optics', 'autofocus', 'microscope_type')"), include_defaults: bool = Field(True, description="Whether to include default values from config.py")
+        Returns: Configuration data as a JSON object including microscope type ('Squid' or 'Squid+') and feature settings
         """
         try:
             # Check authentication
