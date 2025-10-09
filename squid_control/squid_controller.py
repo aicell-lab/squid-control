@@ -256,10 +256,6 @@ class SquidController:
 
         # Initialize Squid+ hardware after basic setup (creates objects but doesn't home yet)
         self._initialize_squid_plus_hardware()
-        
-        # Home Squid+ hardware AFTER all other initialization is complete
-        # This must be done after the microcontroller is idle to prevent timeouts
-        self._home_squid_plus_hardware()
 
         # set encoder arguments
         # set axis pid control enable
