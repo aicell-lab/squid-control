@@ -3306,7 +3306,12 @@ class MicroscopeHyphaService:
     
     def set_filter_wheel_position_schema(self, config: SetFilterWheelPositionInput, context=None):
         """Set filter wheel position with schema validation."""
-        return self.set_filter_wheel_position(config.position, context)
+        # Handle case where config might be an ObjectProxy
+        if isinstance(config, dict):
+            position = config.get('position', 1)
+        else:
+            position = config.position
+        return self.set_filter_wheel_position(position, context)
     
     def get_filter_wheel_position_schema(self, context=None):
         """Get current filter wheel position with schema validation."""
@@ -3326,7 +3331,14 @@ class MicroscopeHyphaService:
     
     def switch_objective_schema(self, config: SwitchObjectiveInput, context=None):
         """Switch objective with schema validation."""
-        return self.switch_objective(config.objective_name, config.move_z, context)
+        # Handle case where config might be an ObjectProxy
+        if isinstance(config, dict):
+            objective_name = config.get('objective_name', '')
+            move_z = config.get('move_z', True)
+        else:
+            objective_name = config.objective_name
+            move_z = config.move_z
+        return self.switch_objective(objective_name, move_z, context)
     
     def get_current_objective_schema(self, context=None):
         """Get current objective with schema validation."""
@@ -4252,17 +4264,27 @@ class MicroscopeHyphaService:
             if self.squidController.filter_wheel is None:
                 raise Exception("Filter wheel not available on this microscope")
             
-            success = self.squidController.filter_wheel.set_filter_position(position)
+            # Handle case where parameters might be passed as a dictionary
+            if isinstance(position, dict):
+                # Extract position from dictionary
+                logger.info(f"Received dictionary parameters: {position}")
+                position_value = position.get('position', 1)
+            else:
+                # Convert position to int in case it's an ObjectProxy
+                logger.info(f"Received position as: {type(position)} = {position}")
+                position_value = int(position)
+            
+            success = self.squidController.filter_wheel.set_filter_position(position_value)
             
             if success:
-                logger.info(f"Filter wheel moved to position {position}")
+                logger.info(f"Filter wheel moved to position {position_value}")
                 return {
                     "success": True,
-                    "position": position,
-                    "message": f"Filter wheel set to position {position}"
+                    "position": position_value,
+                    "message": f"Filter wheel set to position {position_value}"
                 }
             else:
-                raise Exception(f"Failed to set filter wheel to position {position}")
+                raise Exception(f"Failed to set filter wheel to position {position_value}")
                 
         except Exception as e:
             logger.error(f"Error setting filter wheel position: {e}")
@@ -4408,19 +4430,37 @@ class MicroscopeHyphaService:
             if self.squidController.objective_switcher is None:
                 raise Exception("Objective switcher not available on this microscope")
             
+            # Handle case where parameters might be passed as a dictionary
+            if isinstance(objective_name, dict):
+                # Extract parameters from dictionary
+                logger.info(f"Received dictionary parameters: {objective_name}")
+                objective_name_str = str(objective_name.get('objective_name', ''))
+                move_z = objective_name.get('move_z', True)
+            else:
+                # Convert objective_name to string in case it's an ObjectProxy
+                logger.info(f"Received objective_name as: {type(objective_name)} = {objective_name}")
+                objective_name_str = str(objective_name)
+            
+            # Validate that we have a valid objective name
+            if not objective_name_str or objective_name_str.strip() == '':
+                raise Exception("No objective name provided")
+            
+            logger.info(f"Looking for objective: '{objective_name_str}'")
+            
             # Get available objectives and their positions
             position_names = self.squidController.objective_switcher.get_position_names()
+            logger.info(f"Available objectives: {position_names}")
             
             # Find the position for the requested objective
             position = None
             for pos, name in position_names.items():
-                if name.lower() == objective_name.lower():
+                if name.lower() == objective_name_str.lower():
                     position = pos
                     break
             
             if position is None:
                 available_objectives = list(position_names.values())
-                raise Exception(f"Objective '{objective_name}' not found. Available objectives: {available_objectives}")
+                raise Exception(f"Objective '{objective_name_str}' not found. Available objectives: {available_objectives}")
             
             # Move to the found position
             if position == 1:
@@ -4431,15 +4471,15 @@ class MicroscopeHyphaService:
                 raise Exception(f"Invalid objective position: {position}")
             
             if success:
-                logger.info(f"Objective switcher switched to {objective_name} (position {position})")
+                logger.info(f"Objective switcher switched to {objective_name_str} (position {position})")
                 return {
                     "success": True,
-                    "objective_name": objective_name,
+                    "objective_name": objective_name_str,
                     "position": position,
-                    "message": f"Switched to objective {objective_name}"
+                    "message": f"Switched to objective {objective_name_str}"
                 }
             else:
-                raise Exception(f"Failed to switch to objective {objective_name}")
+                raise Exception(f"Failed to switch to objective {objective_name_str}")
                 
         except Exception as e:
             logger.error(f"Error switching objective: {e}")
