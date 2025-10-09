@@ -526,7 +526,7 @@ class BaseConfig(BaseModel):
         "IMX571": 3.76,
         "PYTHON300": 4.8,
     }
-    PIXEL_SIZE_ADJUSTMENT_FACTOR: float = 0.936
+    PIXEL_SIZE_ADJUSTMENT_FACTOR: float = 1.0
     STITCHING_ROTATION_ANGLE_DEG: float = 0.0
     OBJECTIVES: dict = {
         "2x": {"magnification": 2, "NA": 0.10, "tube_lens_f_mm": 180},
