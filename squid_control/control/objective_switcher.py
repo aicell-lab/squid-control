@@ -94,22 +94,43 @@ class ObjectiveSwitcherController:
                 self.current_position = 0
                 return True
             else:
-                # Real hardware homing with simple pre-movement to avoid limit issues
+                # Real hardware homing with manual limit avoidance
                 logger.info("Homing objective switcher (this will take a few seconds)...")
                 self.axisX.stopScan()
                 
-                # Simple pre-movement: try to move away from limits before homing
+                # CRITICAL: Forcefully move away from limits before findIndex()
+                # This is necessary because the stage might be at a limit from previous power-off
+                # We use aggressive bidirectional scans to ensure we break free from any limit
                 try:
-                    logger.info("Moving away from limits before homing...")
-                    # Try a small step movement instead of absolute positioning
-                    # This is safer if we're already at a limit
-                    # 1000 units = 1000 * 1250nm = 1.25mm (reasonable distance)
-                    self.axisX.step(1000)  # Small step in positive direction (~1.25mm)
-                    time.sleep(0.5)  # Wait for movement
+                    logger.info("Moving away from limits before homing (this takes ~3 seconds)...")
+                    
+                    # Strategy: Scan in BOTH directions aggressively to ensure we're not at a limit
+                    # The controller will auto-stop at limits, so this is safe
+                    
+                    # Step 1: Strong scan in negative direction for 1 second
+                    # This moves away from positive limit or hits negative limit
+                    logger.info("Step 1: Scanning negative direction...")
+                    self.axisX.startScan(-1, execTime=1.0)  # 1 second negative scan
+                    time.sleep(0.3)  # Settle time
+                    
+                    # Step 2: Strong scan in positive direction for 1 second  
+                    # This moves away from negative limit or hits positive limit
+                    logger.info("Step 2: Scanning positive direction...")
+                    self.axisX.startScan(1, execTime=1.0)  # 1 second positive scan
+                    time.sleep(0.3)  # Settle time
+                    
+                    # Step 3: Final centering - scan negative briefly to end up in middle
+                    logger.info("Step 3: Final centering...")
+                    self.axisX.startScan(-1, execTime=0.5)  # 0.5 second to center
+                    time.sleep(0.3)
+                    
+                    logger.info("Pre-positioning complete, stage should be away from limits")
+                    
                 except Exception as e:
-                    logger.warning(f"Could not move away from limits before homing: {e}")
-                    # Continue anyway - this is not critical
+                    logger.warning(f"Could not perform pre-scan: {e}")
+                    logger.warning("Proceeding with homing anyway...")
                 
+                # Now perform homing - should be safe after jogging away from limits
                 self.axisX.findIndex()
                 self.current_position = 0
                 logger.info("✓ Objective switcher homed successfully")
