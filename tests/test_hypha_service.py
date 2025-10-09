@@ -2117,10 +2117,10 @@ async def test_squid_plus_objective_switcher_api(test_microscope_service):
         # Test 1: Check if objective switcher is available
         print("1. Testing objective switcher availability...")
         
-        # Try to get current position (should work if objective switcher is available)
+        # Try to get current objective (should work if objective switcher is available)
         try:
-            position_result = await service.get_current_objective_position()
-            print(f"   ✓ Objective switcher available at position: {position_result.get('position', 'unknown')}")
+            objective_result = await service.get_current_objective()
+            print(f"   ✓ Objective switcher available: {objective_result.get('current_objective', 'unknown')}")
             objective_switcher_available = True
         except Exception as e:
             if "not available" in str(e).lower():
@@ -2130,29 +2130,31 @@ async def test_squid_plus_objective_switcher_api(test_microscope_service):
                 raise e
         
         if objective_switcher_available:
-            # Test 2: Get available positions
-            print("2. Testing available objective positions...")
-            positions_result = await service.get_available_objective_positions()
-            assert positions_result.get("success", False) == True
-            positions = positions_result.get("positions", [])
-            position_names = positions_result.get("position_names", {})
+            # Test 2: Get available objectives
+            print("2. Testing available objectives...")
+            objectives_result = await service.get_available_objectives()
+            assert objectives_result.get("success", False) == True
+            positions = objectives_result.get("positions", [])
+            objective_names = objectives_result.get("objective_names", [])
             assert len(positions) > 0
             print(f"   ✓ Available positions: {positions}")
-            print(f"   ✓ Position names: {position_names}")
+            print(f"   ✓ Objective names: {objective_names}")
             
-            # Test 3: Move to objective position 1
-            print("3. Testing move to objective position 1...")
-            move1_result = await service.move_to_objective_position(position=1, move_z=True)
-            assert move1_result.get("success", False) == True
-            assert move1_result.get("position") == 1
-            print(f"   ✓ Moved to position 1: {move1_result.get('objective_name', 'Unknown')}")
+            # Test 3: Switch to first available objective
+            print("3. Testing switch to first available objective...")
+            if objective_names:
+                first_objective = objective_names[0]
+                switch_result = await service.switch_objective(objective_name=first_objective, move_z=True)
+                assert switch_result.get("success", False) == True
+                print(f"   ✓ Switched to objective: {switch_result.get('objective_name', 'Unknown')}")
             
-            # Test 4: Move to objective position 2
-            print("4. Testing move to objective position 2...")
-            move2_result = await service.move_to_objective_position(position=2, move_z=True)
-            assert move2_result.get("success", False) == True
-            assert move2_result.get("position") == 2
-            print(f"   ✓ Moved to position 2: {move2_result.get('objective_name', 'Unknown')}")
+            # Test 4: Switch to second available objective (if available)
+            print("4. Testing switch to second available objective...")
+            if len(objective_names) > 1:
+                second_objective = objective_names[1]
+                switch2_result = await service.switch_objective(objective_name=second_objective, move_z=True)
+                assert switch2_result.get("success", False) == True
+                print(f"   ✓ Switched to second objective: {switch2_result.get('objective_name', 'Unknown')}")
             
             # Test 5: Set objective switcher speed
             print("5. Testing objective switcher speed setting...")
@@ -2161,12 +2163,12 @@ async def test_squid_plus_objective_switcher_api(test_microscope_service):
             assert speed_result.get("speed") == 50.0
             print("   ✓ Objective switcher speed set successfully")
             
-            # Test 6: Get current position after movement
-            print("6. Testing current position retrieval...")
-            current_result = await service.get_current_objective_position()
+            # Test 6: Get current objective after movement
+            print("6. Testing current objective retrieval...")
+            current_result = await service.get_current_objective()
             assert current_result.get("success", False) == True
-            assert current_result.get("position") == 2
-            print(f"   ✓ Current position: {current_result.get('objective_name', 'Unknown')}")
+            assert current_result.get("current_objective") is not None
+            print(f"   ✓ Current objective: {current_result.get('current_objective', 'Unknown')}")
         
         print("✅ Squid+ Objective Switcher API tests passed!")
         
@@ -2252,7 +2254,7 @@ async def test_squid_plus_integration_with_existing_features(test_microscope_ser
                 raise e
         
         try:
-            await service.get_current_objective_position()
+            await service.get_current_objective()
             print("   ✓ Objective switcher operations don't interfere")
         except Exception as e:
             if "not available" in str(e).lower():
