@@ -1155,6 +1155,18 @@ class Microcontroller_Simulation:
         self.send_command(cmd)
         print("initialize the drivers")  # debug
 
+    def init_filter_wheel(self):
+        """
+        Initialize filter wheel (Squid+ only) - simulation version.
+        Must be called AFTER reset() and BEFORE initialize_drivers().
+        Matches official software microcontroller.py line 575-580.
+        """
+        self._cmd_id = 0
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.INITFILTERWHEEL
+        self.send_command(cmd)
+        print("initialize filter wheel")  # debug
+
     def mark_edge_position(self):
         """Marks the current XYZ position as an edge and saves it to a file"""
         self.edge_positions.append([self.x_pos, self.y_pos, self.z_pos])
