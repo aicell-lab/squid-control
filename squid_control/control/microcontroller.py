@@ -68,6 +68,7 @@ class CMD_SET:
     SEND_HARDWARE_TRIGGER = 30
     SET_STROBE_DELAY = 31
     SET_PIN_LEVEL = 41
+    INITFILTERWHEEL = 253  # Initialize filter wheel (Squid+ only)
     INITIALIZE = 254
     RESET = 255
 
@@ -162,6 +163,18 @@ class Microcontroller:
         cmd[1] = CMD_SET.RESET
         self.send_command(cmd)
         print("reset the microcontroller")  # debug
+
+    def init_filter_wheel(self):
+        """
+        Initialize filter wheel (Squid+ only).
+        Must be called AFTER reset() and BEFORE initialize_drivers().
+        Matches official software microcontroller.py line 575-580.
+        """
+        self._cmd_id = 0
+        cmd = bytearray(self.tx_buffer_length)
+        cmd[1] = CMD_SET.INITFILTERWHEEL
+        self.send_command(cmd)
+        print("initialize filter wheel")  # debug
 
     def initialize_drivers(self):
         self._cmd_id = 0

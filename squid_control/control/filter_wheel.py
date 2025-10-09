@@ -235,15 +235,20 @@ class FilterWheelController:
             
             # Execute hardware homing on W axis
             self.microcontroller.home_w()
+            logger.debug("home_w() command sent to microcontroller")
             
             # Homing needs more timeout time (15 seconds as in official software)
-            self.microcontroller.wait_till_operation_is_completed(15)
+            try:
+                self.microcontroller.wait_till_operation_is_completed(15)
+                logger.debug("Filter wheel homing completed successfully")
+            except TimeoutError as e:
+                logger.error(f"Filter wheel homing timed out after 15 seconds: {e}")
+                raise
             
             # Apply offset after homing (small adjustment from home switch position)
-            if self.filter_wheel_offset != 0:
-                logger.debug(f"Applying filter wheel offset: {self.filter_wheel_offset} mm")
-                self.move_w(self.filter_wheel_offset)
-                self.microcontroller.wait_till_operation_is_completed()
+            # Note: Official software does NOT wait after move_w() for offset
+            self.move_w(self.filter_wheel_offset)
+            logger.debug(f"Applied filter wheel offset: {self.filter_wheel_offset} mm")
             
             # Set position to minimum index after homing
             self.current_position = self.min_position
@@ -271,7 +276,7 @@ class FilterWheelController:
         Returns:
             list: List of available positions
         """
-        return list(range(1, self.max_positions + 1))
+        return list(range(self.min_position, self.max_position + 1))
 
 
 class FilterWheelSimulation:

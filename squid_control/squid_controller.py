@@ -190,19 +190,17 @@ class SquidController:
         self.microcontroller.reset()
         time.sleep(0.5)
 
+        # Initialize filter wheel AFTER reset, BEFORE initialize_drivers (matches official software pattern)
+        if getattr(CONFIG, 'FILTER_CONTROLLER_ENABLE', False) or getattr(CONFIG, 'USE_SQUID_FILTERWHEEL', False):
+            self.microcontroller.init_filter_wheel()
+            time.sleep(0.5)
+
         # reinitialize motor drivers and DAC (in particular for V2.1 driver board where PG is not functional)
         self.microcontroller.initialize_drivers()
         time.sleep(0.5)
 
         # configure the actuators
         self.microcontroller.configure_actuators()
-        
-        # Configure W-axis motor for filter wheel if enabled (Squid+ only)
-        if getattr(CONFIG, 'FILTER_CONTROLLER_ENABLE', False):
-            logger.info("Configuring W-axis motor for filter wheel...")
-            self.microcontroller.configure_squidfilter()
-            time.sleep(0.5)
-            logger.info("✓ Filter wheel motor configured")
 
         self.configurationManager = core.ConfigurationManager(
             filename=CONFIG.CHANNEL_CONFIGURATIONS_PATH
@@ -314,6 +312,26 @@ class SquidController:
         self.navigationController.zero_x()
         self.slidePositionController.homing_done = True
         print("home xy done")
+
+        # Initialize filter wheel AFTER XY homing (matches official software pattern in gui_hcs.py setup_hardware)
+        if hasattr(self, 'filter_wheel') and self.filter_wheel is not None:
+            homing_enabled = getattr(CONFIG, 'SQUID_FILTERWHEEL_HOMING_ENABLED', True)
+            if homing_enabled:
+                logger.info("Homing filter wheel after XY homing...")
+                try:
+                    success = self.filter_wheel.home()
+                    if success:
+                        logger.info("✓ Filter wheel homed successfully")
+                        # Small delay to ensure filter wheel is fully settled (as in official software)
+                        time.sleep(0.1)
+                    else:
+                        logger.error("Filter wheel homing failed")
+                except Exception as e:
+                    logger.error(f"Filter wheel homing error: {e}")
+                    logger.warning("Filter wheel may not be supported by this firmware version")
+            else:
+                logger.info("Filter wheel homing is disabled in configuration")
+                logger.warning("⚠️  Filter wheel is available but not homed - set SQUID_FILTERWHEEL_HOMING_ENABLED=True to enable")
 
         # move to scanning position
         self.navigationController.move_x(32.3)
@@ -2734,56 +2752,42 @@ class SquidController:
         self._restore_original_velocity(CONFIG.MAX_VELOCITY_X_MM, CONFIG.MAX_VELOCITY_Y_MM)
         return {"success": True, "message": "Scan stop requested"}
 
-    def initialize_objective_switcher(self):
+    def initialize_filter_wheel(self):
         """
-        Initialize and home the objective switcher.
+        Initialize and home the filter wheel.
         This should be called AFTER the service/GUI is fully started.
-        Matches the official software pattern where homing happens after GUI init.
+        Matches the official software pattern where homing happens after GUI init (gui_hcs.py setup_hardware).
         """
-        if not hasattr(self, 'objective_switcher') or self.objective_switcher is None:
-            logger.warning("No objective switcher to initialize")
+        if not hasattr(self, 'filter_wheel') or self.filter_wheel is None:
+            logger.warning("No filter wheel to initialize")
             return False
         
         try:
-            xeryon_speed = getattr(CONFIG, 'XERYON_SPEED', 80)
+            # Check if homing is enabled in configuration
+            homing_enabled = getattr(CONFIG, 'SQUID_FILTERWHEEL_HOMING_ENABLED', True)
             
-            logger.info("Homing objective switcher...")
-            self.objective_switcher.home()
-            logger.info("✓ Objective switcher homed successfully")
-            
-            # Set the speed
-            self.objective_switcher.set_speed(xeryon_speed)
-            logger.info(f"Objective switcher speed set to {xeryon_speed}")
-            
-            # Move to initial position based on default objective
-            default_obj = self.objectiveStore.current_objective if hasattr(self, 'objectiveStore') else getattr(CONFIG, 'DEFAULT_OBJECTIVE', '20x')
-            pos1_objs = getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_1', ['20x'])
-            pos2_objs = getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_2', ['4x'])
-            
-            logger.info(f"Default objective: '{default_obj}', Position 1: {pos1_objs}, Position 2: {pos2_objs}")
-            
-            # Check which position the default objective belongs to
-            if default_obj and default_obj in pos1_objs:
-                logger.info(f"Moving to position 1 for default objective: {default_obj}")
-                self.objective_switcher.move_to_position_1(move_z=False)
-            elif default_obj and default_obj in pos2_objs:
-                logger.info(f"Moving to position 2 for default objective: {default_obj}")
-                self.objective_switcher.move_to_position_2(move_z=False)
+            if homing_enabled:
+                logger.info("Homing filter wheel...")
+                success = self.filter_wheel.home()
+                if success:
+                    logger.info("✓ Filter wheel homed successfully")
+                    return True
+                else:
+                    logger.error("Filter wheel homing failed")
+                    return False
             else:
-                # Default to position 1 if no match found
-                logger.warning(f"Default objective '{default_obj}' not found in position lists, defaulting to position 1")
-                self.objective_switcher.move_to_position_1(move_z=False)
-            
-            logger.info("✓ Objective switcher ready")
-            return True
-            
+                logger.info("Filter wheel homing is disabled in configuration")
+                return True
+                
         except Exception as e:
-            logger.error(f"Failed to initialize objective switcher: {e}")
+            logger.error(f"Failed to initialize filter wheel: {e}")
             return False
+    
     
     def _initialize_squid_plus_hardware(self):
         """
-        Initialize Squid+ specific hardware components
+        Initialize Squid+ specific hardware components including homing and positioning.
+        This happens during the main microscope initialization sequence.
         """
         try:
             # Initialize Filter Wheel if enabled
@@ -2794,11 +2798,17 @@ class SquidController:
                     self.filter_wheel = FilterWheelSimulation()
                     logger.info("Filter wheel initialized in simulation mode")
                 else:
+                    # Configure W-axis motor during filter wheel creation
+                    logger.info("Configuring W-axis motor for filter wheel...")
+                    self.microcontroller.configure_squidfilter()
+                    time.sleep(0.5)
+                    
                     self.filter_wheel = FilterWheelController(
                         microcontroller=self.microcontroller,
                         is_simulation=False
                     )
-                    logger.info("Filter wheel initialized with hardware")
+                    logger.info("Filter wheel initialized with hardware (not homed yet)")
+                    logger.info("⚠️  Filter wheel will be homed after service starts (call initialize_filter_wheel())")
             else:
                 logger.info("Filter wheel not enabled in configuration")
             
@@ -2820,7 +2830,36 @@ class SquidController:
                             is_simulation=False
                         )
                         logger.info(f"Objective switcher initialized with hardware (SN: {xeryon_sn})")
-                        logger.info("⚠️  Objective switcher will be homed after service starts (call initialize_objective_switcher())")
+                        
+                        # Home and position the objective switcher immediately
+                        logger.info("Homing objective switcher...")
+                        self.objective_switcher.home()
+                        logger.info("✓ Objective switcher homed successfully")
+                        
+                        # Set the speed
+                        self.objective_switcher.set_speed(xeryon_speed)
+                        logger.info(f"Objective switcher speed set to {xeryon_speed}")
+                        
+                        # Move to initial position based on default objective
+                        default_obj = self.objectiveStore.current_objective if hasattr(self, 'objectiveStore') else getattr(CONFIG, 'DEFAULT_OBJECTIVE', '20x')
+                        pos1_objs = getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_1', ['20x'])
+                        pos2_objs = getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_2', ['4x'])
+                        
+                        logger.info(f"Default objective: '{default_obj}', Position 1: {pos1_objs}, Position 2: {pos2_objs}")
+                        
+                        # Check which position the default objective belongs to
+                        if default_obj and default_obj in pos1_objs:
+                            logger.info(f"Moving to position 1 for default objective: {default_obj}")
+                            self.objective_switcher.move_to_position_1(move_z=False)
+                        elif default_obj and default_obj in pos2_objs:
+                            logger.info(f"Moving to position 2 for default objective: {default_obj}")
+                            self.objective_switcher.move_to_position_2(move_z=False)
+                        else:
+                            # Default to position 1 if no match found
+                            logger.warning(f"Default objective '{default_obj}' not found in position lists, defaulting to position 1")
+                            self.objective_switcher.move_to_position_1(move_z=False)
+                        
+                        logger.info("✓ Objective switcher ready")
                     else:
                         logger.warning("Xeryon serial number not provided - objective switcher disabled")
             else:
