@@ -715,8 +715,8 @@ class MicroscopeHyphaService:
                     raw_img = cv2.resize(raw_img, (expected_width, expected_height), interpolation=cv2.INTER_LINEAR)
 
             # Crop the image before resizing, similar to squid_controller.py approach
-            crop_height = CONFIG.Acquisition.CROP_HEIGHT
-            crop_width = CONFIG.Acquisition.CROP_WIDTH
+            crop_height = CONFIG.ACQUISITION.CROP_HEIGHT
+            crop_width = CONFIG.ACQUISITION.CROP_WIDTH
             height, width = raw_img.shape[:2]  # Support both grayscale and color images
             start_x = width // 2 - crop_width // 2
             start_y = height // 2 - crop_height // 2
@@ -2474,8 +2474,8 @@ class MicroscopeHyphaService:
         """Process raw frame for video streaming - OPTIMIZED"""
         try:
             # OPTIMIZATION 1: Crop FIRST, then resize to reduce data for all subsequent operations
-            crop_height = CONFIG.Acquisition.CROP_HEIGHT
-            crop_width = CONFIG.Acquisition.CROP_WIDTH
+            crop_height = CONFIG.ACQUISITION.CROP_HEIGHT
+            crop_width = CONFIG.ACQUISITION.CROP_WIDTH
             height, width = raw_frame.shape[:2]  # Support both grayscale and color images
             start_x = width // 2 - crop_width // 2
             start_y = height // 2 - crop_height // 2

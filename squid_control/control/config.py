@@ -389,7 +389,7 @@ class BaseConfig(BaseModel):
     SLIDE_POSITION: SlidePositionSetting = SlidePositionSetting()
     OUTPUT_GAINS: OutputGainSetting = OutputGainSetting()
     SOFTWARE_POS_LIMIT: SoftwarePosLimitSetting = SoftwarePosLimitSetting()
-    Acquisition: AcquisitionSetting = AcquisitionSetting()
+    ACQUISITION: AcquisitionSetting = AcquisitionSetting()
     USE_SEPARATE_MCU_FOR_DAC: bool = False
 
     BIT_POS_JOYSTICK_BUTTON: int = 0
@@ -1080,18 +1080,18 @@ def get_microscope_configuration_data(config_section="all", include_defaults=Tru
 
     if config_section.lower() == "all" or config_section.lower() == "acquisition":
         config_data["acquisition"] = {
-            "crop_width": getattr(CONFIG.Acquisition, 'CROP_WIDTH', 3000),
-            "crop_height": getattr(CONFIG.Acquisition, 'CROP_HEIGHT', 3000),
-            "image_format": getattr(CONFIG.Acquisition, 'IMAGE_FORMAT', 'bmp'),
-            "image_display_scaling_factor": getattr(CONFIG.Acquisition, 'IMAGE_DISPLAY_SCALING_FACTOR', 0.3),
+            "crop_width": getattr(CONFIG.ACQUISITION, 'CROP_WIDTH', 3000),
+            "crop_height": getattr(CONFIG.ACQUISITION, 'CROP_HEIGHT', 3000),
+            "image_format": getattr(CONFIG.ACQUISITION, 'IMAGE_FORMAT', 'bmp'),
+            "image_display_scaling_factor": getattr(CONFIG.ACQUISITION, 'IMAGE_DISPLAY_SCALING_FACTOR', 0.3),
             "default_step_sizes": {
-                "dx": getattr(CONFIG.Acquisition, 'DX', 0.9),
-                "dy": getattr(CONFIG.Acquisition, 'DY', 0.9),
-                "dz": getattr(CONFIG.Acquisition, 'DZ', 1.5),
+                "dx": getattr(CONFIG.ACQUISITION, 'DX', 0.9),
+                "dy": getattr(CONFIG.ACQUISITION, 'DY', 0.9),
+                "dz": getattr(CONFIG.ACQUISITION, 'DZ', 1.5),
             },
             "default_grid_sizes": {
-                "nx": getattr(CONFIG.Acquisition, 'NX', 1),
-                "ny": getattr(CONFIG.Acquisition, 'NY', 1),
+                "nx": getattr(CONFIG.ACQUISITION, 'NX', 1),
+                "ny": getattr(CONFIG.ACQUISITION, 'NY', 1),
             },
             "default_trigger_mode": str(getattr(CONFIG, 'DEFAULT_TRIGGER_MODE', 'SOFTWARE')),
             "default_saving_path": getattr(CONFIG, 'DEFAULT_SAVING_PATH', ''),

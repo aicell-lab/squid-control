@@ -978,8 +978,8 @@ class SquidController:
             result_img = gray_img
         else:
             # Crop using configuration-based dimensions with proper bounds checking
-            crop_height = CONFIG.Acquisition.CROP_HEIGHT
-            crop_width = CONFIG.Acquisition.CROP_WIDTH
+            crop_height = CONFIG.ACQUISITION.CROP_HEIGHT
+            crop_width = CONFIG.ACQUISITION.CROP_WIDTH
             height, width = gray_img.shape[:2]
             start_x = width // 2 - crop_width // 2
             start_y = height // 2 - crop_height // 2
@@ -1311,7 +1311,7 @@ class SquidController:
                                     await self.do_laser_autofocus()
                                     # Update position again after autofocus
                                     actual_x_mm, actual_y_mm, actual_z_mm, _ = self.navigationController.update_pos(self.microcontroller)
-                            elif do_contrast_autofocus and ((i * Nx + j) % CONFIG.Acquisition.NUMBER_OF_FOVS_PER_AF == 0):
+                            elif do_contrast_autofocus and ((i * Nx + j) % CONFIG.ACQUISITION.NUMBER_OF_FOVS_PER_AF == 0):
                                 await self.do_autofocus()
                                 # Update position again after autofocus
                                 actual_x_mm, actual_y_mm, actual_z_mm, _ = self.navigationController.update_pos(self.microcontroller)
