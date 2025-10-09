@@ -2799,6 +2799,15 @@ class SquidController:
                         is_simulation=False
                     )
                     logger.info("Filter wheel initialized with hardware")
+                    
+                    # Home the filter wheel immediately if homing is enabled (same as official software)
+                    if getattr(CONFIG, 'SQUID_FILTERWHEEL_HOMING_ENABLED', True):
+                        logger.info("Homing filter wheel...")
+                        success = self.filter_wheel.home()
+                        if success:
+                            logger.info("✓ Filter wheel homed successfully")
+                        else:
+                            logger.warning("Filter wheel homing failed - continuing anyway")
             else:
                 logger.info("Filter wheel not enabled in configuration")
             

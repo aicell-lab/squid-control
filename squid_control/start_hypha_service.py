@@ -4382,6 +4382,10 @@ class MicroscopeHyphaService:
         """
         Home the filter wheel to position 1 (Squid+ only)
         
+        NOTE: The filter wheel is automatically homed during microscope initialization
+        (same as official software). This endpoint is provided for manual re-homing
+        if needed, but should rarely be necessary.
+        
         Returns:
             dict: Status message
         """
@@ -4392,12 +4396,13 @@ class MicroscopeHyphaService:
             if self.squidController.filter_wheel is None:
                 raise Exception("Filter wheel not available on this microscope")
             
+            logger.warning("Manual filter wheel homing requested - this may interfere with other operations")
             success = self.squidController.filter_wheel.home()
             
             if success:
                 return {
                     "success": True,
-                    "message": "Filter wheel homed to position 1"
+                    "message": "Filter wheel re-homed to position 1"
                 }
             else:
                 raise Exception("Failed to home filter wheel")
