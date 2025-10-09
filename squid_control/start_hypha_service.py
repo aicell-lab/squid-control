@@ -1719,9 +1719,6 @@ class MicroscopeHyphaService:
     class PreviousFilterPositionInput(BaseModel):
         """Move to previous filter position."""
     
-    class HomeFilterWheelInput(BaseModel):
-        """Home filter wheel to position 1."""
-    
     class GetCurrentObjectiveInput(BaseModel):
         """Get current objective name and position."""
     
@@ -1837,7 +1834,6 @@ class MicroscopeHyphaService:
                 "get_filter_wheel_position": self.GetFilterWheelPositionInput.model_json_schema(),
                 "next_filter_position": self.NextFilterPositionInput.model_json_schema(),
                 "previous_filter_position": self.PreviousFilterPositionInput.model_json_schema(),
-                "home_filter_wheel": self.HomeFilterWheelInput.model_json_schema(),
                 "switch_objective": self.SwitchObjectiveInput.model_json_schema(),
                 "get_current_objective": self.GetCurrentObjectiveInput.model_json_schema(),
                 "get_available_objectives": self.GetAvailableObjectivesInput.model_json_schema(),
@@ -1934,7 +1930,6 @@ class MicroscopeHyphaService:
                 "get_filter_wheel_position": self.get_filter_wheel_position,
                 "next_filter_position": self.next_filter_position,
                 "previous_filter_position": self.previous_filter_position,
-                "home_filter_wheel": self.home_filter_wheel,
                 "switch_objective": self.switch_objective,
                 "get_current_objective": self.get_current_objective,
                 "get_available_objectives": self.get_available_objectives,
@@ -1997,7 +1992,6 @@ class MicroscopeHyphaService:
                 "get_filter_wheel_position": self.get_filter_wheel_position_schema,
                 "next_filter_position": self.next_filter_position_schema,
                 "previous_filter_position": self.previous_filter_position_schema,
-                "home_filter_wheel": self.home_filter_wheel_schema,
                 "switch_objective": self.switch_objective_schema,
                 "get_current_objective": self.get_current_objective_schema,
                 "get_available_objectives": self.get_available_objectives_schema,
@@ -3325,10 +3319,6 @@ class MicroscopeHyphaService:
         """Move to previous filter position with schema validation."""
         return self.previous_filter_position(context)
     
-    def home_filter_wheel_schema(self, context=None):
-        """Home filter wheel with schema validation."""
-        return self.home_filter_wheel(context)
-    
     def switch_objective_schema(self, config: SwitchObjectiveInput, context=None):
         """Switch objective with schema validation."""
         # Handle case where config might be an ObjectProxy
@@ -4375,40 +4365,6 @@ class MicroscopeHyphaService:
                 
         except Exception as e:
             logger.error(f"Error moving to previous filter position: {e}")
-            raise e
-    
-    @schema_function
-    async def home_filter_wheel(self, context=None):
-        """
-        Home the filter wheel to position 1 (Squid+ only)
-        
-        NOTE: The filter wheel is automatically homed during microscope initialization
-        (same as official software). This endpoint is provided for manual re-homing
-        if needed, but should rarely be necessary.
-        
-        Returns:
-            dict: Status message
-        """
-        try:
-            if context and not self.check_permission(context.get("user", {})):
-                raise Exception("User not authorized to access this service")
-            
-            if self.squidController.filter_wheel is None:
-                raise Exception("Filter wheel not available on this microscope")
-            
-            logger.warning("Manual filter wheel homing requested - this may interfere with other operations")
-            success = self.squidController.filter_wheel.home()
-            
-            if success:
-                return {
-                    "success": True,
-                    "message": "Filter wheel re-homed to position 1"
-                }
-            else:
-                raise Exception("Failed to home filter wheel")
-                
-        except Exception as e:
-            logger.error(f"Error homing filter wheel: {e}")
             raise e
     
     @schema_function
