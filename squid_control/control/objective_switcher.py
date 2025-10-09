@@ -94,9 +94,22 @@ class ObjectiveSwitcherController:
                 self.current_position = 0
                 return True
             else:
-                # Real hardware homing - EXACT same as official software
+                # Real hardware homing with simple pre-movement to avoid limit issues
                 logger.info("Homing objective switcher (this will take a few seconds)...")
                 self.axisX.stopScan()
+                
+                # Simple pre-movement: try to move away from limits before homing
+                try:
+                    logger.info("Moving away from limits before homing...")
+                    # Try a small step movement instead of absolute positioning
+                    # This is safer if we're already at a limit
+                    # 1000 units = 1000 * 1250nm = 1.25mm (reasonable distance)
+                    self.axisX.step(1000)  # Small step in positive direction (~1.25mm)
+                    time.sleep(0.5)  # Wait for movement
+                except Exception as e:
+                    logger.warning(f"Could not move away from limits before homing: {e}")
+                    # Continue anyway - this is not critical
+                
                 self.axisX.findIndex()
                 self.current_position = 0
                 logger.info("✓ Objective switcher homed successfully")
