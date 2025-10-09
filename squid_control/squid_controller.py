@@ -254,8 +254,12 @@ class SquidController:
                 exit()
         print("objective retracted")
 
-        # Initialize Squid+ hardware after basic setup
+        # Initialize Squid+ hardware after basic setup (creates objects but doesn't home yet)
         self._initialize_squid_plus_hardware()
+        
+        # Home Squid+ hardware AFTER all other initialization is complete
+        # This must be done after the microcontroller is idle to prevent timeouts
+        self._home_squid_plus_hardware()
 
         # set encoder arguments
         # set axis pid control enable
@@ -2799,15 +2803,6 @@ class SquidController:
                         is_simulation=False
                     )
                     logger.info("Filter wheel initialized with hardware")
-                    
-                    # Home the filter wheel immediately if homing is enabled (same as official software)
-                    if getattr(CONFIG, 'SQUID_FILTERWHEEL_HOMING_ENABLED', True):
-                        logger.info("Homing filter wheel...")
-                        success = self.filter_wheel.home()
-                        if success:
-                            logger.info("✓ Filter wheel homed successfully")
-                        else:
-                            logger.warning("Filter wheel homing failed - continuing anyway")
             else:
                 logger.info("Filter wheel not enabled in configuration")
             
@@ -2840,6 +2835,41 @@ class SquidController:
             # Continue without Squid+ hardware if initialization fails
             self.filter_wheel = None
             self.objective_switcher = None
+    
+    def _home_squid_plus_hardware(self):
+        """
+        Home Squid+ hardware components after all other initialization is complete.
+        This must be called AFTER the microcontroller is idle to prevent timeouts.
+        
+        This matches the official software pattern where homing happens in setup_hardware()
+        after all other initialization is complete.
+        """
+        try:
+            # Wait for microcontroller to be idle before homing
+            logger.info("Waiting for microcontroller to be idle before homing Squid+ hardware...")
+            t0 = time.time()
+            while self.microcontroller.is_busy():
+                time.sleep(0.005)
+                if time.time() - t0 > 10:
+                    logger.error("Microcontroller timeout while waiting to home Squid+ hardware")
+                    return
+            
+            # Home filter wheel if enabled (same as official software gui_hcs.py line 527)
+            if hasattr(self, 'filter_wheel') and self.filter_wheel is not None:
+                if not self.is_simulation and getattr(CONFIG, 'SQUID_FILTERWHEEL_HOMING_ENABLED', True):
+                    logger.info("Homing filter wheel...")
+                    success = self.filter_wheel.home()
+                    if success:
+                        logger.info("✓ Filter wheel homed successfully")
+                    else:
+                        logger.warning("Filter wheel homing failed - continuing anyway")
+            
+            # Note: Objective switcher homing is done separately via initialize_objective_switcher()
+            # because it requires the service/GUI to be fully started first
+            
+        except Exception as e:
+            logger.error(f"Failed to home Squid+ hardware: {e}")
+            # Continue anyway - homing failure shouldn't prevent system startup
 
 
 if __name__ == "__main__":
