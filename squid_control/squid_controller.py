@@ -932,29 +932,35 @@ class SquidController:
                 print('z return timeout, the program will exit')
 
     async def snap_image(self, channel=0, intensity=100, exposure_time=100, full_frame=False):
-        # turn off the illumination if it is on
-        need_to_turn_illumination_back = False
-        if self.liveController.illumination_on:
-            need_to_turn_illumination_back = True
+        # Check if illumination was already on before we start
+        illumination_was_already_on = self.liveController.illumination_on
+        
+        # Turn off illumination if it's on to ensure clean state
+        if illumination_was_already_on:
             self.liveController.turn_off_illumination()
             while self.microcontroller.is_busy():
                 await asyncio.sleep(0.005)
+        
+        # Set up camera and illumination for the photo
         self.camera.set_exposure_time(exposure_time)
         self.liveController.set_illumination(channel, intensity)
         self.liveController.turn_on_illumination()
         while self.microcontroller.is_busy():
             await asyncio.sleep(0.005)
 
+        # Take the photo
         if self.is_simulation:
             await self.send_trigger_simulation(channel, intensity, exposure_time)
         else:
             self.camera.send_trigger()
-        await asyncio.sleep(0.005)
 
         while self.microcontroller.is_busy():
             await asyncio.sleep(0.005)
 
-        gray_img = self.camera.read_frame()
+        # Read the captured image (this blocks until frame is ready for real camera)
+        # Run in executor to avoid blocking the async event loop
+        loop = asyncio.get_event_loop()
+        gray_img = await loop.run_in_executor(None, self.camera.read_frame)
         # Apply rotation and flip first
         gray_img = rotate_and_flip_image(gray_img, self.camera.rotate_image_angle, self.camera.flip_image)
 
@@ -986,10 +992,24 @@ class SquidController:
 
             result_img = gray_img[start_y:end_y, start_x:end_x]
 
-        if not need_to_turn_illumination_back:
-            self.liveController.turn_off_illumination()
+        # Turn off illumination after taking the photo
+        self.liveController.turn_off_illumination()
+        while self.microcontroller.is_busy():
+            await asyncio.sleep(0.005)
+
+        # Restore illumination state if it was on before
+        if illumination_was_already_on:
+            self.liveController.turn_on_illumination()
             while self.microcontroller.is_busy():
                 await asyncio.sleep(0.005)
+
+        # Ensure the image is uint8 before returning
+        if result_img.dtype != np.uint8:
+            if result_img.dtype == np.uint16:
+                # Scale 16-bit to 8-bit
+                result_img = (result_img / 256).astype(np.uint8)
+            else:
+                result_img = result_img.astype(np.uint8)
 
         return result_img
 
@@ -1008,6 +1028,14 @@ class SquidController:
         if width < expected_width or height < expected_height:
             gray_img = cv2.resize(gray_img, (expected_width, expected_height), interpolation=cv2.INTER_LINEAR)
 
+        # Ensure the image is uint8 before returning
+        if gray_img.dtype != np.uint8:
+            if gray_img.dtype == np.uint16:
+                # Scale 16-bit to 8-bit
+                gray_img = (gray_img / 256).astype(np.uint8)
+            else:
+                gray_img = gray_img.astype(np.uint8)
+
         return gray_img
 
     def get_camera_frame(self, channel=0, intensity=100, exposure_time=100):
@@ -1019,6 +1047,15 @@ class SquidController:
                 # Return a placeholder image instead of None to prevent crashes
                 return np.zeros((self.camera.Height, self.camera.Width), dtype=np.uint8)
             gray_img = rotate_and_flip_image(gray_img, self.camera.rotate_image_angle, self.camera.flip_image)
+            
+            # Ensure the image is uint8 before returning
+            if gray_img.dtype != np.uint8:
+                if gray_img.dtype == np.uint16:
+                    # Scale 16-bit to 8-bit
+                    gray_img = (gray_img / 256).astype(np.uint8)
+                else:
+                    gray_img = gray_img.astype(np.uint8)
+            
             return gray_img
         except Exception as e:
             print(f"Error in get_camera_frame: {e}")

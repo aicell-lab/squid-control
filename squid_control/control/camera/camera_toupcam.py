@@ -96,6 +96,14 @@ class Camera(object):
         self.callback_is_enabled = False
         self.is_streaming = False
         self.new_image_callback_external = None
+        self._raw_camera_stream_started = False
+        self._raw_frame_callback_lock = threading.Lock()
+        self._trigger_sent = False
+        self._last_trigger_timestamp = 0
+        
+        # Frame synchronization for blocking read_frame()
+        self._frame_ready_event = threading.Event()
+        self._last_read_frame_id = -1
         
         # Camera limits
         self.GAIN_MAX = 40  # User gain range 0-40
@@ -110,11 +118,10 @@ class Camera(object):
         
         # Toupcam specific parameters
         self._binning = (1, 1)  # Default binning
-        self._pixel_format = "MONO16"  # Default pixel format
-        self._trigger_sent = False
-        self._last_trigger_timestamp = 0
-        self._raw_camera_stream_started = False
-        self._raw_frame_callback_lock = threading.Lock()
+        self._pixel_format = "MONO16"
+        
+        # Live mode flag (for compatibility with original camera)
+        self.is_live = False
         
         # Strobe timing info (calculated after camera opens)
         self._strobe_info = None
@@ -200,11 +207,72 @@ class Camera(object):
                 self.thread_read_temperature = threading.Thread(target=self._check_temperature, daemon=True)
                 self.thread_read_temperature.start()
             
-            logger.info(f"Camera initialization complete. Resolution: {self.Width}x{self.Height}")
+            # CRITICAL: Start the raw camera stream to enable frame acquisition
+            # This must be done after configuration to receive frame callbacks
+            self._start_raw_camera_stream()
+            
+            # Update internal settings to prepare buffers and exposure
+            self._update_internal_settings()
+            
+            logger.info(f"Camera initialization complete. Resolution: {self.Width}x{self.Height}, streaming started")
             
         except Exception as e:
             logger.error(f"Failed to open camera: {e}")
             raise
+    
+    def _start_raw_camera_stream(self):
+        """
+        Start the raw camera stream for frame acquisition.
+        
+        This must be called after the camera is opened and configured.
+        It sets up the callback to receive frames from the camera.
+        """
+        if self.camera is None:
+            logger.error("Cannot start raw stream: camera not opened")
+            return
+            
+        if not self._raw_camera_stream_started:
+            try:
+                logger.debug("Starting raw stream in PullModeWithCallback")
+                self.camera.StartPullModeWithCallback(self._event_callback, self)
+                self._raw_camera_stream_started = True
+                logger.info("Raw camera stream started successfully")
+            except toupcam.HRESULTException as ex:
+                self._raw_camera_stream_started = False
+                logger.error(f"Failed to start raw camera stream: {ex}")
+                raise
+    
+    def _update_internal_settings(self):
+        """
+        Update internal buffer and settings based on current camera configuration.
+        
+        This prepares the camera for frame acquisition by:
+        - Creating the internal read buffer
+        - Setting the exposure time
+        - Setting the analog gain
+        """
+        if self.camera is None:
+            logger.warning("Cannot update settings: camera not opened")
+            return
+            
+        try:
+            # Update internal buffer size based on current ROI and pixel format
+            self._update_internal_buffer()
+            
+            # Set initial exposure time (convert ms to us)
+            exposure_time_us = int(self.exposure_time * 1000)
+            self.camera.put_ExpoTime(exposure_time_us)
+            logger.debug(f"Exposure time set to {self.exposure_time}ms")
+            
+            # Set initial analog gain if it's been set
+            if hasattr(self, 'analog_gain') and self.analog_gain > 0:
+                self.set_analog_gain(self.analog_gain)
+                
+            logger.debug(f"Internal settings updated: buffer ready, exposure={self.exposure_time}ms")
+            
+        except Exception as e:
+            logger.error(f"Failed to update internal settings: {e}")
+            # Don't raise - let camera continue with defaults
     
     def _build_capabilities(self, device):
         """
@@ -419,6 +487,9 @@ class Camera(object):
                     current_image = np.fliplr(current_image)
                 
                 self.current_frame = current_image
+                
+                # Signal that a new frame is ready for read_frame()
+                self._frame_ready_event.set()
                 
                 # Call external callback if set and enabled
                 # Note: Toupcam doesn't use is_live flag - callback fires for all frames when enabled
@@ -684,6 +755,9 @@ class Camera(object):
             return False
         
         try:
+            # Clear the frame ready event before triggering
+            self._frame_ready_event.clear()
+            
             self.camera.Trigger(1)
             self._trigger_sent = True
             self._last_trigger_timestamp = time.time()
@@ -695,51 +769,25 @@ class Camera(object):
 
     def get_ready_for_trigger(self):
         """Check if camera is ready for next trigger."""
-        trigger_timeout_s = 1.5 * self.exposure_time / 1000 * 1.02 + 4
-        trigger_age = time.time() - self._last_trigger_timestamp
-        trigger_too_old = trigger_age > trigger_timeout_s
-        
-        if self._trigger_sent and trigger_too_old:
-            logger.warning(f"Previous trigger timed out after {trigger_timeout_s}s, allowing re-trigger")
-            self._trigger_sent = False
-            return True
-        elif self._trigger_sent:
-            return False
-        
-        return True
+        # Simple check: if trigger was sent, not ready yet
+        # Camera callback will clear _trigger_sent when frame arrives
+        return not self._trigger_sent
 
-    def read_frame(self, timeout_s=None):
+    def read_frame(self):
         """
-        Read a frame from the camera, waiting if necessary for a new frame.
+        Read the current frame from the camera.
         
-        This method waits for a NEW frame to arrive after being called, rather than
-        just returning whatever was last captured. This ensures we get a fresh frame
-        after each trigger.
+        This method blocks until a new frame is available after send_trigger(),
+        matching the behavior of the original Daheng camera implementation.
         
-        Args:
-            timeout_s: Maximum time to wait for a frame in seconds. If None, 
-                      calculates based on exposure time.
+        The old camera's get_image() blocks indefinitely until the frame is ready.
+        We do the same here - just wait for the frame ready event without timeout.
         
         Returns:
-            numpy array with the image, or None if timeout occurs
+            numpy array with the current image
         """
-        # Calculate timeout based on exposure time if not provided
-        if timeout_s is None:
-            timeout_s = (self.exposure_time / 1000) * 1.02 + 4  # exposure in ms, add margin
-        
-        timeout_end_time_s = time.time() + timeout_s
-        starting_frame_id = self.frame_ID
-        
-        # Wait for a NEW frame (frame ID changes)
-        while time.time() < timeout_end_time_s:
-            if self.frame_ID != starting_frame_id and self.current_frame is not None:
-                return self.current_frame
-            time.sleep(0.001)  # Small sleep to prevent CPU spinning
-        
-        # Timeout occurred
-        logger.warning(f"Timed out after {timeout_s:.2f}s waiting for a frame (starting_frame_id={starting_frame_id}, current_frame_id={self.frame_ID})")
-        
-        # Return current frame even if old, better than None
+        # Wait for new frame to be ready (blocks indefinitely like old camera)
+        self._frame_ready_event.wait()
         return self.current_frame
 
 

@@ -1185,7 +1185,7 @@ class MicroscopeHyphaService:
         try:
             gray_img = await self.squidController.snap_image(channel, intensity, exposure_time)
             logger.info('The image is snapped')
-            gray_img = gray_img.astype(np.uint8)
+            # Image is already uint8 from snap_image method
             # Resize the image to a standard size
             resized_img = cv2.resize(gray_img, (2048, 2048))
 
