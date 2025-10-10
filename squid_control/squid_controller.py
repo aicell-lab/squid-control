@@ -427,7 +427,7 @@ class SquidController:
         #self._cleanup_zarr_directory() # Disabled for now
 
     def get_pixel_size(self):
-        """Calculate pixel size based on imaging parameters."""
+        """Calculate pixel size based on imaging parameters including binning factor."""
         try:
             tube_lens_mm = float(CONFIG.TUBE_LENS_MM)
             pixel_size_um = float(CONFIG.CAMERA_PIXEL_SIZE_UM[CONFIG.CAMERA_SENSOR])
@@ -436,16 +436,31 @@ class SquidController:
             objective = self.objectiveStore.objectives_dict[object_dict_key]
             magnification =  float(objective['magnification'])
             objective_tube_lens_mm = float(objective['tube_lens_f_mm'])
+            
+            # Get binning factor from camera config
+            # Note: When BINNING_FACTOR_DEFAULT is 1, actual binning factor should be 2
+            config_binning = getattr(CONFIG.CAMERA_CONFIG, 'BINNING_FACTOR_DEFAULT', 1)
+            # Map config value to actual binning factor: 1 -> 2, 2 -> 4, etc.
+            binning_factor = config_binning * 2
+            
             print(f"Using objective: {object_dict_key}")
             print(f"CONFIG.DEFAULT_OBJECTIVE: {CONFIG.DEFAULT_OBJECTIVE}")
-            print(f"Tube lens: {tube_lens_mm} mm, Objective tube lens: {objective_tube_lens_mm} mm, Pixel size: {pixel_size_um} µm, Magnification: {magnification}")
+            print(f"Tube lens: {tube_lens_mm} mm, Objective tube lens: {objective_tube_lens_mm} mm, Pixel size: {pixel_size_um} µm, Magnification: {magnification}, Binning factor: {binning_factor}")
         except Exception as e:
             logger.error(f"Missing required parameters for pixel size calculation: {e}")
             return
 
+        # Calculate base pixel size without binning
         self.pixel_size_xy = pixel_size_um / (magnification / (objective_tube_lens_mm / tube_lens_mm))
+        
+        # Apply binning factor to get effective pixel size
+        # Binning increases effective pixel size (reduces resolution)
+        self.pixel_size_xy = self.pixel_size_xy * binning_factor
+        
+        # Apply any additional adjustment factor if needed
         self.pixel_size_xy = self.pixel_size_xy * CONFIG.PIXEL_SIZE_ADJUSTMENT_FACTOR
-        print(f"Pixel size: {self.pixel_size_xy} µm (adjustment factor: {CONFIG.PIXEL_SIZE_ADJUSTMENT_FACTOR})")
+        
+        print(f"Pixel size: {self.pixel_size_xy} µm (binning factor: {binning_factor}, adjustment factor: {CONFIG.PIXEL_SIZE_ADJUSTMENT_FACTOR})")
 
 
     def move_to_scaning_position(self):
