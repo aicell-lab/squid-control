@@ -1332,8 +1332,8 @@ class SquidController:
                                     logger.error(f"Channel mapping error: {e}")
                                     continue
 
-                                # Snap image using global channel ID with full frame for stitching
-                                image = await self.snap_image(global_channel_idx, intensity, exposure_time, full_frame=True)
+                                # Snap image using global channel ID with cropping applied (same as quick scan)
+                                image = await self.snap_image(global_channel_idx, intensity, exposure_time, full_frame=False)
 
                                 # Convert to 8-bit if needed
                                 if image.dtype != np.uint8:
@@ -2715,6 +2715,47 @@ class SquidController:
         # Read frame from camera
         self.camera.send_trigger()
         gray_img = self.camera.read_frame()
+        
+        if gray_img is not None:
+            # Apply rotation and flip first (same as snap_image)
+            gray_img = rotate_and_flip_image(gray_img, self.camera.rotate_image_angle, self.camera.flip_image)
+            
+            # In simulation mode, resize small images to expected camera resolution (same as snap_image)
+            if self.is_simulation:
+                height, width = gray_img.shape[:2]
+                # If image is too small, resize it to expected camera dimensions
+                expected_width = 3000  # Expected camera width
+                expected_height = 3000  # Expected camera height
+                if width < expected_width or height < expected_height:
+                    gray_img = cv2.resize(gray_img, (expected_width, expected_height), interpolation=cv2.INTER_LINEAR)
+            
+            # Apply same cropping logic as snap_image for both microscope types
+            # For Squid+ cameras with binning, we need to adjust the crop dimensions
+            is_squid_plus = getattr(CONFIG, 'FILTER_CONTROLLER_ENABLE', False) or getattr(CONFIG, 'USE_XERYON', False)
+            
+            if is_squid_plus:
+                # Squid+ camera is binned, so we need to adjust crop dimensions accordingly
+                binning_factor = getattr(CONFIG, 'BINNING_FACTOR_DEFAULT', 2)
+                crop_height = CONFIG.ACQUISITION.CROP_HEIGHT // binning_factor
+                crop_width = CONFIG.ACQUISITION.CROP_WIDTH // binning_factor
+            else:
+                # Original Squid microscope: use crop dimensions as-is
+                crop_height = CONFIG.ACQUISITION.CROP_HEIGHT
+                crop_width = CONFIG.ACQUISITION.CROP_WIDTH
+            
+            # Crop using configuration-based dimensions with proper bounds checking (same as snap_image)
+            height, width = gray_img.shape[:2]
+            start_x = width // 2 - crop_width // 2
+            start_y = height // 2 - crop_height // 2
+
+            # Add bounds checking
+            start_x = max(0, start_x)
+            start_y = max(0, start_y)
+            end_x = min(width, start_x + crop_width)
+            end_y = min(height, start_y + crop_height)
+
+            gray_img = gray_img[start_y:end_y, start_x:end_x]
+            logger.debug(f'FRAME_ACQ: Applied cropping: {crop_width}x{crop_height} from {width}x{height} -> {gray_img.shape[1]}x{gray_img.shape[0]}')
 
         # Get position after frame acquisition
         pos_after_x_mm, pos_after_y_mm, pos_after_z_mm, _ = self.navigationController.update_pos(self.microcontroller)
@@ -2726,11 +2767,11 @@ class SquidController:
         logger.info(f'FRAME_ACQ: Position before=({pos_before_x_mm:.2f}, {pos_before_y_mm:.2f}), after=({pos_after_x_mm:.2f}, {pos_after_y_mm:.2f}), avg=({avg_x_mm:.2f}, {avg_y_mm:.2f})')
 
         if gray_img is not None:
-            logger.info(f'FRAME_ACQ: Camera frame acquired successfully, shape={gray_img.shape}, dtype={gray_img.dtype}')
+            logger.info(f'FRAME_ACQ: Camera frame acquired successfully, shape={gray_img.shape}, dtype={gray_img.dtype}, min={gray_img.min()}, max={gray_img.max()}')
 
             # Process and add image to stitching queue using quick scan method
             processed_img = self._process_frame_for_stitching(gray_img)
-            logger.info(f'FRAME_ACQ: Image processed for stitching, new shape={processed_img.shape}, dtype={processed_img.dtype}')
+            logger.info(f'FRAME_ACQ: Image processed for stitching, new shape={processed_img.shape}, dtype={processed_img.dtype}, min={processed_img.min()}, max={processed_img.max()}')
 
             # Add to stitching queue for quick scan (using well-based approach)
             result = await self._add_image_to_zarr_quick_well_based(
@@ -2746,21 +2787,46 @@ class SquidController:
         return False
 
     def _process_frame_for_stitching(self, gray_img):
-        """Process a frame for stitching (resize, rotate, flip, convert to 8-bit)."""
-        # Immediately rescale to scale1 resolution (1/4 of original)
+        """
+        Process a frame for stitching (resize, convert to 8-bit).
+        
+        NOTE: For Toupcam cameras, rotation/flip is already applied in the camera callback.
+        We should NOT apply rotation/flip again here to avoid double transformation.
+        """
+        # Get the actual image dimensions
         original_height, original_width = gray_img.shape[:2]
-        scale1_width = original_width // 4
-        scale1_height = original_height // 4
-
+        
+        # For Squid+ cameras with binning, we need to account for the binning factor
+        # Check if this is a Squid+ microscope (has filter wheel or objective switcher)
+        is_squid_plus = getattr(CONFIG, 'FILTER_CONTROLLER_ENABLE', False) or getattr(CONFIG, 'USE_XERYON', False)
+        
+        if is_squid_plus:
+            # Squid+ camera is binned by 2, so the actual resolution is half of the ROI dimensions
+            # ROI: 6208x4168, but actual image after binning is 3104x2084
+            binning_factor = getattr(CONFIG, 'BINNING_FACTOR_DEFAULT', 2)
+            
+            # Calculate the effective full resolution (unbinned equivalent)
+            effective_width = original_width * binning_factor
+            effective_height = original_height * binning_factor
+            
+            # Calculate scale1 resolution (1/4 of effective full resolution)
+            scale1_width = effective_width // 4
+            scale1_height = effective_height // 4
+            
+            logger.debug(f"Squid+ binning adjustment: original={original_width}x{original_height}, binning={binning_factor}, effective={effective_width}x{effective_height}, scale1={scale1_width}x{scale1_height}")
+        else:
+            # Original Squid microscope: no binning, resize directly to 1/4
+            scale1_width = original_width // 4
+            scale1_height = original_height // 4
+            
+            logger.debug(f"Original Squid: original={original_width}x{original_height}, scale1={scale1_width}x{scale1_height}")
+        
         # Resize image to scale1 resolution
         scaled_img = cv2.resize(gray_img, (scale1_width, scale1_height), interpolation=cv2.INTER_AREA)
 
-        # Apply rotate and flip transformations
-        processed_img = rotate_and_flip_image(
-            scaled_img,
-            rotate_image_angle=self.camera.rotate_image_angle,
-            flip_image=self.camera.flip_image
-        )
+        # NOTE: Rotation/flip is already applied by the camera driver (Toupcam callback or similar)
+        # DO NOT apply rotate_and_flip_image here to avoid double transformation
+        processed_img = scaled_img
 
         # Convert to 8-bit if needed
         if processed_img.dtype != np.uint8:

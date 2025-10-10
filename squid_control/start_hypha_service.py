@@ -715,8 +715,19 @@ class MicroscopeHyphaService:
                     raw_img = cv2.resize(raw_img, (expected_width, expected_height), interpolation=cv2.INTER_LINEAR)
 
             # Crop the image before resizing, similar to squid_controller.py approach
-            crop_height = CONFIG.ACQUISITION.CROP_HEIGHT
-            crop_width = CONFIG.ACQUISITION.CROP_WIDTH
+            # For Squid+ cameras with binning, we need to adjust the crop dimensions
+            is_squid_plus = getattr(CONFIG, 'FILTER_CONTROLLER_ENABLE', False) or getattr(CONFIG, 'USE_XERYON', False)
+            
+            if is_squid_plus:
+                # Squid+ camera is binned, so we need to adjust crop dimensions accordingly
+                binning_factor = getattr(CONFIG, 'BINNING_FACTOR_DEFAULT', 2)
+                crop_height = CONFIG.ACQUISITION.CROP_HEIGHT // binning_factor
+                crop_width = CONFIG.ACQUISITION.CROP_WIDTH // binning_factor
+            else:
+                # Original Squid microscope: use crop dimensions as-is
+                crop_height = CONFIG.ACQUISITION.CROP_HEIGHT
+                crop_width = CONFIG.ACQUISITION.CROP_WIDTH
+            
             height, width = raw_img.shape[:2]  # Support both grayscale and color images
             start_x = width // 2 - crop_width // 2
             start_y = height // 2 - crop_height // 2
