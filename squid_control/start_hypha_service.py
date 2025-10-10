@@ -4437,10 +4437,30 @@ class MicroscopeHyphaService:
             
             if success:
                 logger.info(f"Objective switcher switched to {objective_name_str} (position {position})")
+                
+                # Update objective-related parameters after successful switch
+                try:
+                    # Update the current objective in objectiveStore
+                    self.squidController.objectiveStore.current_objective = objective_name_str
+                    logger.info(f"Updated objectiveStore.current_objective to: {objective_name_str}")
+                    
+                    # Recalculate pixel size and related parameters
+                    self.squidController.get_pixel_size()
+                    logger.info(f"Recalculated pixel size: {self.squidController.pixel_size_xy} µm")
+                    
+                    # Log the updated parameters
+                    logger.info(f"Objective switch completed - New objective: {objective_name_str}, "
+                              f"Pixel size: {self.squidController.pixel_size_xy} µm")
+                    
+                except Exception as param_error:
+                    logger.warning(f"Failed to update objective parameters: {param_error}")
+                    # Don't fail the entire operation if parameter update fails
+                
                 return {
                     "success": True,
                     "objective_name": objective_name_str,
                     "position": position,
+                    "pixel_size_xy": getattr(self.squidController, 'pixel_size_xy', None),
                     "message": f"Switched to objective {objective_name_str}"
                 }
             else:

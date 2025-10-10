@@ -333,6 +333,31 @@ async def test_squid_plus_objective_switcher_api(test_squid_plus_microscope_serv
             assert current_result.get("success", False) == True
             assert current_result.get("current_objective") is not None
             print(f"   ✓ Current objective: {current_result.get('current_objective', 'Unknown')}")
+            
+            # Test 6: Verify pixel size is updated when switching objectives
+            print("6. Testing pixel size update after objective switch...")
+            if objective_names:
+                # Get pixel size after switching to first objective
+                first_objective = objective_names[0]
+                switch_result = await service.switch_objective(objective_name=first_objective, move_z=True)
+                assert switch_result.get("success", False) == True
+                pixel_size_1 = switch_result.get("pixel_size_xy")
+                print(f"   ✓ Pixel size for {first_objective}: {pixel_size_1} µm")
+                
+                # Switch to second objective and check if pixel size changes
+                if len(objective_names) > 1:
+                    second_objective = objective_names[1]
+                    switch2_result = await service.switch_objective(objective_name=second_objective, move_z=True)
+                    assert switch2_result.get("success", False) == True
+                    pixel_size_2 = switch2_result.get("pixel_size_xy")
+                    print(f"   ✓ Pixel size for {second_objective}: {pixel_size_2} µm")
+                    
+                    # Verify pixel sizes are different (different objectives should have different pixel sizes)
+                    if pixel_size_1 is not None and pixel_size_2 is not None:
+                        assert pixel_size_1 != pixel_size_2, f"Pixel sizes should be different for different objectives: {pixel_size_1} vs {pixel_size_2}"
+                        print(f"   ✓ Pixel sizes are different as expected: {pixel_size_1} vs {pixel_size_2}")
+                    else:
+                        print("   ⚠️  Pixel size information not available in response")
         
         print("✅ Squid+ Objective Switcher API tests passed!")
         
