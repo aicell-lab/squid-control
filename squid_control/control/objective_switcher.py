@@ -390,7 +390,11 @@ class ObjectiveSwitcherSimulation:
     
     def get_position_names(self) -> dict:
         """Simulation version of get_position_names"""
+        # Get the actual objective names from configuration to match objectives_dict
+        pos1_objectives = getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_1', ['20x'])
+        pos2_objectives = getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_2', ['4x'])
+        
         return {
-            1: "20x (Simulation)",
-            2: "4x (Simulation)"
+            1: pos1_objectives[0] if pos1_objectives else "20x",
+            2: pos2_objectives[0] if pos2_objectives else "4x"
         }
