@@ -97,10 +97,16 @@ class WellZarrCanvasBase:
         # Lock for thread-safe zarr access
         self.zarr_lock = threading.RLock()
 
-        # Queue for frame stitching - increased size for stable FPS with non-blocking puts
-        self.stitch_queue = asyncio.Queue(maxsize=500)
-        self.stitching_task = None
-        self.is_stitching = False
+        # Two-queue architecture for parallel processing:
+        # 1. Preprocessing queue: receives raw images for CPU-intensive work (rotation, resizing)
+        # 2. Write queue: receives preprocessed data for serialized zarr writes
+        self.preprocessing_queue = asyncio.Queue(maxsize=500)  # Handle burst from camera
+        self.zarr_write_queue = asyncio.Queue(maxsize=100)     # Preprocessed data ready to write
+        
+        self.stitching_task = None  # Preprocessing task
+        self.writer_task = None     # Zarr writer task
+        self.is_stitching = False   # Flag for preprocessing loop
+        self.is_writing = False     # Flag for writer loop
 
         # Track available timepoints
         self.available_timepoints = [0]  # Start with timepoint 0 as a list
@@ -771,11 +777,184 @@ class WellZarrCanvasBase:
 
         return cropped
 
+    def _preprocess_image_for_stitching(self, image: np.ndarray, x_mm: float, y_mm: float,
+                                        channel_idx: int = 0, z_idx: int = 0, timepoint: int = 0,
+                                        is_quick_scan: bool = False):
+        """
+        CPU-intensive preprocessing: rotation, resizing, dtype conversion.
+        This runs in parallel in the thread pool without holding zarr_lock.
+        
+        Args:
+            image: Image array (2D)
+            x_mm: X position in millimeters
+            y_mm: Y position in millimeters
+            channel_idx: Local zarr channel index (0, 1, 2, etc.)
+            z_idx: Z-slice index (default 0)
+            timepoint: Timepoint index (default 0)
+            is_quick_scan: If True, only process scales 1-5 (skip scale 0)
+            
+        Returns:
+            Dict with preprocessed data ready for zarr writing, or None if validation fails
+        """
+        # Validate channel index (no lock needed for read-only check)
+        if channel_idx >= len(self.channels):
+            logger.error(f"Channel index {channel_idx} out of bounds. Available channels: {len(self.channels)} (indices 0-{len(self.channels)-1})")
+            return None
+
+        if channel_idx < 0:
+            logger.error(f"Channel index {channel_idx} cannot be negative")
+            return None
+
+        # Apply rotation and cropping (CPU work)
+        processed_image = self._rotate_and_crop_image(image)
+
+        # Prepare preprocessed data for all scales
+        preprocessed_scales = []
+        
+        # Determine scale range based on scan mode
+        start_scale = 1 if is_quick_scan else 0
+        end_scale = min(self.num_scales, 6) if is_quick_scan else self.num_scales
+
+        for scale in range(start_scale, end_scale):
+            scale_factor = 4 ** scale
+
+            # Get pixel coordinates for this scale
+            x_px, y_px = self.stage_to_pixel_coords(x_mm, y_mm, scale)
+
+            # Resize image if needed (CPU work)
+            if is_quick_scan and scale == 1:
+                # For quick scan, input is already at scale1 resolution
+                scaled_image = processed_image
+            elif scale > 0:
+                if is_quick_scan:
+                    # Scale relative to scale1 for quick scan
+                    relative_scale_factor = 4 ** (scale - 1)
+                    new_size = (processed_image.shape[1] // relative_scale_factor,
+                               processed_image.shape[0] // relative_scale_factor)
+                else:
+                    # Normal scaling from original
+                    new_size = (processed_image.shape[1] // scale_factor, 
+                               processed_image.shape[0] // scale_factor)
+                scaled_image = cv2.resize(processed_image, new_size, interpolation=cv2.INTER_AREA)
+            else:
+                scaled_image = processed_image
+
+            # Store preprocessed data for this scale
+            preprocessed_scales.append({
+                'scale': scale,
+                'scaled_image': scaled_image,
+                'x_px': x_px,
+                'y_px': y_px,
+                'x_mm': x_mm,
+                'y_mm': y_mm
+            })
+
+        return {
+            'preprocessed_scales': preprocessed_scales,
+            'channel_idx': channel_idx,
+            'z_idx': z_idx,
+            'timepoint': timepoint,
+            'is_quick_scan': is_quick_scan
+        }
+
+    def _write_preprocessed_to_zarr(self, preprocessed_data):
+        """
+        Write preprocessed image data to zarr arrays.
+        This is I/O work that must be serialized. Runs in single writer thread.
+        
+        Args:
+            preprocessed_data: Dict returned from _preprocess_image_for_stitching()
+        """
+        if preprocessed_data is None:
+            return
+
+        channel_idx = preprocessed_data['channel_idx']
+        z_idx = preprocessed_data['z_idx']
+        timepoint = preprocessed_data['timepoint']
+        is_quick_scan = preprocessed_data['is_quick_scan']
+
+        # Ensure timepoint exists in our tracking list
+        if timepoint not in self.available_timepoints:
+            with self.zarr_lock:
+                if timepoint not in self.available_timepoints:
+                    self.available_timepoints.append(timepoint)
+                    self.available_timepoints.sort()
+                    self._update_timepoint_metadata()
+
+        with self.zarr_lock:
+            # Ensure zarr arrays are sized correctly for this timepoint (lazy expansion)
+            self._ensure_timepoint_exists_in_zarr(timepoint)
+
+            # Write each preprocessed scale to zarr
+            for scale_data in preprocessed_data['preprocessed_scales']:
+                scale = scale_data['scale']
+                scaled_image = scale_data['scaled_image']
+                x_px = scale_data['x_px']
+                y_px = scale_data['y_px']
+
+                # Get the zarr array for this scale
+                zarr_array = self.zarr_arrays[scale]
+
+                # Double-check zarr array dimensions
+                if channel_idx >= zarr_array.shape[1]:
+                    logger.error(f"Channel index {channel_idx} exceeds zarr array channel dimension {zarr_array.shape[1]}")
+                    continue
+
+                # Calculate bounds
+                y_start = max(0, y_px - scaled_image.shape[0] // 2)
+                y_end = min(zarr_array.shape[3], y_start + scaled_image.shape[0])
+                x_start = max(0, x_px - scaled_image.shape[1] // 2)
+                x_end = min(zarr_array.shape[4], x_start + scaled_image.shape[1])
+
+                # Crop image if it extends beyond canvas
+                img_y_start = max(0, -y_px + scaled_image.shape[0] // 2)
+                img_y_end = img_y_start + (y_end - y_start)
+                img_x_start = max(0, -x_px + scaled_image.shape[1] // 2)
+                img_x_end = img_x_start + (x_end - x_start)
+
+                # CRITICAL: Always validate bounds before writing to zarr arrays
+                if y_end > y_start and x_end > x_start and img_y_end > img_y_start and img_x_end > img_x_start:
+                    # Additional validation to ensure image slice is within bounds
+                    img_y_end = min(img_y_end, scaled_image.shape[0])
+                    img_x_end = min(img_x_end, scaled_image.shape[1])
+
+                    # Final check that we still have valid bounds after clamping
+                    if img_y_end > img_y_start and img_x_end > img_x_start:
+                        try:
+                            # Ensure image is uint8 before writing to zarr
+                            image_to_write = scaled_image[img_y_start:img_y_end, img_x_start:img_x_end]
+
+                            if image_to_write.dtype != np.uint8:
+                                # Convert to uint8 if needed
+                                if image_to_write.dtype == np.uint16:
+                                    image_to_write = (image_to_write / 256).astype(np.uint8)
+                                elif image_to_write.dtype in [np.float32, np.float64]:
+                                    # Normalize float data to 0-255
+                                    if image_to_write.max() > image_to_write.min():
+                                        image_to_write = ((image_to_write - image_to_write.min()) /
+                                                        (image_to_write.max() - image_to_write.min()) * 255).astype(np.uint8)
+                                    else:
+                                        image_to_write = np.zeros_like(image_to_write, dtype=np.uint8)
+                                else:
+                                    image_to_write = image_to_write.astype(np.uint8)
+
+                            # Double-check the final data type
+                            if image_to_write.dtype != np.uint8:
+                                image_to_write = image_to_write.astype(np.uint8)
+
+                            zarr_array[timepoint, channel_idx, z_idx, y_start:y_end, x_start:x_end] = image_to_write
+                            
+                        except IndexError as e:
+                            logger.error(f"ZARR_WRITE: IndexError writing to zarr array at scale {scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
+                            logger.error(f"ZARR_WRITE: Zarr array shape: {zarr_array.shape}, trying to access timepoint {timepoint}")
+                        except Exception as e:
+                            logger.error(f"ZARR_WRITE: Error writing to zarr array at scale {scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
+
     def add_image_sync(self, image: np.ndarray, x_mm: float, y_mm: float,
                        channel_idx: int = 0, z_idx: int = 0, timepoint: int = 0):
         """
         Synchronously add an image to the canvas at the specified position and timepoint.
-        Updates all pyramid levels.
+        Updates all pyramid levels. Now uses 2-step preprocessing + writing for consistency.
         
         Args:
             image: Image array (2D)
@@ -785,110 +964,14 @@ class WellZarrCanvasBase:
             z_idx: Z-slice index (default 0)
             timepoint: Timepoint index (default 0)
         """
-        # Validate channel index
-        if channel_idx >= len(self.channels):
-            logger.error(f"Channel index {channel_idx} out of bounds. Available channels: {len(self.channels)} (indices 0-{len(self.channels)-1})")
-            return
-
-        if channel_idx < 0:
-            logger.error(f"Channel index {channel_idx} cannot be negative")
-            return
-
-        # Ensure timepoint exists in our tracking list
-        if timepoint not in self.available_timepoints:
-            with self.zarr_lock:
-                if timepoint not in self.available_timepoints:
-                    self.available_timepoints.append(timepoint)
-                    self.available_timepoints.sort()
-                    self._update_timepoint_metadata()
-
-        # Apply rotation and cropping first
-        processed_image = self._rotate_and_crop_image(image)
-
-        with self.zarr_lock:
-            # Ensure zarr arrays are sized correctly for this timepoint (lazy expansion)
-            self._ensure_timepoint_exists_in_zarr(timepoint)
-
-            for scale in range(self.num_scales):
-                scale_factor = 4 ** scale
-
-                # Get pixel coordinates for this scale
-                x_px, y_px = self.stage_to_pixel_coords(x_mm, y_mm, scale)
-
-                # Resize image if needed
-                if scale > 0:
-                    new_size = (processed_image.shape[1] // scale_factor, processed_image.shape[0] // scale_factor)
-                    scaled_image = cv2.resize(processed_image, new_size, interpolation=cv2.INTER_AREA)
-                else:
-                    scaled_image = processed_image
-
-                # Get the zarr array for this scale
-                zarr_array = self.zarr_arrays[scale]
-
-                # Double-check zarr array dimensions
-                if channel_idx >= zarr_array.shape[1]:
-                    logger.error(f"Channel index {channel_idx} exceeds zarr array channel dimension {zarr_array.shape[1]}")
-                    continue
-
-                # Calculate bounds
-                y_start = max(0, y_px - scaled_image.shape[0] // 2)
-                y_end = min(zarr_array.shape[3], y_start + scaled_image.shape[0])
-                x_start = max(0, x_px - scaled_image.shape[1] // 2)
-                x_end = min(zarr_array.shape[4], x_start + scaled_image.shape[1])
-
-                # Crop image if it extends beyond canvas
-                img_y_start = max(0, -y_px + scaled_image.shape[0] // 2)
-                img_y_end = img_y_start + (y_end - y_start)
-                img_x_start = max(0, -x_px + scaled_image.shape[1] // 2)
-                img_x_end = img_x_start + (x_end - x_start)
-
-                # CRITICAL: Always validate bounds before writing to zarr arrays
-                # This prevents zero-size chunk creation and zarr write errors
-
-                if y_end > y_start and x_end > x_start and img_y_end > img_y_start and img_x_end > img_x_start:
-                    # Additional validation to ensure image slice is within bounds
-                    img_y_end = min(img_y_end, scaled_image.shape[0])
-                    img_x_end = min(img_x_end, scaled_image.shape[1])
-
-
-                    # Final check that we still have valid bounds after clamping
-                    if img_y_end > img_y_start and img_x_end > img_x_start:
-                        try:
-                            # Ensure image is uint8 before writing to zarr
-                            image_to_write = scaled_image[img_y_start:img_y_end, img_x_start:img_x_end]
-
-                            if image_to_write.dtype != np.uint8:
-                                # Convert to uint8 if needed
-                                if image_to_write.dtype == np.uint16:
-                                    image_to_write = (image_to_write / 256).astype(np.uint8)
-                                elif image_to_write.dtype in [np.float32, np.float64]:
-                                    # Normalize float data to 0-255
-                                    if image_to_write.max() > image_to_write.min():
-                                        image_to_write = ((image_to_write - image_to_write.min()) /
-                                                        (image_to_write.max() - image_to_write.min()) * 255).astype(np.uint8)
-                                    else:
-                                        image_to_write = np.zeros_like(image_to_write, dtype=np.uint8)
-                                else:
-                                    image_to_write = image_to_write.astype(np.uint8)
-                                logger.info(f"ZARR_WRITE: Converted image from {scaled_image.dtype} to uint8")
-                            else:
-                                logger.info(f"ZARR_WRITE: Image already uint8: min={image_to_write.min()}, max={image_to_write.max()}")
-
-                            # Double-check the final data type
-                            if image_to_write.dtype != np.uint8:
-                                # Force conversion as fallback
-                                image_to_write = image_to_write.astype(np.uint8)
-
-                            zarr_array[timepoint, channel_idx, z_idx, y_start:y_end, x_start:x_end] = image_to_write
-                        except IndexError as e:
-                            logger.error(f"ZARR_WRITE: IndexError writing to zarr array at scale {scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
-                            logger.error(f"ZARR_WRITE: Zarr array shape: {zarr_array.shape}, trying to access timepoint {timepoint}")
-                        except Exception as e:
-                            logger.error(f"ZARR_WRITE: Error writing to zarr array at scale {scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
-                    else:
-                        logger.warning(f"ZARR_WRITE: Skipping zarr write - invalid image bounds after clamping: img_y({img_y_start}:{img_y_end}), img_x({img_x_start}:{img_x_end})")
-                else:
-                    logger.warning(f"ZARR_WRITE: Skipping zarr write - invalid bounds: zarr_y({y_start}:{y_end}), zarr_x({x_start}:{x_end}), img_y({img_y_start}:{img_y_end}), img_x({img_x_start}:{img_x_end})")
+        # Step 1: Preprocess (CPU work)
+        preprocessed = self._preprocess_image_for_stitching(
+            image, x_mm, y_mm, channel_idx, z_idx, timepoint, is_quick_scan=False
+        )
+        
+        # Step 2: Write to zarr (I/O work)
+        if preprocessed is not None:
+            self._write_preprocessed_to_zarr(preprocessed)
 
     def add_image_sync_quick(self, image: np.ndarray, x_mm: float, y_mm: float,
                            channel_idx: int = 0, z_idx: int = 0, timepoint: int = 0):
@@ -896,6 +979,7 @@ class WellZarrCanvasBase:
         Synchronously add an image to the canvas for quick scan mode.
         Only updates scales 1-5 (skips scale 0 for performance).
         The input image should already be at scale1 resolution.
+        Now uses 2-step preprocessing + writing for consistency.
         
         Args:
             image: Image array (2D) - should be at scale1 resolution (1/4 of original)
@@ -905,351 +989,242 @@ class WellZarrCanvasBase:
             z_idx: Z-slice index (default 0)
             timepoint: Timepoint index (default 0)
         """
-        logger.info(f"QUICK_SYNC: Called add_image_sync_quick at ({x_mm:.2f}, {y_mm:.2f}), channel={channel_idx}, timepoint={timepoint}, image.shape={image.shape}")
-
-        # Validate channel index
-        if channel_idx >= len(self.channels):
-            logger.error(f"QUICK_SYNC: Channel index {channel_idx} out of bounds. Available channels: {len(self.channels)} (indices 0-{len(self.channels)-1})")
-            return
-
-        if channel_idx < 0:
-            logger.error(f"QUICK_SYNC: Channel index {channel_idx} cannot be negative")
-            return
-
-        # Ensure timepoint exists in our tracking list
-        if timepoint not in self.available_timepoints:
-            with self.zarr_lock:
-                if timepoint not in self.available_timepoints:
-                    self.available_timepoints.append(timepoint)
-                    self.available_timepoints.sort()
-                    self._update_timepoint_metadata()
-
-        # For quick scan, we skip rotation to reduce computation pressure
-        # The image should already be rotated and flipped by the caller
-        processed_image = image
-
-        with self.zarr_lock:
-            # Ensure zarr arrays are sized correctly for this timepoint (lazy expansion)
-            self._ensure_timepoint_exists_in_zarr(timepoint)
-
-            logger.info(f"QUICK_SYNC: Starting zarr write operations for timepoint {timepoint}, processing scales 1-{min(self.num_scales, 6)-1}")
-
-            # Only process scales 1-5 (skip scale 0 for performance)
-            for scale in range(1, min(self.num_scales, 6)):  # scales 1-5
-                logger.info(f"QUICK_SYNC: Processing scale {scale}")
-                scale_factor = 4 ** scale
-
-                # Get pixel coordinates for this scale
-                x_px, y_px = self.stage_to_pixel_coords(x_mm, y_mm, scale)
-
-                # Resize image - note that input image is already at scale1 resolution
-                # So for scale1: use image as-is
-                # For scale2: resize by 1/4, scale3: by 1/16, etc.
-                if scale == 1:
-                    scaled_image = processed_image  # Already at scale1 resolution
-                else:
-                    # Scale relative to scale1 (which the input image represents)
-                    relative_scale_factor = 4 ** (scale - 1)
-                    new_size = (processed_image.shape[1] // relative_scale_factor,
-                               processed_image.shape[0] // relative_scale_factor)
-                    scaled_image = cv2.resize(processed_image, new_size, interpolation=cv2.INTER_AREA)
-
-                # Get the zarr array for this scale
-                zarr_array = self.zarr_arrays[scale]
-
-                # Double-check zarr array dimensions
-                if channel_idx >= zarr_array.shape[1]:
-                    logger.error(f"Channel index {channel_idx} exceeds zarr array channel dimension {zarr_array.shape[1]}")
-                    continue
-
-                # Calculate bounds
-                y_start = max(0, y_px - scaled_image.shape[0] // 2)
-                y_end = min(zarr_array.shape[3], y_start + scaled_image.shape[0])
-                x_start = max(0, x_px - scaled_image.shape[1] // 2)
-                x_end = min(zarr_array.shape[4], x_start + scaled_image.shape[1])
-
-                logger.info(f"QUICK_SYNC: Scale {scale} calculated bounds - y_px={y_px}, x_px={x_px}, scaled_image.shape={scaled_image.shape}")
-
-                # Crop image if it extends beyond canvas
-                img_y_start = max(0, -y_px + scaled_image.shape[0] // 2)
-                img_y_end = img_y_start + (y_end - y_start)
-                img_x_start = max(0, -x_px + scaled_image.shape[1] // 2)
-                img_x_end = img_x_start + (x_end - x_start)
-
-                logger.info(f"QUICK_SYNC: Scale {scale} bounds check - zarr_y({y_start}:{y_end}), zarr_x({x_start}:{x_end}), img_y({img_y_start}:{img_y_end}), img_x({img_x_start}:{img_x_end})")
-
-                # CRITICAL: Always validate bounds before writing to zarr arrays
-                # This prevents zero-size chunk creation and zarr write errors
-                if y_end > y_start and x_end > x_start and img_y_end > img_y_start and img_x_end > img_x_start:
-                    # Additional validation to ensure image slice is within bounds
-                    img_y_end = min(img_y_end, scaled_image.shape[0])
-                    img_x_end = min(img_x_end, scaled_image.shape[1])
-
-                    logger.info(f"QUICK_SYNC: Scale {scale} after clamping - img_y({img_y_start}:{img_y_end}), img_x({img_x_start}:{img_x_end}), scaled_image.shape={scaled_image.shape}")
-
-                    # Final check that we still have valid bounds after clamping
-                    if img_y_end > img_y_start and img_x_end > img_x_start:
-                        try:
-                            logger.info(f"QUICK_SYNC: Attempting to write to zarr array at scale {scale}, channel {channel_idx}, timepoint {timepoint}")
-                            # Ensure image is uint8 before writing to zarr
-                            image_to_write = scaled_image[img_y_start:img_y_end, img_x_start:img_x_end]
-                            logger.info(f"QUICK_SYNC: Original image_to_write dtype: {image_to_write.dtype}, shape: {image_to_write.shape}, min: {image_to_write.min()}, max: {image_to_write.max()}")
-
-                            if image_to_write.dtype != np.uint8:
-                                # Convert to uint8 if needed
-                                if image_to_write.dtype == np.uint16:
-                                    image_to_write = (image_to_write / 256).astype(np.uint8)
-                                    logger.info(f"QUICK_SYNC: Converted uint16 to uint8: min={image_to_write.min()}, max={image_to_write.max()}")
-                                elif image_to_write.dtype in [np.float32, np.float64]:
-                                    # Normalize float data to 0-255
-                                    if image_to_write.max() > image_to_write.min():
-                                        image_to_write = ((image_to_write - image_to_write.min()) /
-                                                        (image_to_write.max() - image_to_write.min()) * 255).astype(np.uint8)
-                                        logger.info(f"QUICK_SYNC: Normalized float to uint8: min={image_to_write.min()}, max={image_to_write.max()}")
-                                    else:
-                                        image_to_write = np.zeros_like(image_to_write, dtype=np.uint8)
-                                        logger.info("QUICK_SYNC: Created zero uint8 array")
-                                else:
-                                    image_to_write = image_to_write.astype(np.uint8)
-                                    logger.info(f"QUICK_SYNC: Direct conversion to uint8: min={image_to_write.min()}, max={image_to_write.max()}")
-                                logger.info(f"QUICK_SYNC: Converted image from {scaled_image.dtype} to uint8")
-                            else:
-                                logger.info(f"QUICK_SYNC: Image already uint8: min={image_to_write.min()}, max={image_to_write.max()}")
-
-                            # Double-check the final data type
-                            if image_to_write.dtype != np.uint8:
-                                logger.error(f"QUICK_SYNC: CRITICAL ERROR - image_to_write is still {image_to_write.dtype}, not uint8!")
-                                # Force conversion as fallback
-                                image_to_write = image_to_write.astype(np.uint8)
-                                logger.info(f"QUICK_SYNC: Forced conversion to uint8: min={image_to_write.min()}, max={image_to_write.max()}")
-
-                            zarr_array[timepoint, channel_idx, z_idx, y_start:y_end, x_start:x_end] = image_to_write
-                            logger.info(f"QUICK_SYNC: Successfully wrote image to zarr at scale {scale}, channel {channel_idx}, timepoint {timepoint} (quick scan)")
-                        except IndexError as e:
-                            logger.error(f"QUICK_SYNC: IndexError writing to zarr array at scale {scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
-                            logger.error(f"QUICK_SYNC: Zarr array shape: {zarr_array.shape}, trying to access timepoint {timepoint}")
-                        except Exception as e:
-                            logger.error(f"QUICK_SYNC: Error writing to zarr array at scale {scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
-                    else:
-                        logger.warning(f"QUICK_SYNC: Skipping zarr write - invalid image bounds after clamping: img_y({img_y_start}:{img_y_end}), img_x({img_x_start}:{img_x_end}) (quick scan)")
-                else:
-                    logger.warning(f"QUICK_SYNC: Skipping zarr write - invalid bounds: zarr_y({y_start}:{y_end}), zarr_x({x_start}:{x_end}), img_y({img_y_start}:{img_y_end}), img_x({img_x_start}:{img_x_end}) (quick scan)")
-
-        logger.info(f"QUICK_SYNC: Completed add_image_sync_quick at ({x_mm:.2f}, {y_mm:.2f}), channel={channel_idx}, timepoint={timepoint}")
+        # Step 1: Preprocess (CPU work)
+        preprocessed = self._preprocess_image_for_stitching(
+            image, x_mm, y_mm, channel_idx, z_idx, timepoint, is_quick_scan=True
+        )
+        
+        # Step 2: Write to zarr (I/O work)
+        if preprocessed is not None:
+            self._write_preprocessed_to_zarr(preprocessed)
 
     async def add_image_async(self, image: np.ndarray, x_mm: float, y_mm: float,
-                              channel_idx: int = 0, z_idx: int = 0, timepoint: int = 0):
-        """Add image to the stitching queue for asynchronous processing."""
-        await self.stitch_queue.put({
+                              channel_idx: int = 0, z_idx: int = 0, timepoint: int = 0, 
+                              quick_scan: bool = False):
+        """
+        Add image to the preprocessing queue for asynchronous processing.
+        
+        Args:
+            image: Image array (2D)
+            x_mm: X position in millimeters
+            y_mm: Y position in millimeters
+            channel_idx: Local zarr channel index
+            z_idx: Z-slice index
+            timepoint: Timepoint index
+            quick_scan: If True, use quick scan mode (scales 1-5 only)
+        """
+        await self.preprocessing_queue.put({
             'image': image.copy(),
             'x_mm': x_mm,
             'y_mm': y_mm,
             'channel_idx': channel_idx,
             'z_idx': z_idx,
             'timepoint': timepoint,
+            'quick_scan': quick_scan,
             'timestamp': time.time()
         })
 
-    async def start_stitching(self):
-        """Start the background stitching task."""
-        if not self.is_stitching:
-            self.is_stitching = True
-            self.stitching_task = asyncio.create_task(self._stitching_loop())
-            logger.info("Started background stitching task")
+    async def _preprocess_and_queue_write(self, frame_data):
+        """
+        Preprocess image in thread pool (parallel), then queue for writing (serialized).
+        
+        Args:
+            frame_data: Dict with image, coordinates, and metadata
+        """
+        loop = asyncio.get_event_loop()
+        
+        # CPU work in thread pool (runs in parallel with other preprocessing tasks)
+        preprocessed = await loop.run_in_executor(
+            self.executor,
+            self._preprocess_image_for_stitching,
+            frame_data['image'],
+            frame_data['x_mm'],
+            frame_data['y_mm'],
+            frame_data['channel_idx'],
+            frame_data['z_idx'],
+            frame_data['timepoint'],
+            frame_data.get('quick_scan', False)
+        )
+        
+        # Queue for serialized writing (only if preprocessing succeeded)
+        if preprocessed is not None:
+            await self.zarr_write_queue.put(preprocessed)
 
-    async def stop_stitching(self):
-        """Stop the background stitching task and process all remaining images in queue."""
-        self.is_stitching = False
-
-        # Process any remaining images in the queue
-        logger.info("Processing remaining images in stitching queue before stopping...")
-        remaining_count = 0
-
-        while not self.stitch_queue.empty():
+    async def _zarr_writer_loop(self):
+        """
+        Dedicated writer task that serializes zarr writes.
+        Runs in single task to prevent file write conflicts.
+        """
+        while self.is_writing:
             try:
-                frame_data = await asyncio.wait_for(
-                    self.stitch_queue.get(),
-                    timeout=0.1  # Short timeout to avoid hanging
+                # Get preprocessed data from write queue
+                preprocessed_data = await asyncio.wait_for(
+                    self.zarr_write_queue.get(),
+                    timeout=1.0
                 )
-
-                # Check if this is a quick scan
-                is_quick_scan = frame_data.get('quick_scan', False)
-
-                # Extract timepoint
-                timepoint = frame_data.get('timepoint', 0)
-
-                # Ensure timepoint exists in our tracking list
-                if timepoint not in self.available_timepoints:
-                    with self.zarr_lock:
-                        if timepoint not in self.available_timepoints:
-                            self.available_timepoints.append(timepoint)
-                            self.available_timepoints.sort()
-                            self._update_timepoint_metadata()
-
-                # Process in thread pool to avoid blocking
+                
+                # Write to zarr (I/O work, single-threaded)
                 loop = asyncio.get_event_loop()
-                if is_quick_scan:
-                    await loop.run_in_executor(
-                        self.executor,
-                        self.add_image_sync_quick,
-                        frame_data['image'],
-                        frame_data['x_mm'],
-                        frame_data['y_mm'],
-                        frame_data['channel_idx'],
-                        frame_data['z_idx'],
-                        timepoint
-                    )
-                else:
-                    await loop.run_in_executor(
-                        self.executor,
-                        self.add_image_sync,
-                        frame_data['image'],
-                        frame_data['x_mm'],
-                        frame_data['y_mm'],
-                        frame_data['channel_idx'],
-                        frame_data['z_idx'],
-                        timepoint
-                    )
-                remaining_count += 1
-
+                await loop.run_in_executor(
+                    None,  # Use default executor for I/O
+                    self._write_preprocessed_to_zarr,
+                    preprocessed_data
+                )
+                
             except asyncio.TimeoutError:
-                break  # No more items in queue
+                continue  # No data to write, keep waiting
             except Exception as e:
-                logger.error(f"Error processing remaining image in queue: {e}")
+                logger.error(f"Error in zarr writer loop: {e}")
+                import traceback
+                traceback.print_exc()
+
+        # Process any remaining writes in queue before exiting
+        logger.info("Draining remaining writes from zarr write queue...")
+        remaining_count = 0
+        while not self.zarr_write_queue.empty():
+            try:
+                preprocessed_data = await asyncio.wait_for(
+                    self.zarr_write_queue.get(),
+                    timeout=0.1
+                )
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(
+                    None,
+                    self._write_preprocessed_to_zarr,
+                    preprocessed_data
+                )
+                remaining_count += 1
+            except asyncio.TimeoutError:
+                break
+            except Exception as e:
+                logger.error(f"Error writing remaining data: {e}")
 
         if remaining_count > 0:
-            logger.info(f"Processed {remaining_count} remaining images from stitching queue")
+            logger.info(f"Zarr writer loop processed {remaining_count} remaining writes")
 
-        # Wait for the stitching task to complete
+    async def start_stitching(self):
+        """Start the background stitching tasks (preprocessing + writing)."""
+        if not self.is_stitching:
+            self.is_stitching = True
+            self.is_writing = True
+            
+            # Start preprocessing loop
+            self.stitching_task = asyncio.create_task(self._stitching_loop())
+            # Start writer loop
+            self.writer_task = asyncio.create_task(self._zarr_writer_loop())
+            
+            logger.info("Started background stitching (preprocessing + writer tasks)")
+
+    async def stop_stitching(self):
+        """
+        Stop the background stitching tasks with proper cleanup order.
+        Order: Stop preprocessing → Drain preprocessing queue → Stop writer → Drain write queue
+        """
+        logger.info("Stopping stitching pipeline...")
+        
+        # Step 1: Stop preprocessing loop (no new images will be preprocessed)
+        self.is_stitching = False
+        logger.info("Stopped preprocessing loop, draining preprocessing queue...")
+
+        # Step 2: Wait for preprocessing loop to finish
         if self.stitching_task:
             await self.stitching_task
+            logger.info("Preprocessing loop completed")
 
-        # CRITICAL: Wait for all thread pool operations to complete
+        # Step 3: Process any remaining images in preprocessing queue
+        preprocess_count = 0
+        while not self.preprocessing_queue.empty():
+            try:
+                frame_data = await asyncio.wait_for(
+                    self.preprocessing_queue.get(),
+                    timeout=0.1
+                )
+                # Preprocess and queue for writing
+                await self._preprocess_and_queue_write(frame_data)
+                preprocess_count += 1
+            except asyncio.TimeoutError:
+                break
+            except Exception as e:
+                logger.error(f"Error processing remaining frame in preprocessing queue: {e}")
+
+        if preprocess_count > 0:
+            logger.info(f"Processed {preprocess_count} remaining frames from preprocessing queue")
+
+        # Step 4: Wait for write queue to drain (all preprocessed data gets written)
+        logger.info(f"Waiting for write queue to drain ({self.zarr_write_queue.qsize()} items remaining)...")
+        while not self.zarr_write_queue.empty():
+            await asyncio.sleep(0.1)  # Give writer time to process
+            # Safety timeout: if queue isn't draining, break after reasonable time
+            if self.zarr_write_queue.qsize() > 0:
+                await asyncio.sleep(0.1)
+
+        # Step 5: Stop writer loop (no more writes will be processed)
+        self.is_writing = False
+        logger.info("Stopping writer loop...")
+
+        # Step 6: Wait for writer task to complete
+        if self.writer_task:
+            await self.writer_task
+            logger.info("Writer loop completed")
+
+        # Step 7: CRITICAL - Wait for all thread pool operations to complete
         logger.info("Waiting for all zarr operations to complete...")
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self._wait_for_zarr_operations_complete)
 
-        logger.info("Stopped background stitching task")
+        logger.info("Stitching pipeline stopped successfully")
 
     async def _stitching_loop(self):
-        """Background loop that processes the stitching queue."""
-        while self.is_stitching:
+        """
+        Background preprocessing loop that spawns multiple concurrent preprocessing tasks.
+        This enables parallel CPU work across multiple threads.
+        """
+        active_tasks = set()
+        max_concurrent = 4  # Match thread pool size for optimal parallelization
+        
+        logger.info(f"Preprocessing loop started (max {max_concurrent} concurrent tasks)")
+        
+        while self.is_stitching or not self.preprocessing_queue.empty():
             try:
-                # Get frame from queue with timeout
-                frame_data = await asyncio.wait_for(
-                    self.stitch_queue.get(),
-                    timeout=1.0
-                )
-
-                # Check if this is a quick scan (only updates scales 1-5)
-                is_quick_scan = frame_data.get('quick_scan', False)
-
-                # Extract timepoint
-                timepoint = frame_data.get('timepoint', 0)
-
-                logger.info(f"STITCHING_LOOP: Processing image at ({frame_data['x_mm']:.2f}, {frame_data['y_mm']:.2f}), channel={frame_data['channel_idx']}, timepoint={timepoint}, quick_scan={is_quick_scan}")
-
-                # Ensure timepoint exists in our tracking list (do this in main thread)
-                if timepoint not in self.available_timepoints:
-                    with self.zarr_lock:
-                        if timepoint not in self.available_timepoints:
-                            self.available_timepoints.append(timepoint)
-                            self.available_timepoints.sort()
-                            self._update_timepoint_metadata()
-
-                # Process in thread pool to avoid blocking
-                loop = asyncio.get_event_loop()
-                if is_quick_scan:
-                    # Use quick scan method that only updates scales 1-5
-                    logger.info(f"STITCHING_LOOP: Calling add_image_sync_quick for image at ({frame_data['x_mm']:.2f}, {frame_data['y_mm']:.2f})")
-                    await loop.run_in_executor(
-                        self.executor,
-                        self.add_image_sync_quick,
-                        frame_data['image'],
-                        frame_data['x_mm'],
-                        frame_data['y_mm'],
-                        frame_data['channel_idx'],
-                        frame_data['z_idx'],
-                        timepoint
-                    )
-                    logger.info(f"STITCHING_LOOP: Completed add_image_sync_quick for image at ({frame_data['x_mm']:.2f}, {frame_data['y_mm']:.2f})")
-                else:
-                    # Use normal method that updates all scales
-                    logger.info(f"STITCHING_LOOP: Calling add_image_sync for image at ({frame_data['x_mm']:.2f}, {frame_data['y_mm']:.2f})")
-                    await loop.run_in_executor(
-                        self.executor,
-                        self.add_image_sync,
-                        frame_data['image'],
-                        frame_data['x_mm'],
-                        frame_data['y_mm'],
-                        frame_data['channel_idx'],
-                        frame_data['z_idx'],
-                        timepoint
-                    )
-                    logger.info(f"STITCHING_LOOP: Completed add_image_sync for image at ({frame_data['x_mm']:.2f}, {frame_data['y_mm']:.2f})")
-
-            except asyncio.TimeoutError:
-                continue
+                # Launch new preprocessing tasks up to max_concurrent limit
+                while len(active_tasks) < max_concurrent and not self.preprocessing_queue.empty():
+                    try:
+                        # Get frame from preprocessing queue (non-blocking)
+                        frame_data = self.preprocessing_queue.get_nowait()
+                        
+                        # Launch preprocessing task (runs in parallel)
+                        task = asyncio.create_task(self._preprocess_and_queue_write(frame_data))
+                        active_tasks.add(task)
+                        
+                        # Remove task from set when done
+                        task.add_done_callback(active_tasks.discard)
+                        
+                        logger.debug(f"Launched preprocessing task ({len(active_tasks)} active)")
+                        
+                    except asyncio.QueueEmpty:
+                        break  # No more items in queue
+                    except Exception as e:
+                        logger.error(f"Error launching preprocessing task: {e}")
+                
+                # Small delay to prevent busy loop
+                await asyncio.sleep(0.01)
+                
+                # If no active tasks and queue is empty, wait a bit longer
+                if len(active_tasks) == 0 and self.preprocessing_queue.empty():
+                    await asyncio.sleep(0.1)
+                
             except Exception as e:
-                logger.error(f"Error in stitching loop: {e}")
-
-        # Process any final images that might have been added during the last iteration
-        logger.debug("Stitching loop exited, checking for any final images in queue...")
-        final_count = 0
-        while not self.stitch_queue.empty():
-            try:
-                frame_data = await asyncio.wait_for(
-                    self.stitch_queue.get(),
-                    timeout=0.1
-                )
-
-                # Check if this is a quick scan
-                is_quick_scan = frame_data.get('quick_scan', False)
-
-                # Extract timepoint
-                timepoint = frame_data.get('timepoint', 0)
-
-                # Ensure timepoint exists in our tracking list
-                if timepoint not in self.available_timepoints:
-                    with self.zarr_lock:
-                        if timepoint not in self.available_timepoints:
-                            self.available_timepoints.append(timepoint)
-                            self.available_timepoints.sort()
-                            self._update_timepoint_metadata()
-
-                # Process in thread pool to avoid blocking
-                loop = asyncio.get_event_loop()
-                if is_quick_scan:
-                    await loop.run_in_executor(
-                        self.executor,
-                        self.add_image_sync_quick,
-                        frame_data['image'],
-                        frame_data['x_mm'],
-                        frame_data['y_mm'],
-                        frame_data['channel_idx'],
-                        frame_data['z_idx'],
-                        timepoint
-                    )
-                else:
-                    await loop.run_in_executor(
-                        self.executor,
-                        self.add_image_sync,
-                        frame_data['image'],
-                        frame_data['x_mm'],
-                        frame_data['y_mm'],
-                        frame_data['channel_idx'],
-                        frame_data['z_idx'],
-                        timepoint
-                    )
-                final_count += 1
-
-            except asyncio.TimeoutError:
-                break
-            except Exception as e:
-                logger.error(f"Error processing final image in stitching loop: {e}")
-
-        if final_count > 0:
-            logger.info(f"Stitching loop processed {final_count} final images before exiting")
+                logger.error(f"Error in preprocessing loop: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        # Wait for all active preprocessing tasks to complete
+        if active_tasks:
+            logger.info(f"Waiting for {len(active_tasks)} active preprocessing tasks to complete...")
+            await asyncio.gather(*active_tasks, return_exceptions=True)
+            logger.info("All preprocessing tasks completed")
+        
+        logger.info("Preprocessing loop exited")
 
     def get_canvas_region(self, x_mm: float, y_mm: float, width_mm: float, height_mm: float,
                           scale: int = 0, channel_idx: int = 0, timepoint: int = 0) -> np.ndarray:
