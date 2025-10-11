@@ -446,8 +446,17 @@ class SquidController:
             print(f"Using objective: {object_dict_key}")
             print(f"CONFIG.DEFAULT_OBJECTIVE: {CONFIG.DEFAULT_OBJECTIVE}")
             print(f"Tube lens: {tube_lens_mm} mm, Objective tube lens: {objective_tube_lens_mm} mm, Pixel size: {pixel_size_um} µm, Magnification: {magnification}, Binning factor: {binning_factor}")
+        except KeyError as e:
+            logger.error(f"Missing key in pixel size calculation: {e}")
+            logger.error(f"  CONFIG.CAMERA_SENSOR: {getattr(CONFIG, 'CAMERA_SENSOR', 'NOT SET')}")
+            logger.error(f"  CONFIG.CAMERA_PIXEL_SIZE_UM keys: {list(CONFIG.CAMERA_PIXEL_SIZE_UM.keys())}")
+            logger.error(f"  objectiveStore.current_objective: {self.objectiveStore.current_objective}")
+            logger.error(f"  objectives_dict keys: {list(self.objectiveStore.objectives_dict.keys())}")
+            return
         except Exception as e:
-            logger.error(f"Missing required parameters for pixel size calculation: {e}")
+            logger.error(f"Unexpected error in pixel size calculation: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return
 
         # Calculate base pixel size without binning

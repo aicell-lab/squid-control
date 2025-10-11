@@ -90,6 +90,15 @@ async def test_squid_plus_microscope_service():
             hcs_config_dst = 'squid_control/config/configuration_HCS_v2_example.ini'
             hcs_config_backup = 'squid_control/config/configuration_HCS_v2_example.ini.backup'
             
+            # Check if Squid+ config exists, if not create it from the main Squid+ config
+            if not os.path.exists(squid_plus_config_src):
+                main_squid_plus_config = 'squid_control/configuration_Squid+.ini'
+                if os.path.exists(main_squid_plus_config):
+                    shutil.copy2(main_squid_plus_config, squid_plus_config_src)
+                    print(f"📋 Created Squid+ config from main config: {squid_plus_config_src}")
+                else:
+                    print("⚠️ Neither Squid+ config file found, using default")
+            
             # Backup the original HCS_v2 config and replace with Squid+ config
             if os.path.exists(squid_plus_config_src) and os.path.exists(hcs_config_dst):
                 shutil.copy2(hcs_config_dst, hcs_config_backup)
@@ -106,6 +115,13 @@ async def test_squid_plus_microscope_service():
                     shutil.copy2(hcs_config_backup, hcs_config_dst)
                     os.remove(hcs_config_backup)
                     print("🧹 Restored original HCS_v2 configuration")
+                
+                # Clean up Squid+ config if we created it
+                if os.path.exists(squid_plus_config_src):
+                    main_squid_plus_config = 'squid_control/configuration_Squid+.ini'
+                    # Only delete if it was created from main config (not if it existed originally)
+                    if os.path.exists(main_squid_plus_config) and not os.path.exists('squid_control/config/configuration_Squid+_example.ini.original'):
+                        pass  # Keep it, it was original
             
             init_time = time.time() - start_time
             print(f"✅ Squid+ Microscope initialization took {init_time:.1f} seconds")
