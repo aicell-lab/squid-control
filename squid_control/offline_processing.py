@@ -1293,7 +1293,7 @@ class OfflineProcessor:
                 break
                 
             # Check queue size
-            current_queue_size = canvas.stitch_queue.qsize()
+            current_queue_size = canvas.preprocessing_queue.qsize()
             
             # Log progress if queue size changed
             if current_queue_size != last_queue_size:
@@ -1321,7 +1321,7 @@ class OfflineProcessor:
             await asyncio.sleep(0.5)  # Increased from 0.1 to 0.5 seconds
         
         # Final check
-        final_queue_size = canvas.stitch_queue.qsize()
+        final_queue_size = canvas.preprocessing_queue.qsize()
         if final_queue_size > 0:
             print(f"Warning: {final_queue_size} images still in stitching queue after timeout")
         else:
@@ -1361,9 +1361,9 @@ class OfflineProcessor:
             }
 
             # Check queue size before adding
-            queue_size_before = canvas.stitch_queue.qsize()
-            await canvas.stitch_queue.put(queue_item)
-            queue_size_after = canvas.stitch_queue.qsize()
+            queue_size_before = canvas.preprocessing_queue.qsize()
+            await canvas.preprocessing_queue.put(queue_item)
+            queue_size_after = canvas.preprocessing_queue.qsize()
 
 
             return f"Queued for stitching (all scales)"
@@ -1384,12 +1384,12 @@ class OfflineProcessor:
             max_queue_size: Maximum queue size before applying backpressure
         """
         # Check queue size and apply backpressure if needed
-        queue_size = canvas.stitch_queue.qsize()
+        queue_size = canvas.preprocessing_queue.qsize()
         
         if queue_size > max_queue_size:
             # Wait for queue to drain a bit
             print(f"Stitching queue full ({queue_size} items), waiting for processing...")
-            while canvas.stitch_queue.qsize() > max_queue_size // 2:
+            while canvas.preprocessing_queue.qsize() > max_queue_size // 2:
                 await asyncio.sleep(0.1)
         
         # Add image to canvas

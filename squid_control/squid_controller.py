@@ -1457,9 +1457,9 @@ class SquidController:
                 }
 
                 # Check queue size before adding
-                queue_size_before = well_canvas.stitch_queue.qsize()
-                await well_canvas.stitch_queue.put(queue_item)
-                queue_size_after = well_canvas.stitch_queue.qsize()
+                queue_size_before = well_canvas.preprocessing_queue.qsize()
+                await well_canvas.preprocessing_queue.put(queue_item)
+                queue_size_after = well_canvas.preprocessing_queue.qsize()
 
                 logger.info(f'ZARR_QUEUE: Successfully queued image for well {well_row}{well_column} at absolute coords ({x_mm:.2f}, {y_mm:.2f})')
                 logger.info(f'ZARR_QUEUE: Queue size before={queue_size_before}, after={queue_size_after}')
@@ -1479,7 +1479,7 @@ class SquidController:
 
         if hasattr(self, 'experiment_manager') and hasattr(self.experiment_manager, 'well_canvases'):
             for well_id, well_canvas in self.experiment_manager.well_canvases.items():
-                queue_size = well_canvas.stitch_queue.qsize()
+                queue_size = well_canvas.preprocessing_queue.qsize()
                 is_stitching = well_canvas.is_stitching
                 logger.info(f"STITCHING_DEBUG: Well {well_id} - stitching_active={is_stitching}, queue_size={queue_size}")
 
@@ -1977,9 +1977,9 @@ class SquidController:
                 }
 
                 # Check queue size before adding
-                queue_size_before = well_canvas.stitch_queue.qsize()
-                await well_canvas.stitch_queue.put(queue_item)
-                queue_size_after = well_canvas.stitch_queue.qsize()
+                queue_size_before = well_canvas.preprocessing_queue.qsize()
+                await well_canvas.preprocessing_queue.put(queue_item)
+                queue_size_after = well_canvas.preprocessing_queue.qsize()
 
                 logger.info(f'ZARR_NORMAL: Queue size before={queue_size_before}, after={queue_size_after}')
                 return f"Queued for well {well_row}{well_column}"
@@ -2601,7 +2601,7 @@ class SquidController:
             # Stop stitching for all active well canvases in the experiment
             for well_id, well_canvas in self.experiment_manager.well_canvases.items():
                 if well_canvas.is_stitching:
-                    logger.info(f'QUICK_SCAN: Stopping stitching for well canvas {well_id}, queue_size={well_canvas.stitch_queue.qsize()}')
+                    logger.info(f'QUICK_SCAN: Stopping stitching for well canvas {well_id}, queue_size={well_canvas.preprocessing_queue.qsize()}')
                     await well_canvas.stop_stitching()
                     logger.info(f'QUICK_SCAN: Stopped stitching for well canvas {well_id}')
 
