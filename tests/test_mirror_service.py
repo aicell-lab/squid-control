@@ -490,9 +490,13 @@ class TestMirrorServiceIntegration:
 
     async def test_mirror_service_require_context(self, real_mirror_service, test_server_connection):
         """Test that mirror service requires context for all mirrored methods."""
-        mirror_service, server = real_mirror_service
+        mirror_service = real_mirror_service
+        server = test_server_connection
         
         print("Testing mirror service require_context setting")
+        
+        # Start the mirror service first
+        await mirror_service.start_hypha_service(server)
         
         # Get the cloud service
         cloud_service = await server.get_service(mirror_service.cloud_service_id)
