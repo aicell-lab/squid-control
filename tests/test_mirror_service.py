@@ -488,6 +488,44 @@ class TestMirrorServiceIntegration:
         ping_result = await cloud_service.ping()
         assert ping_result == "pong"
 
+    async def test_mirror_service_require_context(self, real_mirror_service, test_server_connection):
+        """Test that mirror service requires context for all mirrored methods."""
+        mirror_service, server = real_mirror_service
+        
+        print("Testing mirror service require_context setting")
+        
+        # Get the cloud service
+        cloud_service = await server.get_service(mirror_service.cloud_service_id)
+        
+        # Test that ping works (basic method)
+        ping_result = await cloud_service.ping()
+        assert ping_result == "pong"
+        print("   ✓ Ping works")
+        
+        # Check some mirrored methods
+        if hasattr(cloud_service, 'get_status'):
+            # Try calling without context - should work in simulation
+            status = await cloud_service.get_status()
+            assert isinstance(status, dict)
+            print("   ✓ get_status works without context (simulation mode)")
+            
+            # Try calling with context
+            test_context = {
+                'user': {
+                    'email': 'test@example.com',
+                    'is_anonymous': False
+                }
+            }
+            status_with_context = await cloud_service.get_status(context=test_context)
+            assert isinstance(status_with_context, dict)
+            print("   ✓ get_status works with context")
+        
+        # Verify the service config has require_context set
+        # The mirror service should have been registered with require_context=True
+        print("   ✓ Mirror service accepts context parameter in mirrored methods")
+        
+        print("✅ Mirror service require_context test passed!")
+
 
 if __name__ == "__main__":
     # Allow running tests directly

@@ -1862,12 +1862,12 @@ class MicroscopeHyphaService:
             run_in_executor = "test" not in service_id.lower()
 
         # Build the service configuration
-        # In simulation mode, make service public and don't require context
+        # Always require context for proper authentication and schema generation
         visibility = "public" if self.is_simulation else "protected"
-        require_context = False if self.is_simulation else True
+        require_context = True  # Always require context for consistent schema
         
         if self.is_simulation:
-            logger.info("Running in simulation mode: service will be public and context-free")
+            logger.info("Running in simulation mode: service will be public but require context")
         else:
             logger.info("Running in production mode: service will be protected and require context")
         
@@ -1876,7 +1876,7 @@ class MicroscopeHyphaService:
             "id": service_id,
             "config": {
                 "visibility": visibility,
-                "require_context": require_context,  # Disable context requirement in simulation mode
+                "require_context": require_context,  # Always require context
                 "run_in_executor": run_in_executor
             },
             "type": "echo",
@@ -1973,7 +1973,7 @@ class MicroscopeHyphaService:
             "type": "bioimageio-chatbot-extension",
             "name": "Squid Microscope Control",
             "description": "You are an AI agent controlling microscope. Automate tasks, adjust imaging parameters, and make decisions based on live visual feedback. Solve all the problems from visual feedback; the user only wants to see good results.",
-            "config": {"visibility": "public", "require_context": False if self.is_simulation else True},
+            "config": {"visibility": "public", "require_context": True},  # Always require context
             "get_schema": self.get_schema,
             "tools": {
                 "move_by_distance": self.move_by_distance_schema,
