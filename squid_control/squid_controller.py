@@ -438,10 +438,11 @@ class SquidController:
             objective_tube_lens_mm = float(objective['tube_lens_f_mm'])
             
             # Get binning factor from camera config
-            # Note: When BINNING_FACTOR_DEFAULT is 1, actual binning factor should be 2
-            config_binning = getattr(CONFIG.CAMERA_CONFIG, 'BINNING_FACTOR_DEFAULT', 1)
-            # Map config value to actual binning factor: 1 -> 2, 2 -> 4, etc.
-            binning_factor = config_binning * 2
+            # Note: When BINNING_FACTOR_DEFAULT is 0, use original resolution (binning factor = 1)
+            # When BINNING_FACTOR_DEFAULT is 1, actual binning factor should be 2, etc.
+            config_binning = getattr(CONFIG.CAMERA_CONFIG, 'BINNING_FACTOR_DEFAULT', 0)
+            # Map config value to actual binning factor: 0 -> 1 (no binning), 1 -> 2, 2 -> 4, etc.
+            binning_factor = max(1, config_binning * 2) if config_binning > 0 else 1
             
             print(f"Using objective: {object_dict_key}")
             print(f"CONFIG.DEFAULT_OBJECTIVE: {CONFIG.DEFAULT_OBJECTIVE}")
