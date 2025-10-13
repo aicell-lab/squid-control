@@ -773,6 +773,16 @@ class Camera(object):
         # Camera callback will clear _trigger_sent when frame arrives
         return not self._trigger_sent
 
+    @property
+    def pixel_format(self):
+        """Get the current pixel format."""
+        return self._pixel_format
+
+    @pixel_format.setter
+    def pixel_format(self, value):
+        """Set the pixel format."""
+        self._set_pixel_format(value)
+
     def read_frame(self):
         """
         Read the current frame from the camera.
@@ -820,4 +830,15 @@ class Camera_Simulation(object):
         # Copy rotation and flip attributes
         self.rotate_image_angle = rotate_image_angle
         self.flip_image = flip_image
+
+    @property
+    def pixel_format(self):
+        """Get the current pixel format."""
+        return getattr(self._sim, 'pixel_format', 'MONO8')
+
+    @pixel_format.setter
+    def pixel_format(self, value):
+        """Set the pixel format."""
+        if hasattr(self._sim, 'pixel_format'):
+            self._sim.pixel_format = value
 
