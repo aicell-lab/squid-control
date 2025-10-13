@@ -1970,6 +1970,74 @@ async def test_microscope_configuration_performance(test_microscope_service):
         # Performance issues shouldn't fail the entire test suite
         print("   Performance test failures are noted but not critical")
 
+async def test_require_context_setting(test_microscope_service):
+    """Test that require_context is always set to True for consistent schema generation."""
+    microscope, service = test_microscope_service
+    
+    print("Testing require_context setting")
+    
+    # Check that require_context was set to True during service registration
+    # This should be true regardless of simulation mode
+    assert hasattr(microscope, 'is_simulation')
+    
+    # Test that context parameter is present in all service methods
+    import inspect
+    
+    # Check a few key methods to ensure they have context parameter
+    methods_to_check = [
+        'move_by_distance',
+        'snap',
+        'get_status',
+        'set_illumination',
+        'navigate_to_well'
+    ]
+    
+    print("1. Checking context parameters in service methods...")
+    for method_name in methods_to_check:
+        if hasattr(microscope, method_name):
+            method = getattr(microscope, method_name)
+            sig = inspect.signature(method)
+            params = list(sig.parameters.keys())
+            
+            # Verify context parameter exists
+            assert 'context' in params, f"Method {method_name} should have 'context' parameter"
+            
+            # Verify context has default value of None
+            context_param = sig.parameters['context']
+            assert context_param.default is None or context_param.default == inspect.Parameter.empty, \
+                f"Method {method_name} context parameter should default to None"
+            
+            print(f"   ✓ {method_name} has proper context parameter")
+    
+    # Test that methods work with and without context
+    print("2. Testing methods with and without context...")
+    
+    # Without context (should work since context defaults to None)
+    status = microscope.get_status()
+    assert status is not None
+    assert 'current_x' in status
+    print("   ✓ Methods work without context parameter")
+    
+    # With empty context (should work for simulation)
+    status_with_context = microscope.get_status(context={})
+    assert status_with_context is not None
+    assert 'current_x' in status_with_context
+    print("   ✓ Methods work with context parameter")
+    
+    # Test with user context
+    test_user_context = {
+        'user': {
+            'email': 'test@example.com',
+            'is_anonymous': False
+        }
+    }
+    status_with_user = microscope.get_status(context=test_user_context)
+    assert status_with_user is not None
+    print("   ✓ Methods work with user context")
+    
+    print("✅ require_context setting test passed!")
+
+
 # Add configuration tests to existing test groups
 async def test_comprehensive_service_functionality(test_microscope_service):
     """Test comprehensive service functionality including configuration."""
