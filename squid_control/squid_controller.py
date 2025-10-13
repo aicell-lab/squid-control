@@ -1103,6 +1103,18 @@ class SquidController:
         if hasattr(self, 'camera'):
             self.camera.close()
 
+        # Move objective switcher to middle position (zero position) before other movements
+        if hasattr(self, 'objective_switcher') and self.objective_switcher is not None:
+            try:
+                print("Moving objective switcher to middle position...")
+                success = self.objective_switcher.move_to_zero()
+                if success:
+                    print("✓ Objective switcher moved to middle position")
+                else:
+                    print("⚠️  Failed to move objective switcher to middle position")
+            except Exception as e:
+                print(f"Error moving objective switcher to middle position: {e}")
+
         # Move to safe position synchronously (no threading)
         if hasattr(self, 'navigationController') and hasattr(self, 'microcontroller'):
             try:
