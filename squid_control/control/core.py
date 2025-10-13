@@ -3772,15 +3772,60 @@ class LaserAutofocusController:
         self.measure_displacement()
 
     def set_reference(self):
-        # turn on the laser
-        self.microcontroller.turn_on_AF_laser()
-        self.wait_till_operation_is_completed()
-        # get laser spot location
-        x, y = self._get_laser_spot_centroid()
-        # turn off the laser
-        self.microcontroller.turn_off_AF_laser()
-        self.wait_till_operation_is_completed()
-        self.x_reference = x
+        """Set the laser autofocus reference position and save parameters to cache"""
+        try:
+            # Check if laser autofocus is initialized
+            if not self.is_initialized:
+                print("Warning: Laser autofocus not initialized. Initializing automatically...")
+                self.initialize_auto()
+            
+            # turn on the laser
+            self.microcontroller.turn_on_AF_laser()
+            self.wait_till_operation_is_completed()
+            
+            # get laser spot location
+            x, y = self._get_laser_spot_centroid()
+            
+            # turn off the laser
+            self.microcontroller.turn_off_AF_laser()
+            self.wait_till_operation_is_completed()
+            
+            # Update the reference position
+            self.x_reference = x
+            
+            # Save the updated reference to cache file
+            if self.look_for_cache:
+                self._save_reference_to_cache()
+            
+            print(f"Laser reference set successfully at position: x={x}, y={y}")
+            
+        except Exception as e:
+            print(f"Error setting laser reference: {e}")
+            raise e
+
+    def _save_reference_to_cache(self):
+        """Save the current laser autofocus parameters to the cache file"""
+        try:
+            # Calculate the absolute x_reference (relative to full sensor)
+            absolute_x_reference = self.x_reference + self.x_offset
+            
+            cache_string = ",".join([
+                str(self.x_offset),
+                str(self.y_offset),
+                str(self.width),
+                str(self.height),
+                str(self.pixel_to_um),
+                str(absolute_x_reference),
+            ])
+            
+            cache_path = Path("cache/laser_af_reference_plane.txt")
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(cache_string)
+            
+            print(f"Laser autofocus reference saved to cache: {cache_string}")
+            
+        except Exception as e:
+            print(f"Failed to save laser autofocus reference to cache: {e}")
 
     def _caculate_centroid(self, image):
         if self.has_two_interfaces == False:
