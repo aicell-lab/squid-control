@@ -484,7 +484,7 @@ class SquidController:
                 print('z return timeout, the program will exit')
                 exit()
 
-    def plate_scan(self, well_plate_type='96', illumination_settings=None, do_contrast_autofocus=False, do_reflection_af=True, scanning_zone=[(0,0),(2,2)], Nx=3, Ny=3, action_ID='testPlateScanNew'):
+    def plate_scan(self, well_plate_type='96', illumination_settings=None, do_contrast_autofocus=False, do_reflection_af=True, scanning_zone=[(0,0),(2,2)], Nx=3, Ny=3, dx=0.8, dy=0.8, action_ID='testPlateScanNew'):
         """
         New well plate scanning function with custom illumination settings.
         
@@ -502,6 +502,8 @@ class SquidController:
             scanning_zone (list): List of two tuples [(start_row, start_col), (end_row, end_col)]
             Nx (int): Number of X positions per well
             Ny (int): Number of Y positions per well
+            dx (float): Distance between X positions in mm (default: 0.8)
+            dy (float): Distance between Y positions in mm (default: 0.8)
             action_ID (str): Identifier for this scan
         """
         if illumination_settings is None:
@@ -532,6 +534,8 @@ class SquidController:
         self.multipointController.do_reflection_af = do_reflection_af
         self.multipointController.set_NX(Nx)
         self.multipointController.set_NY(Ny)
+        self.multipointController.set_deltaX(dx)
+        self.multipointController.set_deltaY(dy)
         self.multipointController.start_new_experiment(action_ID)
 
         # Start scanning
