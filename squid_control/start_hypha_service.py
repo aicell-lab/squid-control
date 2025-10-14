@@ -720,7 +720,11 @@ class MicroscopeHyphaService:
             
             if is_squid_plus:
                 # Squid+ camera is binned, so we need to adjust crop dimensions accordingly
-                binning_factor = getattr(CONFIG, 'BINNING_FACTOR_DEFAULT', 2)
+                # Note: When BINNING_FACTOR_DEFAULT is 0, use original resolution (binning factor = 1)
+                # When BINNING_FACTOR_DEFAULT is 1, actual binning factor should be 2, etc.
+                config_binning = getattr(CONFIG, 'BINNING_FACTOR_DEFAULT', 0)
+                # Map config value to actual binning factor: 0 -> 1 (no binning), 1 -> 2, 2 -> 4, etc.
+                binning_factor = max(1, config_binning * 2) if config_binning > 0 else 1
                 crop_height = CONFIG.ACQUISITION.CROP_HEIGHT // binning_factor
                 crop_width = CONFIG.ACQUISITION.CROP_WIDTH // binning_factor
             else:
