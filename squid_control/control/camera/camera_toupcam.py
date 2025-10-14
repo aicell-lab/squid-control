@@ -326,8 +326,8 @@ class Camera(object):
             # Set temperature and fan if available
             if self._capabilities['has_TEC']:
                 try:
-                    fan_speed = getattr(CONFIG, 'FAN_SPEED_DEFAULT', 1)
-                    temp = getattr(CONFIG, 'TEMPERATURE_DEFAULT', 20)
+                    fan_speed = getattr(CONFIG.CAMERA_CONFIG, 'FAN_SPEED_DEFAULT', 1)
+                    temp = getattr(CONFIG.CAMERA_CONFIG, 'TEMPERATURE_DEFAULT', 20)
                     self._set_fan_speed(fan_speed)
                     self.set_temperature(temp)
                 except Exception as e:
@@ -337,17 +337,17 @@ class Camera(object):
             self.camera.put_Option(toupcam.TOUPCAM_OPTION_RAW, 1)  # 1 = RAW mode
             
             # Set pixel format from CONFIG
-            pixel_format = getattr(CONFIG, 'PIXEL_FORMAT_DEFAULT', 'MONO16')
+            pixel_format = getattr(CONFIG.CAMERA_CONFIG, 'PIXEL_FORMAT_DEFAULT', 'MONO16')
             self._set_pixel_format(pixel_format)
             
             # Set black level if available
             if self._capabilities['has_black_level']:
-                black_level = getattr(CONFIG, 'BLACKLEVEL_VALUE_DEFAULT', 3)
+                black_level = getattr(CONFIG.CAMERA_CONFIG, 'BLACKLEVEL_VALUE_DEFAULT', 3)
                 self._set_black_level(black_level)
             
             # Set binning from CONFIG
             # This automatically sets the resolution to match the binning level
-            binning = getattr(CONFIG, 'BINNING_FACTOR_DEFAULT', 2)
+            binning = getattr(CONFIG.CAMERA_CONFIG, 'BINNING_FACTOR_DEFAULT', 2)
             self.set_binning(binning)
             
             # NOTE: ROI setting is intentionally skipped here to match official Squid software behavior.
