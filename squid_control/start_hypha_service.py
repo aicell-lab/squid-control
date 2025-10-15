@@ -702,51 +702,14 @@ class MicroscopeHyphaService:
             else:
                 logger.warning(f"Unknown channel {channel} in one_new_frame. Using default intensity/exposure.")
 
-            # Get the raw image from the camera with original bit depth preserved and full frame
-            raw_img = await self.squidController.snap_image(channel, intensity, exposure_time, full_frame=True)
-
-            # In simulation mode, resize small images to expected camera resolution
-            if self.squidController.is_simulation:
-                height, width = raw_img.shape[:2]
-                # If image is too small, resize it to expected camera dimensions
-                expected_width = 3000  # Expected camera width
-                expected_height = 3000  # Expected camera height
-                if width < expected_width or height < expected_height:
-                    raw_img = cv2.resize(raw_img, (expected_width, expected_height), interpolation=cv2.INTER_LINEAR)
-
-            # Crop the image before resizing, similar to squid_controller.py approach
-            # For Squid+ cameras with binning, we need to adjust the crop dimensions
-            is_squid_plus = getattr(CONFIG, 'FILTER_CONTROLLER_ENABLE', False) or getattr(CONFIG, 'USE_XERYON', False)
-            
-            if is_squid_plus:
-                # Squid+ camera binning adjustment for crop dimensions
-                # binning_factor_default: 1 = no binning (full res), 2 = 2x2 binning (half res), etc.
-                binning_factor = getattr(CONFIG.CAMERA_CONFIG, 'BINNING_FACTOR_DEFAULT', 1)
-                # Ensure binning_factor is at least 1 to avoid division by zero
-                binning_factor = max(1, binning_factor)
-                crop_height = CONFIG.ACQUISITION.CROP_HEIGHT // binning_factor
-                crop_width = CONFIG.ACQUISITION.CROP_WIDTH // binning_factor
-            else:
-                # Original Squid microscope: use crop dimensions as-is
-                crop_height = CONFIG.ACQUISITION.CROP_HEIGHT
-                crop_width = CONFIG.ACQUISITION.CROP_WIDTH
-            
-            height, width = raw_img.shape[:2]  # Support both grayscale and color images
-            start_x = width // 2 - crop_width // 2
-            start_y = height // 2 - crop_height // 2
-
-            # Ensure crop coordinates are within bounds
-            start_x = max(0, start_x)
-            start_y = max(0, start_y)
-            end_x = min(width, start_x + crop_width)
-            end_y = min(height, start_y + crop_height)
-
-            cropped_img = raw_img[start_y:end_y, start_x:end_x]
+            # Get the image from camera - snap_image() returns already cropped image by default
+            # This is exactly what snap() does
+            gray_img = await self.squidController.snap_image(channel, intensity, exposure_time)
 
             self.get_status()
 
             # Return the numpy array directly with preserved bit depth
-            return cropped_img
+            return gray_img
 
         except Exception as e:
             logger.error(f"Failed to get new frame: {e}")
