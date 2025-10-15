@@ -420,11 +420,37 @@ class MicroscopeHyphaService:
             return None
 
     def check_permission(self, user):
-        if user['is_anonymous']:
+        # Handle None or empty user context
+        if not user or not isinstance(user, dict):
+            # In simulation mode, allow access if no user context is provided
+            if self.is_simulation:
+                logger.info("No user context provided in simulation mode - allowing access")
+                return True
+            else:
+                logger.warning("No user context provided in production mode - denying access")
+                return False
+        
+        # Check if user is anonymous
+        if user.get('is_anonymous', True):
+            logger.warning("Anonymous user access denied")
             return False
-        if self.authorized_emails is None or user["email"] in self.authorized_emails:
+        
+        # If no authorized emails are set, allow all authenticated users
+        if self.authorized_emails is None:
+            logger.info("No authorized emails configured - allowing authenticated user")
+            return True
+        
+        # Check if user email is in authorized list
+        user_email = user.get("email")
+        if not user_email:
+            logger.warning("No email found in user context - denying access")
+            return False
+        
+        if user_email in self.authorized_emails:
+            logger.info(f"User {user_email} is authorized")
             return True
         else:
+            logger.warning(f"User {user_email} is not authorized")
             return False
 
     def _is_squid_plus_microscope(self):
