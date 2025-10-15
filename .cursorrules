@@ -356,7 +356,7 @@ python -m squid_control --simulation
 #### 2. **Simulated Camera System (`Camera_Simulation` class)**
 The heart of the simulation is the `Camera_Simulation` class in `camera_default.py`, which provides:
 
-- **Realistic Image Acquisition**: Position-based image retrieval from virtual samples
+- **Realistic Image ACQUISITION**: Position-based image retrieval from virtual samples
 - **Channel-Specific Imaging**: Support for brightfield and fluorescence channels
 - **Exposure & Intensity Simulation**: Realistic exposure time and illumination intensity effects
 - **Z-Axis Blurring**: Gaussian blur simulation for out-of-focus effects
@@ -378,7 +378,7 @@ The simulation uses **Zarr data archives** stored in ZIP files containing high-r
   }
   ```
 
-### Virtual Sample Image Acquisition Workflow
+### Virtual Sample Image ACQUISITION Workflow
 
 1. **Position Request**: User requests image at specific (x, y, z) coordinates
 2. **Coordinate Conversion**: Microscope coordinates (mm) → pixel coordinates
@@ -650,15 +650,15 @@ This serial communication system provides the foundation for precise, reliable, 
 - Implement backward compatibility for config changes
 - Validate configuration parameters on load
 - Import CONFIG from `squid_control.control.config` for accessing configuration values
-- Configuration values are loaded from `configuration_HCS_v2.ini` into structured objects (e.g., `CONFIG.Acquisition.CROP_WIDTH`)
+- Configuration values are loaded from `configuration_HCS_v2.ini` into structured objects (e.g., `CONFIG.ACQUISITION.CROP_WIDTH`)
 
 ### Image Processing Standards
 - **Always crop before resize**: Follow the pattern from `squid_controller.py` for consistent image processing
-- **Center Crop Logic**: Use configuration-based crop dimensions (CONFIG.Acquisition.CROP_HEIGHT/CROP_WIDTH)
+- **Center Crop Logic**: Use configuration-based crop dimensions (CONFIG.ACQUISITION.CROP_HEIGHT/CROP_WIDTH)
 - **Crop Implementation Pattern**:
   ```python
-  crop_height = CONFIG.Acquisition.CROP_HEIGHT
-  crop_width = CONFIG.Acquisition.CROP_WIDTH
+  crop_height = CONFIG.ACQUISITION.CROP_HEIGHT
+  crop_width = CONFIG.ACQUISITION.CROP_WIDTH
   height, width = image.shape[:2]
   start_x = width // 2 - crop_width // 2
   start_y = height // 2 - crop_height // 2
@@ -770,7 +770,7 @@ python squid_control/run_mirror_service.py [options]
 - Row naming: A-H (96-well), Column numbering: 1-12
 - Use move_to_well() for navigation
 
-### Image Acquisition
+### Image ACQUISITION
 - Default exposure times per channel stored in intensity_exposure arrays
 - Support both single frame and time-lapse acquisition
 - Implement proper camera triggering modes

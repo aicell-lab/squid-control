@@ -98,8 +98,8 @@ class StreamHandler:
 
     def __init__(
         self,
-        crop_width=CONFIG.Acquisition.CROP_WIDTH,
-        crop_height=CONFIG.Acquisition.CROP_HEIGHT,
+        crop_width=CONFIG.ACQUISITION.CROP_WIDTH,
+        crop_height=CONFIG.ACQUISITION.CROP_HEIGHT,
         display_resolution_scaling=1,
     ):
         self.events = EventEmitter()
@@ -267,7 +267,7 @@ class StreamHandler:
 
 class ImageSaver:
 
-    def __init__(self, image_format=CONFIG.Acquisition.IMAGE_FORMAT):
+    def __init__(self, image_format=CONFIG.ACQUISITION.IMAGE_FORMAT):
         self.base_path = "./"
         self.experiment_ID = ""
         self.image_format = image_format
@@ -2259,7 +2259,7 @@ class MultiPointWorker:
                                 and (self.do_autofocus)
                                 and (
                                     self.FOV_counter
-                                    % CONFIG.Acquisition.NUMBER_OF_FOVS_PER_AF
+                                    % CONFIG.ACQUISITION.NUMBER_OF_FOVS_PER_AF
                                     == 0
                                 )
                             ):
@@ -2279,7 +2279,7 @@ class MultiPointWorker:
                                 print(f"autofocus at {coordiante_name}{i}_{j}, configuration: {configuration_name_AF},{config_AF}")
                                 if (
                                     self.FOV_counter
-                                    % CONFIG.Acquisition.NUMBER_OF_FOVS_PER_AF
+                                    % CONFIG.ACQUISITION.NUMBER_OF_FOVS_PER_AF
                                     == 0
                                 ) or self.autofocusController.use_focus_map:
                                     self.autofocusController.autofocus()
@@ -2535,7 +2535,7 @@ class MultiPointWorker:
                                             + "_"
                                             + str(config.name).replace(" ", "_")
                                             + "."
-                                            + CONFIG.Acquisition.IMAGE_FORMAT,
+                                            + CONFIG.ACQUISITION.IMAGE_FORMAT,
                                         )
                                         if self.camera.is_color:
                                             if "BF LED matrix" in config.name:
@@ -2855,11 +2855,11 @@ class MultiPointController:
         mm_per_ustep_Z = CONFIG.SCREW_PITCH_Z_MM / (
             self.navigationController.z_microstepping * CONFIG.FULLSTEPS_PER_REV_Z
         )
-        self.deltaX = CONFIG.Acquisition.DX
+        self.deltaX = CONFIG.ACQUISITION.DX
         self.deltaX_usteps = round(self.deltaX / mm_per_ustep_X)
-        self.deltaY = CONFIG.Acquisition.DY
+        self.deltaY = CONFIG.ACQUISITION.DY
         self.deltaY_usteps = round(self.deltaY / mm_per_ustep_Y)
-        self.deltaZ = CONFIG.Acquisition.DZ / 1000
+        self.deltaZ = CONFIG.ACQUISITION.DZ / 1000
         self.deltaZ_usteps = round(self.deltaZ / mm_per_ustep_Z)
         self.deltat = 0
         self.do_autofocus = False
@@ -2867,10 +2867,10 @@ class MultiPointController:
         self.gen_focus_map = False
         self.focus_map_storage = []
         self.already_using_fmap = False
-        self.crop_width = CONFIG.Acquisition.CROP_WIDTH
-        self.crop_height = CONFIG.Acquisition.CROP_HEIGHT
+        self.crop_width = CONFIG.ACQUISITION.CROP_WIDTH
+        self.crop_height = CONFIG.ACQUISITION.CROP_HEIGHT
         self.display_resolution_scaling = (
-            CONFIG.Acquisition.IMAGE_DISPLAY_SCALING_FACTOR
+            CONFIG.ACQUISITION.IMAGE_DISPLAY_SCALING_FACTOR
         )
         self.counter = 0
         self.experiment_ID = None
@@ -3772,15 +3772,60 @@ class LaserAutofocusController:
         self.measure_displacement()
 
     def set_reference(self):
-        # turn on the laser
-        self.microcontroller.turn_on_AF_laser()
-        self.wait_till_operation_is_completed()
-        # get laser spot location
-        x, y = self._get_laser_spot_centroid()
-        # turn off the laser
-        self.microcontroller.turn_off_AF_laser()
-        self.wait_till_operation_is_completed()
-        self.x_reference = x
+        """Set the laser autofocus reference position and save parameters to cache"""
+        try:
+            # Check if laser autofocus is initialized
+            if not self.is_initialized:
+                print("Warning: Laser autofocus not initialized. Initializing automatically...")
+                self.initialize_auto()
+            
+            # turn on the laser
+            self.microcontroller.turn_on_AF_laser()
+            self.wait_till_operation_is_completed()
+            
+            # get laser spot location
+            x, y = self._get_laser_spot_centroid()
+            
+            # turn off the laser
+            self.microcontroller.turn_off_AF_laser()
+            self.wait_till_operation_is_completed()
+            
+            # Update the reference position
+            self.x_reference = x
+            
+            # Save the updated reference to cache file
+            if self.look_for_cache:
+                self._save_reference_to_cache()
+            
+            print(f"Laser reference set successfully at position: x={x}, y={y}")
+            
+        except Exception as e:
+            print(f"Error setting laser reference: {e}")
+            raise e
+
+    def _save_reference_to_cache(self):
+        """Save the current laser autofocus parameters to the cache file"""
+        try:
+            # Calculate the absolute x_reference (relative to full sensor)
+            absolute_x_reference = self.x_reference + self.x_offset
+            
+            cache_string = ",".join([
+                str(self.x_offset),
+                str(self.y_offset),
+                str(self.width),
+                str(self.height),
+                str(self.pixel_to_um),
+                str(absolute_x_reference),
+            ])
+            
+            cache_path = Path("cache/laser_af_reference_plane.txt")
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            cache_path.write_text(cache_string)
+            
+            print(f"Laser autofocus reference saved to cache: {cache_string}")
+            
+        except Exception as e:
+            print(f"Failed to save laser autofocus reference to cache: {e}")
 
     def _caculate_centroid(self, image):
         if self.has_two_interfaces == False:

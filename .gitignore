@@ -172,5 +172,12 @@ cython_debug/
 upload_record.json
 config_parameters.txt
 configuration_HCS_v2.ini
+configuration_Squid+.ini
 
 chunk_images/
+
+# Official Squid software (downloaded for reference)
+official-squid-software/
+
+# Generated safety limit files
+squid_control/control/utils/edge_positions.json

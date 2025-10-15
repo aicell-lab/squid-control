@@ -306,6 +306,13 @@ class CameraConfig(BaseModel):
     ROI_OFFSET_Y_DEFAULT: int = 0
     ROI_WIDTH_DEFAULT: int = 3104
     ROI_HEIGHT_DEFAULT: int = 2084
+    CROP_WIDTH_UNBINNED: int = 4168
+    CROP_HEIGHT_UNBINNED: int = 4168
+    BINNING_FACTOR_DEFAULT: int = 1  # Actual binning factor: 1=no binning, 2=2x2, 4=4x4
+    PIXEL_FORMAT_DEFAULT: str = "MONO16"
+    TEMPERATURE_DEFAULT: int = 20
+    FAN_SPEED_DEFAULT: int = 1
+    BLACKLEVEL_VALUE_DEFAULT: int = 3
 
 
 class PlateReaderSetting(BaseModel):
@@ -382,7 +389,7 @@ class BaseConfig(BaseModel):
     SLIDE_POSITION: SlidePositionSetting = SlidePositionSetting()
     OUTPUT_GAINS: OutputGainSetting = OutputGainSetting()
     SOFTWARE_POS_LIMIT: SoftwarePosLimitSetting = SoftwarePosLimitSetting()
-    Acquisition: AcquisitionSetting = AcquisitionSetting()
+    ACQUISITION: AcquisitionSetting = AcquisitionSetting()
     USE_SEPARATE_MCU_FOR_DAC: bool = False
 
     BIT_POS_JOYSTICK_BUTTON: int = 0
@@ -519,7 +526,7 @@ class BaseConfig(BaseModel):
         "IMX571": 3.76,
         "PYTHON300": 4.8,
     }
-    PIXEL_SIZE_ADJUSTMENT_FACTOR: float = 0.936
+    PIXEL_SIZE_ADJUSTMENT_FACTOR: float = 1.0
     STITCHING_ROTATION_ANGLE_DEG: float = 0.0
     OBJECTIVES: dict = {
         "2x": {"magnification": 2, "NA": 0.10, "tube_lens_f_mm": 180},
@@ -667,6 +674,56 @@ class BaseConfig(BaseModel):
     X_HOME_SWITCH_POLARITY: int = 1
     Y_HOME_SWITCH_POLARITY: int = 1
     Z_HOME_SWITCH_POLARITY: int = 2
+
+    # Squid+ Specific Features
+    # Filter Wheel Control (W Axis Motor)
+    FILTER_CONTROLLER_ENABLE: bool = False
+    SQUID_FILTERWHEEL_MIN_INDEX: int = 1
+    SQUID_FILTERWHEEL_MAX_INDEX: int = 8
+    SQUID_FILTERWHEEL_OFFSET: float = 0.008  # mm offset after homing
+    SQUID_FILTERWHEEL_HOMING_ENABLED: bool = True
+    SQUID_FILTERWHEEL_MOTORSLOTINDEX: int = 3  # W axis = motor slot 3
+    SQUID_FILTERWHEEL_TRANSITIONS_PER_REVOLUTION: int = 4000  # For encoder PID
+    
+    # W Axis Configuration (Filter Wheel Motor)
+    SCREW_PITCH_W_MM: float = 1.0
+    MICROSTEPPING_DEFAULT_W: int = 64
+    FULLSTEPS_PER_REV_W: int = 200
+    STAGE_MOVEMENT_SIGN_W: int = 1
+    MAX_VELOCITY_W_mm: float = 10.0
+    MAX_ACCELERATION_W_mm: float = 50.0
+    W_MOTOR_RMS_CURRENT_mA: int = 500
+    W_MOTOR_I_HOLD: float = 0.5
+    HAS_ENCODER_W: bool = False
+    ENCODER_FLIP_DIR_W: bool = False
+    PID_P_W: int = 0
+    PID_I_W: int = 0
+    PID_D_W: int = 0
+    ENABLE_PID_W: bool = False
+    
+    # Objective Switcher (Xeryon)
+    USE_XERYON: bool = False
+    XERYON_SERIAL_NUMBER: str = ""
+    XERYON_SPEED: int = 80
+    XERYON_OBJECTIVE_SWITCHER_POS_1: list = ['20x']
+    XERYON_OBJECTIVE_SWITCHER_POS_2: list = ['4x']
+    XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM: float = 1.0
+    
+    # Z Motor Configuration
+    Z_MOTOR_CONFIG: str = "STEPPER"
+    
+    # Camera Configuration for Squid+
+    ROI_OFFSET_X_DEFAULT: int = 0
+    ROI_OFFSET_Y_DEFAULT: int = 0
+    ROI_WIDTH_DEFAULT: int = 6208
+    ROI_HEIGHT_DEFAULT: int = 4168
+    CROP_WIDTH_UNBINNED: int = 4168
+    CROP_HEIGHT_UNBINNED: int = 4168
+    BINNING_FACTOR_DEFAULT: int = 1  # Actual binning factor: 1=no binning, 2=2x2, 4=4x4
+    PIXEL_FORMAT_DEFAULT: str = "MONO16"
+    TEMPERATURE_DEFAULT: int = 20
+    FAN_SPEED_DEFAULT: int = 1
+    BLACKLEVEL_VALUE_DEFAULT: int = 3
 
     # for 96 well plate
     NUMBER_OF_SKIP: int = 0
@@ -1023,18 +1080,18 @@ def get_microscope_configuration_data(config_section="all", include_defaults=Tru
 
     if config_section.lower() == "all" or config_section.lower() == "acquisition":
         config_data["acquisition"] = {
-            "crop_width": getattr(CONFIG.Acquisition, 'CROP_WIDTH', 3000),
-            "crop_height": getattr(CONFIG.Acquisition, 'CROP_HEIGHT', 3000),
-            "image_format": getattr(CONFIG.Acquisition, 'IMAGE_FORMAT', 'bmp'),
-            "image_display_scaling_factor": getattr(CONFIG.Acquisition, 'IMAGE_DISPLAY_SCALING_FACTOR', 0.3),
+            "crop_width": getattr(CONFIG.ACQUISITION, 'CROP_WIDTH', 3000),
+            "crop_height": getattr(CONFIG.ACQUISITION, 'CROP_HEIGHT', 3000),
+            "image_format": getattr(CONFIG.ACQUISITION, 'IMAGE_FORMAT', 'bmp'),
+            "image_display_scaling_factor": getattr(CONFIG.ACQUISITION, 'IMAGE_DISPLAY_SCALING_FACTOR', 0.3),
             "default_step_sizes": {
-                "dx": getattr(CONFIG.Acquisition, 'DX', 0.9),
-                "dy": getattr(CONFIG.Acquisition, 'DY', 0.9),
-                "dz": getattr(CONFIG.Acquisition, 'DZ', 1.5),
+                "dx": getattr(CONFIG.ACQUISITION, 'DX', 0.9),
+                "dy": getattr(CONFIG.ACQUISITION, 'DY', 0.9),
+                "dz": getattr(CONFIG.ACQUISITION, 'DZ', 1.5),
             },
             "default_grid_sizes": {
-                "nx": getattr(CONFIG.Acquisition, 'NX', 1),
-                "ny": getattr(CONFIG.Acquisition, 'NY', 1),
+                "nx": getattr(CONFIG.ACQUISITION, 'NX', 1),
+                "ny": getattr(CONFIG.ACQUISITION, 'NY', 1),
             },
             "default_trigger_mode": str(getattr(CONFIG, 'DEFAULT_TRIGGER_MODE', 'SOFTWARE')),
             "default_saving_path": getattr(CONFIG, 'DEFAULT_SAVING_PATH', ''),
@@ -1135,6 +1192,32 @@ def get_microscope_configuration_data(config_section="all", include_defaults=Tru
                 "crop_height": getattr(CONFIG, 'LASER_AF_CROP_HEIGHT', 256),
                 "has_two_interfaces": getattr(CONFIG, 'HAS_TWO_INTERFACES', True),
                 "use_glass_top": getattr(CONFIG, 'USE_GLASS_TOP', True),
+            }
+        }
+
+    # Add microscope type and Squid+ features
+    if config_section.lower() == "all" or config_section.lower() == "microscope_type":
+        # Determine microscope type based on configuration
+        has_filter_wheel = getattr(CONFIG, 'FILTER_CONTROLLER_ENABLE', False)
+        has_objective_switcher = getattr(CONFIG, 'USE_XERYON', False)
+        is_squid_plus = has_filter_wheel or has_objective_switcher
+        
+        config_data["microscope_type"] = {
+            "type": "Squid+" if is_squid_plus else "Squid",
+            "is_squid_plus": is_squid_plus,
+            "features": {
+                "filter_wheel": {
+                    "enabled": has_filter_wheel,
+                    "description": "Automated filter wheel for fluorescence imaging" if has_filter_wheel else "Not available",
+                    "filter_positions": getattr(CONFIG, 'SQUID_FILTERWHEEL_MAX_INDEX', 8) if has_filter_wheel else 0
+                },
+                "objective_switcher": {
+                    "enabled": has_objective_switcher,
+                    "description": "Automated objective switching between different magnifications" if has_objective_switcher else "Not available",
+                    "available_objectives": getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_1', ["20x"]) + getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_2', ["4x"]) if has_objective_switcher else []
+                },
+                "inverted_objective": getattr(CONFIG, 'INVERTED_OBJECTIVE', False),
+                "description": "Squid+ microscope with advanced features for automated imaging" if is_squid_plus else "Standard Squid microscope for basic imaging"
             }
         }
 

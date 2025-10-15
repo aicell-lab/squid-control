@@ -295,6 +295,7 @@ class MirrorMicroscopeService:
             "id": self.cloud_service_id,
             "config": {
                 "visibility": "protected",
+                "require_context": True,  # Always require context for consistent schema
                 "run_in_executor": True
             },
             "type": "echo",
@@ -400,6 +401,7 @@ class MirrorMicroscopeService:
                 service_id=self.webrtc_service_id,
                 config={
                     "visibility": "protected",
+                    "require_context": True,  # Always require context for consistent schema
                     "ice_servers": ice_servers,
                     "on_init": on_init,
                 },
