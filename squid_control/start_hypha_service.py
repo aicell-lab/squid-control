@@ -421,19 +421,9 @@ class MicroscopeHyphaService:
 
     def check_permission(self, user):
         # Handle None or empty user context
-        if not user or not isinstance(user, dict):
-            # In simulation mode, allow access if no user context is provided
-            if self.is_simulation:
+        if self.is_simulation:
                 logger.info("No user context provided in simulation mode - allowing access")
                 return True
-            else:
-                logger.warning("No user context provided in production mode - denying access")
-                return False
-        
-        # Check if user is anonymous
-        if user.get('is_anonymous', True):
-            logger.warning("Anonymous user access denied")
-            return False
         
         # If no authorized emails are set, allow all authenticated users
         if self.authorized_emails is None:
