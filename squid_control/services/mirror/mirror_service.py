@@ -2,7 +2,8 @@
 Mirror microscope service for cloud-to-local proxy.
 
 This module provides the MirrorMicroscopeService class that acts as a proxy
-between cloud and local microscope control systems.
+between cloud and local microscope control systems, transparently mirroring
+both methods and metadata (id, name, description, type) from the local service.
 """
 
 import asyncio
@@ -34,8 +35,10 @@ class MirrorMicroscopeService:
     """
     Mirror service that proxies requests between cloud and local microscope systems.
     
-    This service allows remote control of microscopes by mirroring local service
-    methods to the cloud while maintaining WebRTC video streaming capabilities.
+    This service allows remote control of microscopes by transparently mirroring local
+    service methods and metadata (id, name, description, type) to the cloud while maintaining
+    WebRTC video streaming capabilities. The mirror service presents the exact same identity
+    as the local service to provide a fully transparent proxy experience.
     """
 
     def __init__(self):
@@ -276,7 +279,7 @@ class MirrorMicroscopeService:
             await asyncio.sleep(10)  # Check more frequently (was 30)
 
     async def start_hypha_service(self, server):
-        """Start the Hypha service with dynamically mirrored methods"""
+        """Start the Hypha service with dynamically mirrored methods and metadata (id, name, description, type)"""
         self.cloud_server = server
 
         # Ensure we have a connection to the local service
@@ -289,18 +292,47 @@ class MirrorMicroscopeService:
         # Get the mirrored methods from the current local service
         self.mirrored_methods = self._get_mirrored_methods()
 
-        # Base service configuration with core methods
+        # Extract metadata from local service to transparently mirror it
+        local_service_name = getattr(self.local_service, 'name', 'Microscope Control Service')
+        local_service_full_id = getattr(self.local_service, 'id', self.local_service_id)
+        local_service_description = getattr(self.local_service, 'description', None)
+        local_service_type = getattr(self.local_service, 'type', 'service')
+        
+        # Extract just the service name part from the full ID (remove workspace prefix)
+        # Local service ID format: "workspace/service-id" -> we want just "service-id"
+        if ':' in local_service_full_id:
+            local_service_id = local_service_full_id.split(':')[-1]  # Get the last part after ':'
+        else:
+            local_service_id = local_service_full_id
+        
+        logger.info("Mirroring local service metadata:")
+        logger.info(f"  - name: '{local_service_name}'")
+        logger.info(f"  - local_full_id: '{local_service_full_id}'")
+        logger.info(f"  - local_extracted_id: '{local_service_id}'")
+        logger.info(f"  - cloud_service_id: '{self.cloud_service_id}'")
+        logger.info(f"  - type: '{local_service_type}'")
+        if local_service_description:
+            logger.info(f"  - description: {local_service_description[:100]}...")
+        else:
+            logger.warning("  - description: None (local service has no description)")
+        
+        # Base service configuration - use cloud service ID but local service metadata
+        # Note: We use cloud_service_id to avoid conflicts with the local service
         service_config = {
-            "name": "Mirror Microscope Control Service",
-            "id": self.cloud_service_id,
+            "name": local_service_name,
+            "id": self.cloud_service_id,  # Use the cloud service ID to avoid conflicts
             "config": {
                 "visibility": "protected",
                 "require_context": True,  # Always require context for consistent schema
                 "run_in_executor": True
             },
-            "type": "service",
+            "type": local_service_type,
             "ping": self.ping,
         }
+        
+        # Add description if the local service has one
+        if local_service_description:
+            service_config["description"] = local_service_description
 
         # Add all mirrored methods to the service configuration
         service_config.update(self.mirrored_methods)
@@ -309,7 +341,7 @@ class MirrorMicroscopeService:
         self.cloud_service = await server.register_service(service_config)
 
         logger.info(
-            f"Mirror service (service_id={self.cloud_service_id}) started successfully with {len(self.mirrored_methods)} mirrored methods, available at {self.cloud_server_url}/services"
+            f"Mirror service (cloud_id={self.cloud_service_id}) started successfully with {len(self.mirrored_methods)} mirrored methods, available at {self.cloud_server_url}/services"
         )
 
         logger.info(f'You can use this service using the service id: {self.cloud_service.id}')
