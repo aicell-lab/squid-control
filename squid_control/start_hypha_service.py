@@ -482,10 +482,6 @@ class MicroscopeHyphaService:
     async def is_service_healthy(self, context=None):
         """Check if all services are healthy"""
         try:
-            # Check authentication
-            if context and not self.check_permission(context.get("user", {})):
-                raise Exception("User not authorized to access this service")
-
             microscope_svc = await self.server.get_service(self.service_id)
             if microscope_svc is None:
                 raise RuntimeError("Microscope service not found")
