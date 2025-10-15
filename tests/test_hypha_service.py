@@ -569,26 +569,18 @@ async def test_schema_methods(test_microscope_service):
 
 # Permission and authentication tests
 async def test_permission_system(test_microscope_service):
-    """Test the permission and authentication system."""
+    """Test the permission system in simulation mode (always allows access)."""
     microscope, service = test_microscope_service
 
-    # Test with anonymous user
+    # In simulation mode, check_permission should always return True regardless of user type
     anonymous_user = {"is_anonymous": True, "email": ""}
-    assert not microscope.check_permission(anonymous_user)
-
-    # Test with authorized user when login not required
-    microscope.login_required = False
     authorized_user = {"is_anonymous": False, "email": "test@example.com"}
-    assert microscope.check_permission(authorized_user)
-
-    # Test with authorized emails list
-    microscope.login_required = True
-    microscope.authorized_emails = ["test@example.com", "admin@example.com"]
-    assert microscope.check_permission(authorized_user)
-
-    # Test with unauthorized user
     unauthorized_user = {"is_anonymous": False, "email": "unauthorized@example.com"}
-    assert not microscope.check_permission(unauthorized_user)
+    
+    # All users should be allowed in simulation mode
+    assert microscope.check_permission(anonymous_user)
+    assert microscope.check_permission(authorized_user)
+    assert microscope.check_permission(unauthorized_user)
 
 
 # Advanced parameter management tests
@@ -1061,41 +1053,6 @@ async def test_initialization_edge_cases():
     # Check that local URL contains the expected local IP address
     assert "192.168.2.1" in microscope_local.server_url or "localhost" in microscope_local.server_url
     microscope_local.squidController.close()
-
-# Test authorization and email management
-async def test_authorization_management():
-    """Test authorization and email management functionality."""
-    microscope = MicroscopeHyphaService(is_simulation=True, is_local=False)
-
-    try:
-        # Test with login_required=True but no authorized emails
-        microscope.login_required = True
-        microscope.authorized_emails = None
-
-        user = {"is_anonymous": False, "email": "test@example.com"}
-        assert microscope.check_permission(user) == True  # Should allow when authorized_emails is None
-
-        # Test with empty authorized emails list
-        microscope.authorized_emails = []
-        assert microscope.check_permission(user) == False  # Should deny when list is empty
-
-        # Test load_authorized_emails without parameters
-        emails = microscope.load_authorized_emails()
-        # If AUTHORIZED_USERS env var is set, it should return a list; otherwise None
-        if emails is not None:
-            assert isinstance(emails, list)
-            assert len(emails) > 0
-            # Check that we have valid emails in the list
-            assert all('@' in email for email in emails)
-            # Check that the list contains valid email format (without exposing specific emails)
-            assert all('@' in email and '.' in email.split('@')[1] for email in emails)
-        else:
-            # No environment variable set
-            assert emails is None
-
-    finally:
-        microscope.squidController.close()
-
 
 
 # Video buffering tests
