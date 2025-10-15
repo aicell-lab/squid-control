@@ -308,7 +308,7 @@ class CameraConfig(BaseModel):
     ROI_HEIGHT_DEFAULT: int = 2084
     CROP_WIDTH_UNBINNED: int = 4168
     CROP_HEIGHT_UNBINNED: int = 4168
-    BINNING_FACTOR_DEFAULT: int = 0
+    BINNING_FACTOR_DEFAULT: int = 1  # Actual binning factor: 1=no binning, 2=2x2, 4=4x4
     PIXEL_FORMAT_DEFAULT: str = "MONO16"
     TEMPERATURE_DEFAULT: int = 20
     FAN_SPEED_DEFAULT: int = 1
@@ -719,7 +719,7 @@ class BaseConfig(BaseModel):
     ROI_HEIGHT_DEFAULT: int = 4168
     CROP_WIDTH_UNBINNED: int = 4168
     CROP_HEIGHT_UNBINNED: int = 4168
-    BINNING_FACTOR_DEFAULT: int = 0
+    BINNING_FACTOR_DEFAULT: int = 1  # Actual binning factor: 1=no binning, 2=2x2, 4=4x4
     PIXEL_FORMAT_DEFAULT: str = "MONO16"
     TEMPERATURE_DEFAULT: int = 20
     FAN_SPEED_DEFAULT: int = 1

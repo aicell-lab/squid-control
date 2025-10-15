@@ -438,11 +438,10 @@ class SquidController:
             objective_tube_lens_mm = float(objective['tube_lens_f_mm'])
             
             # Get binning factor from camera config
-            # Note: When BINNING_FACTOR_DEFAULT is 0, use original resolution (binning factor = 1)
-            # When BINNING_FACTOR_DEFAULT is 1, actual binning factor should be 2, etc.
-            config_binning = getattr(CONFIG.CAMERA_CONFIG, 'BINNING_FACTOR_DEFAULT', 0)
-            # Map config value to actual binning factor: 0 -> 1 (no binning), 1 -> 2, 2 -> 4, etc.
-            binning_factor = max(1, config_binning * 2) if config_binning > 0 else 1
+            # binning_factor_default: 1 = no binning (full res), 2 = 2x2 binning (half res), etc.
+            binning_factor = getattr(CONFIG.CAMERA_CONFIG, 'BINNING_FACTOR_DEFAULT', 1)
+            # Ensure binning_factor is at least 1 to avoid division by zero
+            binning_factor = max(1, binning_factor)
             
             print(f"Using objective: {object_dict_key}")
             print(f"CONFIG.DEFAULT_OBJECTIVE: {CONFIG.DEFAULT_OBJECTIVE}")
@@ -2766,8 +2765,11 @@ class SquidController:
             is_squid_plus = getattr(CONFIG, 'FILTER_CONTROLLER_ENABLE', False) or getattr(CONFIG, 'USE_XERYON', False)
             
             if is_squid_plus:
-                # Squid+ camera is binned, so we need to adjust crop dimensions accordingly
-                binning_factor = getattr(CONFIG, 'BINNING_FACTOR_DEFAULT', 2)
+                # Squid+ camera binning adjustment for crop dimensions
+                # binning_factor_default: 1 = no binning (full res), 2 = 2x2 binning (half res), etc.
+                binning_factor = getattr(CONFIG.CAMERA_CONFIG, 'BINNING_FACTOR_DEFAULT', 1)
+                # Ensure binning_factor is at least 1 to avoid division by zero
+                binning_factor = max(1, binning_factor)
                 crop_height = CONFIG.ACQUISITION.CROP_HEIGHT // binning_factor
                 crop_width = CONFIG.ACQUISITION.CROP_WIDTH // binning_factor
             else:
@@ -2833,9 +2835,11 @@ class SquidController:
         is_squid_plus = getattr(CONFIG, 'FILTER_CONTROLLER_ENABLE', False) or getattr(CONFIG, 'USE_XERYON', False)
         
         if is_squid_plus:
-            # Squid+ camera is binned by 2, so the actual resolution is half of the ROI dimensions
-            # ROI: 6208x4168, but actual image after binning is 3104x2084
-            binning_factor = getattr(CONFIG, 'BINNING_FACTOR_DEFAULT', 2)
+            # Squid+ camera binning adjustment for image resize calculation
+            # binning_factor_default: 1 = no binning (full res), 2 = 2x2 binning (half res), etc.
+            binning_factor = getattr(CONFIG.CAMERA_CONFIG, 'BINNING_FACTOR_DEFAULT', 1)
+            # Ensure binning_factor is at least 1 to avoid division by zero
+            binning_factor = max(1, binning_factor)
             
             # Calculate the effective full resolution (unbinned equivalent)
             effective_width = original_width * binning_factor

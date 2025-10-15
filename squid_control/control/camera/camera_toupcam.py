@@ -347,8 +347,9 @@ class Camera(object):
             
             # Set binning from CONFIG
             # This automatically sets the resolution to match the binning level
-            binning = getattr(CONFIG.CAMERA_CONFIG, 'BINNING_FACTOR_DEFAULT', 2)
-            self.set_binning(binning)
+            # binning_factor_default is the actual binning factor: 1=no binning, 2=2x2, 4=4x4, etc.
+            binning_factor = getattr(CONFIG.CAMERA_CONFIG, 'BINNING_FACTOR_DEFAULT', 2)
+            self.set_binning(binning_factor)
             
             # NOTE: ROI setting is intentionally skipped here to match official Squid software behavior.
             # Setting ROI after binning causes errors because ROI dimensions from config are for unbinned resolution.
