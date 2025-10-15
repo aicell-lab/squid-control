@@ -298,7 +298,7 @@ class MirrorMicroscopeService:
                 "require_context": True,  # Always require context for consistent schema
                 "run_in_executor": True
             },
-            "type": "echo",
+            "type": "service",
             "ping": self.ping,
         }
 

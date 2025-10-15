@@ -427,7 +427,6 @@ class MicroscopeHyphaService:
         
         # If no authorized emails are set, allow all authenticated users
         if self.authorized_emails is None:
-            logger.info("No authorized emails configured - allowing authenticated user")
             return True
         
         # Check if user email is in authorized list
@@ -437,10 +436,8 @@ class MicroscopeHyphaService:
             return False
         
         if user_email in self.authorized_emails:
-            logger.info(f"User {user_email} is authorized")
             return True
         else:
-            logger.warning(f"User {user_email} is not authorized")
             return False
 
     def _is_squid_plus_microscope(self):
@@ -1859,7 +1856,7 @@ class MicroscopeHyphaService:
                 "require_context": require_context,  # Always require context
                 "run_in_executor": run_in_executor
             },
-            "type": "echo",
+            "type": "service",
             "ping": self.ping,
             "is_service_healthy": self.is_service_healthy,
             "move_by_distance": self.move_by_distance,
