@@ -633,34 +633,75 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    def update_parameters_from_client(self, new_parameters: dict=Field(description="the dictionary parameters user want to update"), context=None):
+    def update_parameters_from_client(self, 
+                                    new_parameters: dict = Field(..., description="Dictionary of parameters to update (key-value pairs). Example: {'BF_intensity_exposure': [28, 20], 'F488_intensity_exposure': [27, 60], 'dx': 0.5}"), 
+                                    context=None):
         """
-        Update the parameters from the client side
-        Returns: Updated parameters in the microscope
+        Update microscope parameters from client-side requests.
+        
+        Example:
+            update_parameters_from_client({
+                'BF_intensity_exposure': [28, 20],
+                'F488_intensity_exposure': [27, 60],
+                'dx': 0.5,
+                'dy': 0.5
+            })
+        
+        Args:
+            new_parameters: Dictionary containing parameter names and their new values
+            context: User context for authentication
+            
+        Returns:
+            dict: Success status and updated parameters information
+            
+        Raises:
+            Exception: If user not authorized or parameter update fails
         """
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
+            if not isinstance(new_parameters, dict):
+                raise ValueError("new_parameters must be a dictionary")
+
+            if not new_parameters:
+                raise ValueError("new_parameters cannot be empty")
+
             if self.parameters is None:
                 self.parameters = {}
+
+            updated_params = {}
+            failed_params = {}
 
             # Update only the specified keys
             for key, value in new_parameters.items():
                 if key in self.parameters:
                     self.parameters[key] = value
-                    logger.info(f"Updated {key} to {value}")
+                    updated_params[key] = value
+                    logger.info(f"Updated parameter '{key}' to '{value}'")
 
                     # Update the corresponding instance variable if it exists
                     if hasattr(self, key):
                         setattr(self, key, value)
                     else:
-                        logger.error(f"Attribute {key} does not exist on self, skipping update.")
+                        logger.warning(f"Instance attribute '{key}' does not exist, parameter updated in config only")
                 else:
-                    logger.error(f"Key {key} not found in parameters, skipping update.")
+                    failed_params[key] = f"Parameter '{key}' not found in available parameters"
+                    logger.warning(f"Parameter '{key}' not found in available parameters")
 
-            return {"success": True, "message": "Parameters updated successfully.", "updated_parameters": new_parameters}
+            result = {
+                "success": True,
+                "message": f"Updated {len(updated_params)} parameters successfully",
+                "updated_parameters": updated_params
+            }
+            
+            if failed_params:
+                result["failed_parameters"] = failed_params
+                result["message"] += f", {len(failed_params)} parameters failed to update"
+
+            return result
+            
         except Exception as e:
             logger.error(f"Failed to update parameters: {e}")
             raise e
@@ -680,7 +721,6 @@ class MicroscopeHyphaService:
         """
         return self.squidController.get_simulated_sample_data_alias()
 
-    @schema_function(skip_self=True)
     async def one_new_frame(self, context=None):
         """
         Get an image from the microscope
@@ -724,8 +764,7 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to get new frame: {e}")
             raise e
 
-    @schema_function(skip_self=True)
-    async def get_video_frame(self, frame_width: int=Field(750, description="Width of the video frame"), frame_height: int=Field(750, description="Height of the video frame"), context=None):
+    async def get_video_frame(self, frame_width: int=750, frame_height: int=750, context=None):
         """
         Get compressed frame data with metadata from the microscope using video buffering
         Returns: Compressed frame data (JPEG bytes) with associated metadata including stage position and timestamp
