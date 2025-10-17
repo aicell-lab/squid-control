@@ -321,7 +321,7 @@ async def test_illumination_control_service(test_microscope_service):
     microscope, service = test_microscope_service
 
     # Test turning on illumination
-    result = await asyncio.wait_for(service.on_illumination(), timeout=10)
+    result = await asyncio.wait_for(service.turn_on_illumination(), timeout=10)
     assert "turned on" in result.lower()
 
     # Test setting illumination
@@ -332,7 +332,7 @@ async def test_illumination_control_service(test_microscope_service):
     assert "intensity" in result and "50" in result
 
     # Test turning off illumination
-    result = await asyncio.wait_for(service.off_illumination(), timeout=10)
+    result = await asyncio.wait_for(service.turn_off_illumination(), timeout=10)
     assert "turned off" in result.lower()
 
 async def test_camera_exposure_service(test_microscope_service):
@@ -789,14 +789,14 @@ async def test_comprehensive_illumination_control(test_microscope_service):
     initial_illumination_state = initial_status['is_illumination_on']
 
     # Test turning illumination on
-    result = await service.on_illumination()
+    result = await service.turn_on_illumination()
     assert "turned on" in result.lower()
 
     # Test setting illumination while on
     await service.set_illumination(channel=0, intensity=60)
 
     # Test turning illumination off
-    result = await service.off_illumination()
+    result = await service.turn_off_illumination()
     assert "turned off" in result.lower()
 
     # Test setting illumination while off
@@ -804,9 +804,9 @@ async def test_comprehensive_illumination_control(test_microscope_service):
 
     # Test rapid on/off cycling
     for _ in range(3):
-        await service.on_illumination()
+        await service.turn_on_illumination()
         await asyncio.sleep(0.1)
-        await service.off_illumination()
+        await service.turn_off_illumination()
         await asyncio.sleep(0.1)
 
 # Well plate navigation comprehensive tests

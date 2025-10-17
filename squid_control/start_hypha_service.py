@@ -1198,7 +1198,7 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    def open_illumination(self, context=None):
+    def turn_on_illumination(self, context=None):
         """
         Turn on the illumination
         Returns: The message of the action
@@ -1216,7 +1216,7 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    def close_illumination(self, context=None):
+    def turn_off_illumination(self, context=None):
         """
         Turn off the illumination
         Returns: The message of the action
@@ -1873,8 +1873,8 @@ class MicroscopeHyphaService:
             "snap": self.snap,
             "one_new_frame": self.one_new_frame,
             "get_video_frame": self.get_video_frame,
-            "off_illumination": self.close_illumination,
-            "on_illumination": self.open_illumination,
+            "turn_off_illumination": self.turn_off_illumination,
+            "turn_on_illumination": self.turn_on_illumination,
             "set_illumination": self.set_illumination,
             "set_camera_exposure": self.set_camera_exposure,
             "scan_well_plate": self.scan_well_plate,

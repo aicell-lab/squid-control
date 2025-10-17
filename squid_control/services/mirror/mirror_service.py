@@ -380,7 +380,7 @@ class MirrorMicroscopeService:
                     # Mark as disconnected
                     self.webrtc_connected = False
                     self.metadata_data_channel = None
-                    self.local_service.off_illumination()
+                    self.local_service.turn_off_illumination()
                     logger.info("Illumination closed")
                     if self.video_track and self.video_track.running:
                         logger.info(f"Connection state is {peer_connection.connectionState}. Stopping video track.")
@@ -402,7 +402,7 @@ class MirrorMicroscopeService:
                     return
 
                 try:
-                    self.local_service.on_illumination()
+                    self.local_service.turn_on_illumination()
                     logger.info("Illumination opened")
                     self.video_track = MicroscopeVideoTrack(self.local_service, self)
                     peer_connection.addTrack(self.video_track)
@@ -414,7 +414,7 @@ class MirrorMicroscopeService:
                 @track.on("ended")
                 def on_ended():
                     logger.info(f"Client track {track.kind} ended")
-                    self.local_service.off_illumination()
+                    self.local_service.turn_off_illumination()
                     logger.info("Illumination closed")
                     if self.video_track:
                         logger.info("Stopping MicroscopeVideoTrack.")
