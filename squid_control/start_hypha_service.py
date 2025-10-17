@@ -122,7 +122,7 @@ class MicroscopeVideoTrack(MediaStreamTrack):
                 frame_metadata = {}
 
             # Decompress JPEG data to numpy array for WebRTC
-            processed_frame = self.microscope_instance._decode_frame_jpeg(frame_data)
+            processed_frame = self.microscope_instance.decode_video_frame(frame_data)
 
             current_time = time.time()
             # Use a 90kHz timebase, common for video, to provide accurate frame timing.
