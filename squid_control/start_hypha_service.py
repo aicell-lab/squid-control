@@ -876,90 +876,8 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to configure video buffer: {e}")
             raise e
 
-    @schema_function(skip_self=True)
-    def get_video_buffer_status(self, context=None):
-        """Get the current status of the video buffer."""
-        try:
-            buffer_fill = len(self.video_buffer.frame_buffer)
-            buffer_capacity = self.video_buffer.max_size
 
-            return {
-                "success": True,
-                "buffer_running": self.frame_acquisition_running,
-                "buffer_fill": buffer_fill,
-                "buffer_capacity": buffer_capacity,
-                "buffer_fill_percent": (buffer_fill / buffer_capacity * 100) if buffer_capacity > 0 else 0,
-                "buffer_fps": self.buffer_fps,
-                "frame_dimensions": {
-                    "width": self.buffer_frame_width,
-                    "height": self.buffer_frame_height
-                },
-                "video_idle_timeout": self.video_idle_timeout,
-                "last_video_request": self.last_video_request_time,
-                "webrtc_connected": self.webrtc_connected
-            }
-        except Exception as e:
-            logger.error(f"Failed to get video buffer status: {e}")
-            raise e
 
-    @schema_function(skip_self=True)
-    async def start_video_buffering(self, context=None):
-        """Manually start video buffering for smooth streaming."""
-        try:
-            if self.buffer_acquisition_running:
-                return {
-                    "success": True,
-                    "message": "Video buffering is already running",
-                    "was_already_running": True
-                }
-
-            await self.start_frame_buffer_acquisition()
-            logger.info("Video buffering started manually")
-
-            return {
-                "success": True,
-                "message": "Video buffering started successfully",
-                "buffer_fps": self.buffer_fps_target,
-                "buffer_size": self.frame_buffer.maxlen
-            }
-        except Exception as e:
-            logger.error(f"Failed to start video buffering: {e}")
-            raise e
-
-    @schema_function(skip_self=True)
-    async def stop_video_buffering(self, context=None):
-        """Stop the background frame acquisition task"""
-        if not self.frame_acquisition_running:
-            logger.info("Video buffering not running")
-            return
-
-        self.frame_acquisition_running = False
-
-        # Stop idle monitoring task
-        if self.video_idle_check_task and not self.video_idle_check_task.done():
-            self.video_idle_check_task.cancel()
-            try:
-                await self.video_idle_check_task
-            except asyncio.CancelledError:
-                pass
-            self.video_idle_check_task = None
-
-        # Stop frame acquisition task
-        if self.frame_acquisition_task:
-            try:
-                await asyncio.wait_for(self.frame_acquisition_task, timeout=2.0)
-            except asyncio.TimeoutError:
-                logger.warning("Frame acquisition task did not stop gracefully, cancelling")
-                self.frame_acquisition_task.cancel()
-                try:
-                    await self.frame_acquisition_task
-                except asyncio.CancelledError:
-                    pass
-
-        self.video_buffer.clear()
-        self.last_video_request_time = None
-        self.buffering_start_time = None
-        logger.info("Video buffering stopped")
 
     @schema_function(skip_self=True)
     def configure_video_idle_timeout(self, idle_timeout: float = Field(5.0, description="Idle timeout in seconds (0 to disable automatic stop)"), context=None):
@@ -1064,21 +982,21 @@ class MicroscopeHyphaService:
             logger.error(f"Error during test cleanup: {e}")
 
     @schema_function(skip_self=True)
-    async def start_video_buffering_api(self, context=None):
+    async def start_video_buffering(self, context=None):
         """Start video buffering for smooth video streaming"""
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            await self.start_video_buffering()
+            await self._start_video_buffering_internal()
             return {"success": True, "message": "Video buffering started successfully"}
         except Exception as e:
             logger.error(f"Failed to start video buffering: {e}")
             raise e
 
     @schema_function(skip_self=True)
-    async def stop_video_buffering_api(self, context=None):
+    async def stop_video_buffering(self, context=None):
         """Manually stop video buffering to save resources."""
         try:
             # Check authentication
@@ -1092,7 +1010,7 @@ class MicroscopeHyphaService:
                     "was_already_stopped": True
                 }
 
-            await self.stop_video_buffering()
+            await self._stop_video_buffering_internal()
             logger.info("Video buffering stopped manually")
 
             return {
@@ -1894,8 +1812,8 @@ class MicroscopeHyphaService:
             "update_parameters_from_client": self.update_parameters_from_client,
             "get_chatbot_url": self.get_chatbot_url,
             "adjust_video_frame": self.adjust_video_frame,
-            "start_video_buffering": self.start_video_buffering_api,
-            "stop_video_buffering": self.stop_video_buffering_api,
+            "start_video_buffering": self.start_video_buffering,
+            "stop_video_buffering": self.stop_video_buffering,
             "get_video_buffering_status": self.get_video_buffering_status,
             "set_video_fps": self.set_video_fps,
             "get_current_well_location": self.get_current_well_location,
@@ -2218,7 +2136,7 @@ class MicroscopeHyphaService:
         logger.info("ZarrImageManager initialized successfully for health check")
         return camera.zarr_image_manager
 
-    async def start_video_buffering(self):
+    async def _start_video_buffering_internal(self):
         """Start the background frame acquisition task for video buffering"""
         if self.frame_acquisition_running:
             logger.info("Video buffering already running")
@@ -2229,7 +2147,7 @@ class MicroscopeHyphaService:
         self.frame_acquisition_task = asyncio.create_task(self._background_frame_acquisition())
         logger.info("Video buffering started")
 
-    async def stop_video_buffering(self):
+    async def _stop_video_buffering_internal(self):
         """Stop the background frame acquisition task"""
         if not self.frame_acquisition_running:
             logger.info("Video buffering not running")
