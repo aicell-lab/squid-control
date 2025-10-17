@@ -893,8 +893,7 @@ class MicroscopeHyphaService:
             # Create error placeholder and compress it
             raise e
 
-    @schema_function(skip_self=True)
-    def configure_video_buffer(self, buffer_fps: int = Field(5, description="Target FPS for buffer acquisition"), buffer_size: int = Field(5, description="Maximum number of frames to keep in buffer"), context=None):
+    def configure_video_buffer(self, buffer_fps: int = 5, buffer_size: int = 5, context=None):
         """Configure video buffering parameters for optimal streaming performance."""
         try:
             self.buffer_fps_target = max(1, min(30, buffer_fps))  # Clamp between 1-30 FPS
@@ -918,8 +917,7 @@ class MicroscopeHyphaService:
 
 
 
-    @schema_function(skip_self=True)
-    def configure_video_idle_timeout(self, idle_timeout: float = Field(5.0, description="Idle timeout in seconds (0 to disable automatic stop)"), context=None):
+    def configure_video_idle_timeout(self, idle_timeout: float = 5.0, context=None):
         """Configure how long to wait before automatically stopping video buffering when inactive."""
         try:
             self.video_idle_timeout = max(0, idle_timeout)  # Ensure non-negative
@@ -935,8 +933,7 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to configure video idle timeout: {e}")
             raise e
 
-    @schema_function(skip_self=True)
-    async def set_video_fps(self, fps: int = Field(5, description="Target frames per second for video acquisition (1-30 FPS)"), context=None):
+    async def set_video_fps(self, fps: int = 5, context=None):
         """
         Set the video acquisition frame rate for smooth streaming.
         This controls how fast the microscope acquires frames for video streaming.
@@ -1020,7 +1017,6 @@ class MicroscopeHyphaService:
         except Exception as e:
             logger.error(f"Error during test cleanup: {e}")
 
-    @schema_function(skip_self=True)
     async def start_video_buffering(self, context=None):
         """Start video buffering for smooth video streaming"""
         try:
@@ -1034,7 +1030,6 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to start video buffering: {e}")
             raise e
 
-    @schema_function(skip_self=True)
     async def stop_video_buffering(self, context=None):
         """Manually stop video buffering to save resources."""
         try:
@@ -1060,7 +1055,6 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to stop video buffering: {e}")
             raise e
 
-    @schema_function(skip_self=True)
     def get_video_buffering_status(self, context=None):
         """Get the current video buffering status"""
         try:
@@ -1091,8 +1085,7 @@ class MicroscopeHyphaService:
                 "error": str(e)
             }
 
-    @schema_function(skip_self=True)
-    def adjust_video_frame(self, min_val: int = Field(0, description="Minimum intensity value for contrast stretching"), max_val: Optional[int] = Field(None, description="Maximum intensity value for contrast stretching"), context=None):
+    def adjust_video_frame(self, min_val: int = 0, max_val: Optional[int] = None, context=None):
         """Adjust the contrast of the video stream by setting min and max intensity values."""
         try:
             # Check authentication
