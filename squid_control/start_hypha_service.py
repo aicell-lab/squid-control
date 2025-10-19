@@ -1115,8 +1115,7 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to close illumination: {e}")
             raise e
 
-    @schema_function(skip_self=True)
-    async def scan_plate_save_raw_images(self, well_plate_type: str=Field("96", description="Type of the well plate (e.g., '6', '12', '24', '96', '384')"), illumination_settings: List[dict]=Field(default_factory=lambda: [{'channel': 'BF LED matrix full', 'intensity': 28.0, 'exposure_time': 20.0}, {'channel': 'Fluorescence 488 nm Ex', 'intensity': 27.0, 'exposure_time': 60.0}, {'channel': 'Fluorescence 561 nm Ex', 'intensity': 98.0, 'exposure_time': 100.0}], description="Illumination settings with channel name, intensity (0-100), and exposure time (ms) for each channel"), do_contrast_autofocus: bool=Field(False, description="Whether to do contrast based autofocus"), do_reflection_af: bool=Field(True, description="Whether to do reflection based autofocus"), scanning_zone: List[tuple]=Field(default_factory=lambda: [(0,0),(0,0)], description="The scanning zone of the well plate, for 96 well plate, it should be[(0,0),(7,11)] "), Nx: int=Field(3, description="Number of columns to scan"), Ny: int=Field(3, description="Number of rows to scan"), dx: float=Field(0.8, description="Distance between X positions in mm"), dy: float=Field(0.8, description="Distance between Y positions in mm"), action_ID: str=Field('testPlateScan', description="The ID of the action"), context=None):
+    async def scan_plate_save_raw_images(self, well_plate_type: str = "96", illumination_settings: List[dict] = None, do_contrast_autofocus: bool = False, do_reflection_af: bool = True, scanning_zone: List[tuple] = None, Nx: int = 3, Ny: int = 3, dx: float = 0.8, dy: float = 0.8, action_ID: str = 'testPlateScan', context=None):
         """
         DEPRECATED: Use scan_start() with saved_data_type='raw_images' instead.
         
@@ -1132,13 +1131,13 @@ class MicroscopeHyphaService:
             if illumination_settings is None:
                 logger.warning("No illumination settings provided, using default settings")
                 illumination_settings = [
-                    {'channel': 'BF LED matrix full', 'intensity': 18, 'exposure_time': 10},
-                    {'channel': 'Fluorescence 405 nm Ex', 'intensity': 45, 'exposure_time': 30},
-                    {'channel': 'Fluorescence 488 nm Ex', 'intensity': 30, 'exposure_time': 100},
-                    {'channel': 'Fluorescence 561 nm Ex', 'intensity': 100, 'exposure_time': 200},
-                    {'channel': 'Fluorescence 638 nm Ex', 'intensity': 100, 'exposure_time': 200},
-                    {'channel': 'Fluorescence 730 nm Ex', 'intensity': 100, 'exposure_time': 200},
+                    {'channel': 'BF LED matrix full', 'intensity': 28.0, 'exposure_time': 20.0},
+                    {'channel': 'Fluorescence 488 nm Ex', 'intensity': 27.0, 'exposure_time': 60.0},
+                    {'channel': 'Fluorescence 561 nm Ex', 'intensity': 98.0, 'exposure_time': 100.0},
                 ]
+            
+            if scanning_zone is None:
+                scanning_zone = [(0, 0), (0, 0)]
 
             # Check if video buffering is active and stop it during scanning
             video_buffering_was_active = self.frame_acquisition_running
@@ -3015,24 +3014,7 @@ class MicroscopeHyphaService:
         """Get available objectives with schema validation."""
         return self.get_available_objectives(context)
 
-    @schema_function(skip_self=True)
-    async def scan_region_to_zarr(self, start_x_mm: float = Field(20, description="Starting X position in millimeters"),
-                                       start_y_mm: float = Field(20, description="Starting Y position in millimeters"),
-                                       Nx: int = Field(5, description="Number of positions in X direction"),
-                                       Ny: int = Field(5, description="Number of positions in Y direction"),
-                                       dx_mm: float = Field(0.9, description="Interval between positions in X (millimeters)"),
-                                       dy_mm: float = Field(0.9, description="Interval between positions in Y (millimeters)"),
-                                       illumination_settings: Optional[List[dict]] = Field(None, description="List of channel settings"),
-                                       do_contrast_autofocus: bool = Field(False, description="Whether to perform contrast-based autofocus"),
-                                       do_reflection_af: bool = Field(False, description="Whether to perform reflection-based autofocus"),
-                                       action_ID: str = Field('normal_scan_stitching', description="Identifier for this scan"),
-                                       timepoint: int = Field(0, description="Timepoint index for this scan (default 0)"),
-                                       experiment_name: Optional[str] = Field(None, description="Name of the experiment to use. If None, uses active experiment or 'default' as fallback"),
-                                       wells_to_scan: List[str] = Field(default_factory=lambda: ['A1'], description="List of wells to scan (e.g., ['A1', 'B2', 'C3'])"),
-                                       wellplate_type: str = Field('96', description="Well plate type ('6', '12', '24', '96', '384')"),
-                                       well_padding_mm: float = Field(1.0, description="Padding around well in mm"),
-                                       uploading: bool = Field(False, description="Enable upload after scanning is complete"),
-                                       context=None):
+    async def scan_region_to_zarr(self, start_x_mm: float = 20, start_y_mm: float = 20, Nx: int = 5, Ny: int = 5, dx_mm: float = 0.9, dy_mm: float = 0.9, illumination_settings: Optional[List[dict]] = None, do_contrast_autofocus: bool = False, do_reflection_af: bool = False, action_ID: str = 'normal_scan_stitching', timepoint: int = 0, experiment_name: Optional[str] = None, wells_to_scan: List[str] = None, wellplate_type: str = '96', well_padding_mm: float = 1.0, uploading: bool = False, context=None):
         """
         DEPRECATED: Use scan_start() with saved_data_type='full_zarr' instead.
         
@@ -3069,6 +3051,10 @@ class MicroscopeHyphaService:
             # Set default illumination settings if not provided
             if illumination_settings is None:
                 illumination_settings = [{'channel': 'BF LED matrix full', 'intensity': 50, 'exposure_time': 100}]
+            
+            # Set default wells to scan if not provided
+            if wells_to_scan is None:
+                wells_to_scan = ['A1']
 
             logger.info(f"Starting region scan to Zarr: {Nx}x{Ny} positions from ({start_x_mm}, {start_y_mm})")
 
@@ -3177,22 +3163,7 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to reset stitching canvas: {e}")
             raise e
 
-    @schema_function(skip_self=True)
-    async def quick_scan_brightfield_to_zarr(self, wellplate_type: str = Field('96', description="Well plate type ('6', '12', '24', '96', '384')"),
-                                      exposure_time: float = Field(5, description="Camera exposure time in milliseconds (range: 1-30)"),
-                                      intensity: float = Field(70, description="Brightfield LED intensity (range: 0-100)"),
-                                      fps_target: int = Field(10, description="Target frame rate for acquisition (range: 1-10 fps)"),
-                                      action_ID: str = Field('quick_scan_stitching', description="Identifier for this scan"),
-                                      n_stripes: int = Field(4, description="Number of stripes per well (default 4)"),
-                                      stripe_width_mm: float = Field(4.0, description="Length of each stripe inside a well in mm (default 4.0)"),
-                                      dy_mm: float = Field(0.9, description="Y increment between stripes in mm (default 0.9)"),
-                                      velocity_scan_mm_per_s: float = Field(7.0, description="Stage velocity during stripe scanning in mm/s (default 7.0)"),
-                                      do_contrast_autofocus: bool = Field(False, description="Whether to perform contrast-based autofocus"),
-                                      do_reflection_af: bool = Field(False, description="Whether to perform reflection-based autofocus"),
-                                      experiment_name: Optional[str] = Field(None, description="Name of the experiment to use. If None, uses active experiment or 'default' as fallback"),
-                                      well_padding_mm: float = Field(1.0, description="Padding around each well in mm"),
-                                      uploading: bool = Field(False, description="Enable upload after scanning is complete"),
-                                      context=None):
+    async def quick_scan_brightfield_to_zarr(self, wellplate_type: str = '96', exposure_time: float = 5, intensity: float = 70, fps_target: int = 10, action_ID: str = 'quick_scan_stitching', n_stripes: int = 4, stripe_width_mm: float = 4.0, dy_mm: float = 0.9, velocity_scan_mm_per_s: float = 7.0, do_contrast_autofocus: bool = False, do_reflection_af: bool = False, experiment_name: Optional[str] = None, well_padding_mm: float = 1.0, uploading: bool = False, context=None):
         """
         DEPRECATED: Use scan_start() with saved_data_type='quick_zarr' instead.
         
@@ -4165,7 +4136,6 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to cancel scan: {e}")
             raise e
 
-    @schema_function(skip_self=True)
     async def stop_scan_and_stitching(self, context=None):
         """
         [DEPRECATED] Stop scan and stitching operations.
