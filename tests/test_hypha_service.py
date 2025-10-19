@@ -361,11 +361,11 @@ async def test_autofocus_services(test_microscope_service):
     microscope, service = test_microscope_service
 
     # Test contrast autofocus
-    result = await service.auto_focus()
+    result = await service.contrast_autofocus()
     assert "auto-focused" in result.lower()
 
     # Test laser autofocus
-    result = await service.do_laser_autofocus()
+    result = await service.reflection_autofocus()
     assert "auto-focused" in result.lower()
 
 # Stage homing tests
@@ -849,8 +849,8 @@ async def test_additional_schema_methods(test_microscope_service):
     assert isinstance(result, dict)
     assert "result" in result
 
-    # Test do_laser_autofocus_schema
-    result = await microscope.do_laser_autofocus_schema()
+    # Test reflection_autofocus_schema
+    result = await microscope.reflection_autofocus_schema()
     assert isinstance(result, dict)
     assert "result" in result
 
@@ -966,7 +966,7 @@ async def test_laser_functionality(test_microscope_service):
     assert "laser reference" in result.lower()
 
     # Test laser autofocus
-    result = await service.do_laser_autofocus()
+    result = await service.reflection_autofocus()
     assert "auto-focused" in result.lower()
 
 # Test stop_scan functionality (without actually scanning)

@@ -589,7 +589,7 @@ class SquidController:
     def init_laser_autofocus(self):
         self.laserAutofocusController.initialize_auto()
 
-    async def do_laser_autofocus(self):
+    async def reflection_autofocus(self):
         if self.is_simulation:
             await self.do_autofocus_simulation()
         else:
@@ -1339,7 +1339,7 @@ class SquidController:
                             # Autofocus if requested (first position or periodically)
                             if do_reflection_af and (i == 0 and j == 0):
                                 if hasattr(self, 'laserAutofocusController'):
-                                    await self.do_laser_autofocus()
+                                    await self.reflection_autofocus()
                                     # Update position again after autofocus
                                     actual_x_mm, actual_y_mm, actual_z_mm, _ = self.navigationController.update_pos(self.microcontroller)
                             elif do_contrast_autofocus and ((i * Nx + j) % CONFIG.ACQUISITION.NUMBER_OF_FOVS_PER_AF == 0):
@@ -2535,7 +2535,7 @@ class SquidController:
                         if do_reflection_af:
                             logger.info(f'Performing reflection autofocus at well {well_name}')
                             if hasattr(self, 'laserAutofocusController'):
-                                await self.do_laser_autofocus()
+                                await self.reflection_autofocus()
                             else:
                                 logger.warning('Reflection autofocus requested but laserAutofocusController not available')
                         elif do_contrast_autofocus:

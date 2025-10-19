@@ -118,7 +118,7 @@ async def test_laser_autofocus_methods(sim_controller_fixture):
         # Test laser autofocus simulation
         initial_z = controller.navigationController.update_pos(microcontroller=controller.microcontroller)[2]
 
-        await controller.do_laser_autofocus()
+        await controller.reflection_autofocus()
 
         final_z = controller.navigationController.update_pos(microcontroller=controller.microcontroller)[2]
         # Should move to near ORIN_Z in simulation

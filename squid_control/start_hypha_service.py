@@ -1364,7 +1364,7 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            await self.squidController.do_autofocus()
+            await self.squidController.contrast_autofocus()
             logger.info('The camera is auto-focused')
             return 'The camera is auto-focused'
         except Exception as e:
@@ -1383,7 +1383,7 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            await self.squidController.do_laser_autofocus()
+            await self.squidController.reflection_autofocus()
             logger.info('The camera is auto-focused')
             return 'The camera is auto-focused'
         except Exception as e:
@@ -1622,7 +1622,7 @@ class MicroscopeHyphaService:
         return result['message']
 
     async def auto_focus_schema(self, config: AutoFocusInput, context=None):
-        await self.auto_focus(context)
+        await self.contrast_autofocus(context)
         return "Auto-focus completed."
 
     async def snap_image_schema(self, config: SnapImageInput, context=None):
@@ -1653,8 +1653,8 @@ class MicroscopeHyphaService:
         response = self.set_camera_exposure(config.channel, config.exposure_time, context)
         return {"result": response}
 
-    async def do_laser_autofocus_schema(self, context=None):
-        response = await self.do_laser_autofocus(context)
+    async def reflection_autofocus_schema(self, context=None):
+        response = await self.reflection_autofocus(context)
         return {"result": response}
 
     async def autofocus_set_reflection_reference_schema(self, context=None):
@@ -1686,7 +1686,7 @@ class MicroscopeHyphaService:
             "navigate_to_well": self.NavigateToWellInput.model_json_schema(),
             "set_illumination": self.SetIlluminationInput.model_json_schema(),
             "set_camera_exposure": self.SetCameraExposureInput.model_json_schema(),
-            "do_laser_autofocus": self.DoLaserAutofocusInput.model_json_schema(),
+            "reflection_autofocus": self.DoLaserAutofocusInput.model_json_schema(),
             "autofocus_set_reflection_reference": self.SetLaserReferenceInput.model_json_schema(),
             "get_status": self.GetStatusInput.model_json_schema(),
             "get_current_well_location": self.GetCurrentWellLocationInput.model_json_schema(),
@@ -1857,7 +1857,7 @@ class MicroscopeHyphaService:
                 "inspect_tool": self.inspect_tool_schema,
                 "set_illumination": self.set_illumination_schema,
                 "set_camera_exposure": self.set_camera_exposure_schema,
-                "do_laser_autofocus": self.do_laser_autofocus_schema,
+                "reflection_autofocus": self.reflection_autofocus_schema,
                 "autofocus_set_reflection_reference": self.autofocus_set_reflection_reference_schema,
                 "get_status": self.get_status_schema,
                 "get_current_well_location": self.get_current_well_location_schema,
