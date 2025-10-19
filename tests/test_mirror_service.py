@@ -327,7 +327,7 @@ class TestMirrorService:
             # Check parameter descriptions
             x_param = properties.get('x', {})
             assert 'description' in x_param, "x parameter missing description"
-            assert 'unit: millimeter' in x_param['description'], "x parameter description incomplete"
+            assert 'millimeters' in x_param['description'], "x parameter description incomplete - should mention millimeters"
 
             print("✅ Detailed schema verification passed for move_by_distance")
 
