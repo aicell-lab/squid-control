@@ -529,7 +529,7 @@ class SquidController:
 
         # Configure multipoint controller
         self.multipointController.set_base_path(CONFIG.DEFAULT_SAVING_PATH)
-        self.multipointController.do_autofocus = do_contrast_autofocus
+        self.multipointController.contrast_autofocus = do_contrast_autofocus
         self.multipointController.do_reflection_af = do_reflection_af
         self.multipointController.set_NX(Nx)
         self.multipointController.set_NY(Ny)
@@ -570,17 +570,17 @@ class SquidController:
     def get_simulated_sample_data_alias(self):
         return self.sample_data_alias
 
-    async def do_autofocus(self):
+    async def contrast_autofocus(self):
 
         if self.is_simulation:
-            await self.do_autofocus_simulation()
+            await self.contrast_autofocus_simulation()
         else:
             self.autofocusController.set_deltaZ(1.524)
             self.autofocusController.set_N(15)
             self.autofocusController.autofocus()
             self.autofocusController.wait_till_autofocus_has_completed()
 
-    async def do_autofocus_simulation(self):
+    async def contrast_autofocus_simulation(self):
 
         random_z = SIMULATED_CAMERA.ORIN_Z + np.random.normal(0,0.001)
         self.navigationController.move_z_to(random_z)
@@ -591,7 +591,7 @@ class SquidController:
 
     async def reflection_autofocus(self):
         if self.is_simulation:
-            await self.do_autofocus_simulation()
+            await self.contrast_autofocus_simulation()
         else:
             self.laserAutofocusController.move_to_target(0)
 
@@ -1343,7 +1343,7 @@ class SquidController:
                                     # Update position again after autofocus
                                     actual_x_mm, actual_y_mm, actual_z_mm, _ = self.navigationController.update_pos(self.microcontroller)
                             elif do_contrast_autofocus and ((i * Nx + j) % CONFIG.ACQUISITION.NUMBER_OF_FOVS_PER_AF == 0):
-                                await self.do_autofocus()
+                                await self.contrast_autofocus()
                                 # Update position again after autofocus
                                 actual_x_mm, actual_y_mm, actual_z_mm, _ = self.navigationController.update_pos(self.microcontroller)
 
@@ -2540,7 +2540,7 @@ class SquidController:
                                 logger.warning('Reflection autofocus requested but laserAutofocusController not available')
                         elif do_contrast_autofocus:
                             logger.info(f'Performing contrast autofocus at well {well_name}')
-                            await self.do_autofocus()
+                            await self.contrast_autofocus()
 
                         # Update position after autofocus
                         actual_x_mm, actual_y_mm, actual_z_mm, _ = self.navigationController.update_pos(self.microcontroller)

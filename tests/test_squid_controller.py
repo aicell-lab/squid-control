@@ -519,7 +519,7 @@ async def test_autofocus_simulation(sim_controller_fixture):
         initial_x, initial_y, initial_z, *_ = controller.navigationController.update_pos(microcontroller=controller.microcontroller)
 
         # These methods are now async
-        await controller.do_autofocus_simulation()
+        await controller.contrast_autofocus_simulation()
 
         x_after, y_after, z_after, *_ = controller.navigationController.update_pos(microcontroller=controller.microcontroller)
 
@@ -528,7 +528,7 @@ async def test_autofocus_simulation(sim_controller_fixture):
         assert z_after != pytest.approx(initial_z)
         assert z_after == pytest.approx(SIMULATED_CAMERA.ORIN_Z, abs=0.01)
 
-        await controller.do_autofocus()
+        await controller.contrast_autofocus()
         x_final, y_final, z_final, *_ = controller.navigationController.update_pos(microcontroller=controller.microcontroller)
         assert z_final == pytest.approx(SIMULATED_CAMERA.ORIN_Z, abs=0.01)
         break

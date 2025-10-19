@@ -2019,7 +2019,7 @@ class MultiPointWorker:
         self.deltaZ = self.multiPointController.deltaZ
         self.deltaZ_usteps = self.multiPointController.deltaZ_usteps
         self.dt = self.multiPointController.deltat
-        self.do_autofocus = self.multiPointController.do_autofocus
+        self.contrast_autofocus = self.multiPointController.contrast_autofocus
         self.do_reflection_af = self.multiPointController.do_reflection_af
         self.crop_width = self.multiPointController.crop_width
         self.crop_height = self.multiPointController.crop_height
@@ -2256,7 +2256,7 @@ class MultiPointWorker:
                                     (self.NZ == 1)
                                     or CONFIG.Z_STACKING_CONFIG == "FROM CENTER"
                                 )
-                                and (self.do_autofocus)
+                                and (self.contrast_autofocus)
                                 and (
                                     self.FOV_counter
                                     % CONFIG.ACQUISITION.NUMBER_OF_FOVS_PER_AF
@@ -2264,7 +2264,7 @@ class MultiPointWorker:
                                 )
                             ):
                                 # temporary: replace the above line with the line below to CONFIG.AF every FOV
-                                # if (self.NZ == 1) and (self.do_autofocus):
+                                # if (self.NZ == 1) and (self.contrast_autofocus):
                                 configuration_name_AF = (
                                     CONFIG.MULTIPOINT_AUTOFOCUS_CHANNEL
                                 )
@@ -2305,7 +2305,7 @@ class MultiPointWorker:
                             # initialize the reflection CONFIG.AF
                             self.microscope.laserAutofocusController.initialize_auto()
                             # do contrast CONFIG.AF for the first FOV (if contrast CONFIG.AF box is checked)
-                            if self.do_autofocus and (
+                            if self.contrast_autofocus and (
                                 (self.NZ == 1)
                                 or CONFIG.Z_STACKING_CONFIG == "FROM CENTER"
                             ):
@@ -2862,7 +2862,7 @@ class MultiPointController:
         self.deltaZ = CONFIG.ACQUISITION.DZ / 1000
         self.deltaZ_usteps = round(self.deltaZ / mm_per_ustep_Z)
         self.deltat = 0
-        self.do_autofocus = False
+        self.contrast_autofocus = False
         self.do_reflection_af = False
         self.gen_focus_map = False
         self.focus_map_storage = []
@@ -2925,7 +2925,7 @@ class MultiPointController:
         self.deltat = delta
 
     def set_af_flag(self, flag):
-        self.do_autofocus = flag
+        self.contrast_autofocus = flag
 
     def set_reflection_af_flag(self, flag):
         self.do_reflection_af = flag
@@ -2970,7 +2970,7 @@ class MultiPointController:
             "Nz": self.NZ,
             "dt(s)": self.deltat,
             "Nt": self.Nt,
-            "with CONFIG.AF": self.do_autofocus,
+            "with CONFIG.AF": self.contrast_autofocus,
             "with reflection CONFIG.AF": self.do_reflection_af,
         }
         try:  # write objective data if it is available
