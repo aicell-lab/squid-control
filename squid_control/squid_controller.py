@@ -549,8 +549,8 @@ class SquidController:
         self.is_busy = False
         print('Plate scan stopped')
 
-    def stop_scan_well_plate_new(self):
-        """Stop the new well plate scan - alias for stop_plate_scan"""
+    def stop_scan_plate_save_raw_images_new(self):
+        """Stop the plate scan that saves raw images - alias for stop_plate_scan"""
         self.stop_plate_scan()
 
     async def send_trigger_simulation(self, channel=0, intensity=100, exposure_time=100):
@@ -1207,13 +1207,13 @@ class SquidController:
                 "velocity_y_mm_per_s": velocity_y_mm_per_s
             }
 
-    async def normal_scan_with_stitching(self, start_x_mm, start_y_mm, Nx, Ny, dx_mm, dy_mm,
+    async def scan_region_to_zarr(self, start_x_mm, start_y_mm, Nx, Ny, dx_mm, dy_mm,
                                         illumination_settings=None, do_contrast_autofocus=False,
                                         do_reflection_af=False, action_ID='normal_scan_stitching',
                                         timepoint=0, experiment_name=None, wells_to_scan=None,
                                         wellplate_type='96', well_padding_mm=1.0):
         """
-        Normal scan with live stitching to well-specific OME-Zarr canvases.
+        Region scan with live stitching to well-specific OME-Zarr canvases.
         Scans specified wells one by one, creating individual zarr canvases for each well.
         
         Args:
@@ -1405,7 +1405,7 @@ class SquidController:
     def stop_scan_and_stitching(self):
         """
         Stop any ongoing scanning and stitching processes.
-        This will interrupt normal_scan_with_stitching and quick_scan_with_stitching.
+        This will interrupt scan_region_to_zarr and quick_scan_brightfield_to_zarr.
         """
         self.scan_stop_requested = True
         logger.info("Scan stop requested - ongoing scans will be interrupted")
@@ -2360,13 +2360,13 @@ class SquidController:
         """
         return self.experiment_manager.get_experiment_info(experiment_name)
 
-    async def quick_scan_with_stitching(self, wellplate_type='96', exposure_time=5, intensity=50,
+    async def quick_scan_brightfield_to_zarr(self, wellplate_type='96', exposure_time=5, intensity=50,
                                       fps_target=10, action_ID='quick_scan_stitching',
                                       n_stripes=4, stripe_width_mm=4.0, dy_mm=0.9, velocity_scan_mm_per_s=7.0,
                                       do_contrast_autofocus=False, do_reflection_af=False, timepoint=0,
                                       experiment_name=None, well_padding_mm=1.0):
         """
-        Quick scan with live stitching to well-specific OME-Zarr canvases - brightfield only.
+        Quick brightfield scan with live stitching to well-specific OME-Zarr canvases.
         Scans entire well plate, creating individual zarr canvases for each well.
         Uses 4-stripe × 4 mm scanning pattern with serpentine motion per well.
         
@@ -2884,7 +2884,7 @@ class SquidController:
     def stop_scan_and_stitching(self):
         """
         Stop any ongoing scanning and stitching processes.
-        This will interrupt normal_scan_with_stitching and quick_scan_with_stitching.
+        This will interrupt scan_region_to_zarr and quick_scan_brightfield_to_zarr.
         """
         self.scan_stop_requested = True
         logger.info("Scan stop requested - ongoing scans will be interrupted")

@@ -1102,7 +1102,7 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def scan_well_plate(self, well_plate_type: str=Field("96", description="Type of the well plate (e.g., '6', '12', '24', '96', '384')"), illumination_settings: List[dict]=Field(default_factory=lambda: [{'channel': 'BF LED matrix full', 'intensity': 28.0, 'exposure_time': 20.0}, {'channel': 'Fluorescence 488 nm Ex', 'intensity': 27.0, 'exposure_time': 60.0}, {'channel': 'Fluorescence 561 nm Ex', 'intensity': 98.0, 'exposure_time': 100.0}], description="Illumination settings with channel name, intensity (0-100), and exposure time (ms) for each channel"), do_contrast_autofocus: bool=Field(False, description="Whether to do contrast based autofocus"), do_reflection_af: bool=Field(True, description="Whether to do reflection based autofocus"), scanning_zone: List[tuple]=Field(default_factory=lambda: [(0,0),(0,0)], description="The scanning zone of the well plate, for 96 well plate, it should be[(0,0),(7,11)] "), Nx: int=Field(3, description="Number of columns to scan"), Ny: int=Field(3, description="Number of rows to scan"), dx: float=Field(0.8, description="Distance between X positions in mm"), dy: float=Field(0.8, description="Distance between Y positions in mm"), action_ID: str=Field('testPlateScan', description="The ID of the action"), context=None):
+    async def scan_plate_save_raw_images(self, well_plate_type: str=Field("96", description="Type of the well plate (e.g., '6', '12', '24', '96', '384')"), illumination_settings: List[dict]=Field(default_factory=lambda: [{'channel': 'BF LED matrix full', 'intensity': 28.0, 'exposure_time': 20.0}, {'channel': 'Fluorescence 488 nm Ex', 'intensity': 27.0, 'exposure_time': 60.0}, {'channel': 'Fluorescence 561 nm Ex', 'intensity': 98.0, 'exposure_time': 100.0}], description="Illumination settings with channel name, intensity (0-100), and exposure time (ms) for each channel"), do_contrast_autofocus: bool=Field(False, description="Whether to do contrast based autofocus"), do_reflection_af: bool=Field(True, description="Whether to do reflection based autofocus"), scanning_zone: List[tuple]=Field(default_factory=lambda: [(0,0),(0,0)], description="The scanning zone of the well plate, for 96 well plate, it should be[(0,0),(7,11)] "), Nx: int=Field(3, description="Number of columns to scan"), Ny: int=Field(3, description="Number of rows to scan"), dx: float=Field(0.8, description="Distance between X positions in mm"), dy: float=Field(0.8, description="Distance between Y positions in mm"), action_ID: str=Field('testPlateScan', description="The ID of the action"), context=None):
         """
         Scan the well plate according to the pre-defined position list with custom illumination settings
         Returns: The message of the action
@@ -1165,9 +1165,9 @@ class MicroscopeHyphaService:
             logger.info("Well plate scanning completed, video buffering auto-start is now re-enabled")
 
     @schema_function(skip_self=True)
-    def scan_well_plate_simulated(self, context=None):
+    def scan_plate_save_raw_images_simulated(self, context=None):
         """
-        Scan the well plate according to the pre-defined position list
+        Scan the well plate according to the pre-defined position list and save raw images
         Returns: The message of the action
         """
         try:
@@ -1745,8 +1745,8 @@ class MicroscopeHyphaService:
             "turn_on_illumination": self.turn_on_illumination,
             "set_illumination": self.set_illumination,
             "set_camera_exposure": self.set_camera_exposure,
-            "scan_well_plate": self.scan_well_plate,
-            "scan_well_plate_simulated": self.scan_well_plate_simulated,
+            "scan_plate_save_raw_images": self.scan_plate_save_raw_images,
+            "scan_plate_save_raw_images_simulated": self.scan_plate_save_raw_images_simulated,
             "stop_scan": self.stop_scan,
             "home_stage": self.home_stage,
             "return_stage": self.return_stage,
@@ -1770,8 +1770,8 @@ class MicroscopeHyphaService:
             "get_microscope_configuration": self.get_microscope_configuration,
             "set_stage_velocity": self.set_stage_velocity,
             # Stitching functions
-            "normal_scan_with_stitching": self.normal_scan_with_stitching,
-            "quick_scan_with_stitching": self.quick_scan_with_stitching,
+            "scan_region_to_zarr": self.scan_region_to_zarr,
+            "quick_scan_brightfield_to_zarr": self.quick_scan_brightfield_to_zarr,
             "stop_scan_and_stitching": self.stop_scan_and_stitching,
             "get_stitched_region": self.get_stitched_region,
             # Experiment management functions (replaces zarr fileset management)
@@ -2996,7 +2996,7 @@ class MicroscopeHyphaService:
         return self.get_available_objectives(context)
 
     @schema_function(skip_self=True)
-    async def normal_scan_with_stitching(self, start_x_mm: float = Field(20, description="Starting X position in millimeters"),
+    async def scan_region_to_zarr(self, start_x_mm: float = Field(20, description="Starting X position in millimeters"),
                                        start_y_mm: float = Field(20, description="Starting Y position in millimeters"),
                                        Nx: int = Field(5, description="Number of positions in X direction"),
                                        Ny: int = Field(5, description="Number of positions in Y direction"),
@@ -3014,7 +3014,7 @@ class MicroscopeHyphaService:
                                        uploading: bool = Field(False, description="Enable upload after scanning is complete"),
                                        context=None):
         """
-        Perform a normal scan with live stitching to OME-Zarr canvas using well-based approach.
+        Perform a region scan with live stitching to OME-Zarr canvas using well-based approach.
         The images are saved to well-specific zarr canvases within an experiment folder.
         
         Args:
@@ -3047,7 +3047,7 @@ class MicroscopeHyphaService:
             if illumination_settings is None:
                 illumination_settings = [{'channel': 'BF LED matrix full', 'intensity': 50, 'exposure_time': 100}]
 
-            logger.info(f"Starting normal scan with stitching: {Nx}x{Ny} positions from ({start_x_mm}, {start_y_mm})")
+            logger.info(f"Starting region scan to Zarr: {Nx}x{Ny} positions from ({start_x_mm}, {start_y_mm})")
 
             # Check if video buffering is active and stop it during scanning
             video_buffering_was_active = self.frame_acquisition_running
@@ -3061,8 +3061,8 @@ class MicroscopeHyphaService:
             # Set scanning flag to prevent automatic video buffering restart during scan
             self.scanning_in_progress = True
 
-            # Perform the normal scan
-            await self.squidController.normal_scan_with_stitching(
+            # Perform the region scan to Zarr
+            await self.squidController.scan_region_to_zarr(
                 start_x_mm=start_x_mm,
                 start_y_mm=start_y_mm,
                 Nx=Nx,
@@ -3155,7 +3155,7 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def quick_scan_with_stitching(self, wellplate_type: str = Field('96', description="Well plate type ('6', '12', '24', '96', '384')"),
+    async def quick_scan_brightfield_to_zarr(self, wellplate_type: str = Field('96', description="Well plate type ('6', '12', '24', '96', '384')"),
                                       exposure_time: float = Field(5, description="Camera exposure time in milliseconds (range: 1-30)"),
                                       intensity: float = Field(70, description="Brightfield LED intensity (range: 0-100)"),
                                       fps_target: int = Field(10, description="Target frame rate for acquisition (range: 1-10 fps)"),
@@ -3171,7 +3171,7 @@ class MicroscopeHyphaService:
                                       uploading: bool = Field(False, description="Enable upload after scanning is complete"),
                                       context=None):
         """
-        Perform a quick scan with live stitching to OME-Zarr canvas - brightfield only.
+        Perform a quick brightfield scan with live stitching to OME-Zarr canvas.
         Uses 4-stripe x 4 mm scanning pattern with serpentine motion per well.
         Only supports brightfield channel with exposure time ≤ 30ms.
         Always uses well-based approach with individual canvases per well.
@@ -3221,8 +3221,8 @@ class MicroscopeHyphaService:
             # Record start time for performance metrics
             start_time = time.time()
 
-            # Perform the quick scan
-            await self.squidController.quick_scan_with_stitching(
+            # Perform the quick brightfield scan to Zarr
+            await self.squidController.quick_scan_brightfield_to_zarr(
                 wellplate_type=wellplate_type,
                 exposure_time=exposure_time,
                 intensity=intensity,
@@ -3318,7 +3318,7 @@ class MicroscopeHyphaService:
     def stop_scan_and_stitching(self, context=None):
         """
         Stop any ongoing scanning and stitching processes.
-        This will interrupt normal_scan_with_stitching and quick_scan_with_stitching if they are running.
+        This will interrupt scan_region_to_zarr and quick_scan_brightfield_to_zarr if they are running.
         
         Returns:
             dict: Status of the stop request
