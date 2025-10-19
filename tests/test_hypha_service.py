@@ -840,9 +840,9 @@ async def test_additional_schema_methods(test_microscope_service):
     """Test additional schema methods and input validation."""
     microscope, service = test_microscope_service
 
-    # Test auto_focus_schema
+    # Test contrast_autofocus_schema
     config = MicroscopeHyphaService.AutoFocusInput(N=10, delta_Z=1.524)
-    result = await microscope.auto_focus_schema(config)
+    result = await microscope.contrast_autofocus_schema(config)
     assert "auto-focus" in result.lower()
 
     # Test home_stage_schema
