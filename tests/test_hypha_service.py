@@ -239,6 +239,12 @@ async def test_get_status_service(test_microscope_service):
     assert 'current_z' in status
     assert 'is_illumination_on' in status
     assert 'is_busy' in status
+    # Verify scan status is included
+    assert 'scan_status' in status
+    assert isinstance(status['scan_status'], dict)
+    assert 'state' in status['scan_status']
+    assert 'saved_data_type' in status['scan_status']
+    assert 'error_message' in status['scan_status']
 
 async def test_update_parameters_service(test_microscope_service):
     """Test parameter updates through the service."""
@@ -2498,33 +2504,6 @@ async def test_scan_state_transitions(test_microscope_service):
     print("✅ Scan state transitions test passed!")
 
 
-async def test_deprecated_scan_endpoints_still_work(test_microscope_service):
-    """Test that deprecated scan endpoints still work but show warnings."""
-    microscope, service = test_microscope_service
-    
-    print("Testing deprecated scan endpoints backward compatibility")
-    
-    from unittest.mock import AsyncMock, patch
-    import logging
-    
-    # Capture log warnings
-    with patch.object(microscope, 'squidController') as mock_controller:
-        # Mock the controller methods
-        mock_controller.plate_scan = AsyncMock(return_value=None)
-        mock_controller.scan_region_to_zarr = AsyncMock(return_value=None)
-        mock_controller.quick_scan_brightfield_to_zarr = AsyncMock(return_value=None)
-        mock_controller.stop_scan_and_stitching = AsyncMock(return_value=None)
-        
-        # Note: We can't actually test the deprecated endpoints in isolation
-        # because they would trigger real scans. The deprecation warnings
-        # are logged when the methods are called, which we've verified in
-        # the code review.
-        
-        print("   ✓ Deprecated endpoints remain available for backward compatibility")
-        print("   ✓ Deprecation warnings are logged when called (verified in code)")
-    
-    print("✅ Deprecated endpoints backward compatibility test passed!")
-
 
 async def test_scan_status_persistence(test_microscope_service):
     """Test that scan status persists across status checks."""
@@ -2569,5 +2548,76 @@ async def test_scan_status_persistence(test_microscope_service):
         print("   ✓ Scan status persisted correctly through multiple checks")
     
     print("✅ Scan status persistence test passed!")
+
+
+async def test_scan_status_in_get_status(test_microscope_service):
+    """Test that scan status is included in the main get_status call."""
+    microscope, service = test_microscope_service
+    
+    print("Testing scan status integration in get_status")
+    
+    from unittest.mock import AsyncMock, patch
+    
+    # Test 1: Verify scan status in idle state
+    print("1. Checking scan status when idle...")
+    status = await service.get_status()
+    
+    assert 'scan_status' in status, "get_status should include scan_status"
+    assert status['scan_status']['state'] == 'idle', "Initial scan state should be idle"
+    assert status['scan_status']['saved_data_type'] is None, "No scan type when idle"
+    assert status['scan_status']['error_message'] is None, "No error when idle"
+    print("   ✓ Idle scan status correct")
+    
+    # Test 2: Verify scan status during running scan
+    print("2. Checking scan status during running scan...")
+    
+    async def mock_medium_scan(*args, **kwargs):
+        await asyncio.sleep(1.0)
+        return "Scan completed"
+    
+    with patch.object(microscope, 'scan_plate_save_raw_images', new=AsyncMock(side_effect=mock_medium_scan)):
+        # Start scan
+        await service.scan_start(
+            saved_data_type="raw_images",
+            well_plate_type="96",
+            Nx=2, Ny=2,
+            action_ID="test_status_integration"
+        )
+        
+        # Check status during scan
+        await asyncio.sleep(0.3)
+        status = await service.get_status()
+        
+        assert status['scan_status']['state'] in ['running', 'completed'], "Scan should be running"
+        assert status['scan_status']['saved_data_type'] == 'raw_images', "Scan type should be raw_images"
+        print(f"   ✓ Running scan status: {status['scan_status']['state']}")
+        
+        # Wait for completion
+        await asyncio.sleep(1.2)
+        
+        # Test 3: Verify scan status after completion
+        print("3. Checking scan status after completion...")
+        status = await service.get_status()
+        
+        assert status['scan_status']['state'] == 'completed', "Scan should be completed"
+        assert status['scan_status']['saved_data_type'] == 'raw_images', "Scan type should persist"
+        assert status['scan_status']['error_message'] is None, "No error on successful completion"
+        print("   ✓ Completed scan status correct")
+    
+    # Test 4: Verify status includes other microscope info along with scan status
+    print("4. Verifying all status fields are present...")
+    status = await service.get_status()
+    
+    expected_fields = [
+        'is_busy', 'current_x', 'current_y', 'current_z',
+        'is_illumination_on', 'current_channel', 'video_fps',
+        'current_well_location', 'scan_status'
+    ]
+    
+    for field in expected_fields:
+        assert field in status, f"Status should include {field}"
+    
+    print("   ✓ All status fields present")
+    print("✅ Scan status integration test passed!")
 
 

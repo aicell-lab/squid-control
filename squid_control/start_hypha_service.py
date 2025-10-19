@@ -552,6 +552,12 @@ class MicroscopeHyphaService:
                 'video_fps': self.buffer_fps,
                 'video_buffering_active': self.frame_acquisition_running,
                 'current_well_location': well_info,  # Add well location information
+                # Unified scan status
+                'scan_status': {
+                    'state': self.scan_state['state'],
+                    'saved_data_type': self.scan_state['saved_data_type'],
+                    'error_message': self.scan_state['error_message']
+                }
             }
             return self.parameters
         except Exception as e:
@@ -1787,7 +1793,6 @@ class MicroscopeHyphaService:
             # Stitching functions
             "scan_region_to_zarr": self.scan_region_to_zarr,
             "quick_scan_brightfield_to_zarr": self.quick_scan_brightfield_to_zarr,
-            "stop_scan_and_stitching": self.stop_scan_and_stitching,
             "get_stitched_region": self.get_stitched_region,
             # Experiment management functions (replaces zarr fileset management)
             "create_experiment": self.create_experiment,
@@ -3336,40 +3341,6 @@ class MicroscopeHyphaService:
             logger.info("Quick scanning completed, video buffering auto-start is now re-enabled")
 
     @schema_function(skip_self=True)
-    def stop_scan_and_stitching(self, context=None):
-        """
-        Stop any ongoing scanning and stitching processes.
-        This will interrupt scan_region_to_zarr and quick_scan_brightfield_to_zarr if they are running.
-        
-        Returns:
-            dict: Status of the stop request
-        """
-        try:
-            # Check authentication
-            if context and not self.check_permission(context.get("user", {})):
-                raise Exception("User not authorized to access this service")
-
-            logger.info("Stop scan and stitching requested")
-
-            # Call the controller's stop method
-            result = self.squidController.stop_scan_and_stitching()
-
-            # Also reset the scanning flag at service level
-            if hasattr(self, 'scanning_in_progress'):
-                self.scanning_in_progress = False
-                logger.info("Service scanning flag reset")
-
-            return {
-                "success": True,
-                "message": "Scan stop requested - ongoing scans will be interrupted",
-                "controller_response": result
-            }
-
-        except Exception as e:
-            logger.error(f"Failed to stop scan and stitching: {e}")
-            raise e
-
-    @schema_function(skip_self=True)
     def get_stitched_region(self, center_x_mm: float = Field(..., description="Center X position in absolute stage coordinates (mm)"),
                            center_y_mm: float = Field(..., description="Center Y position in absolute stage coordinates (mm)"),
                            width_mm: float = Field(5.0, description="Width of region in mm"),
@@ -4192,6 +4163,37 @@ class MicroscopeHyphaService:
 
         except Exception as e:
             logger.error(f"Failed to cancel scan: {e}")
+            raise e
+
+    @schema_function(skip_self=True)
+    async def stop_scan_and_stitching(self, context=None):
+        """
+        [DEPRECATED] Stop scan and stitching operations.
+        
+        This endpoint is deprecated. Use scan_cancel() instead for unified scan operations.
+        This method is kept for backward compatibility and routes to scan_cancel().
+        
+        Returns:
+            dict: Status with success flag and message
+        """
+        logger.warning("stop_scan_and_stitching is deprecated. Use scan_cancel() instead.")
+        
+        try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+
+            # Route to the unified scan_cancel method
+            result = await self.scan_cancel(context)
+            
+            # Update the message to indicate this was called via deprecated endpoint
+            if result.get("success"):
+                result["message"] = f"[DEPRECATED] {result['message']} (Use scan_cancel() instead)"
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Failed to stop scan and stitching: {e}")
             raise e
 
     # ===== Squid+ Specific API Methods =====
