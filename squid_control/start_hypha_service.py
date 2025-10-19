@@ -1627,7 +1627,7 @@ class MicroscopeHyphaService:
         result = self.move_to_position(x, y, z, context)
         return result['message']
 
-    async def auto_focus_schema(self, config: AutoFocusInput, context=None):
+    async def contrast_autofocus_schema(self, config: AutoFocusInput, context=None):
         await self.contrast_autofocus(context)
         return "Auto-focus completed."
 
@@ -1853,7 +1853,7 @@ class MicroscopeHyphaService:
             "tools": {
                 "move_by_distance": self.move_by_distance_schema,
                 "move_to_position": self.move_to_position_schema,
-                "auto_focus": self.auto_focus_schema,
+                "contrast_autofocus": self.contrast_autofocus_schema,
                 "snap_image": self.snap_image_schema,
                 "home_stage": self.home_stage_schema,
                 "return_stage": self.return_stage_schema,
