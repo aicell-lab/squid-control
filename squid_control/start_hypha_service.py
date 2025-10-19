@@ -438,7 +438,7 @@ class MicroscopeHyphaService:
         return "pong"
 
     @schema_function(skip_self=True)
-    def move_by_distance(self, x: float=Field(1.0, description="disntance through X axis, unit: milimeter"), y: float=Field(1.0, description="disntance through Y axis, unit: milimeter"), z: float=Field(1.0, description="disntance through Z axis, unit: milimeter"), context=None):
+    def move_by_distance(self, x: float=Field(1.0, description="distance through X axis, unit: millimeter"), y: float=Field(1.0, description="distance through Y axis, unit: millimeter"), z: float=Field(1.0, description="distance through Z axis, unit: millimeter"), context=None):
         """
         Move the stage by a distances in x, y, z axis
         Returns: Result information
@@ -465,7 +465,7 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    def move_to_position(self, x:float=Field(1.0,description="Unit: milimeter"), y:float=Field(1.0,description="Unit: milimeter"), z:float=Field(1.0,description="Unit: milimeter"), context=None):
+    def move_to_position(self, x:float=Field(1.0,description="X coordinate in millimeters"), y:float=Field(1.0,description="Y coordinate in millimeters"), z:float=Field(1.0,description="Z coordinate in millimeters"), context=None):
         """
         Move the stage to a position in x, y, z axis
         Returns: The result of the movement
@@ -1019,7 +1019,7 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def snap(self, exposure_time: int=Field(100, description="Exposure time, in milliseconds"), channel: int=Field(0, description="Light source (0 for Bright Field, Fluorescence channels: 11 for 405 nm, 12 for 488 nm, 13 for 638nm, 14 for 561 nm, 15 for 730 nm)"), intensity: int=Field(50, description="Intensity of the illumination source"), context=None):
+    async def snap(self, exposure_time: int=Field(100, description="Exposure time, in milliseconds (range: 1-900)"), channel: int=Field(0, description="Light source (0 for Bright Field, Fluorescence channels: 11 for 405 nm, 12 for 488 nm, 13 for 638nm, 14 for 561 nm, 15 for 730 nm)"), intensity: int=Field(50, description="Intensity of the illumination source (range: 0-100)"), context=None):
         """
         Get an image from microscope
         Returns: the URL of the image
@@ -1183,7 +1183,7 @@ class MicroscopeHyphaService:
 
 
     @schema_function(skip_self=True)
-    def set_illumination(self, channel: int=Field(0, description="Light source (e.g., 0 for Bright Field, Fluorescence channels: 11 for 405 nm, 12 for 488 nm, 13 for 638nm, 14 for 561 nm, 15 for 730 nm)"), intensity: int=Field(50, description="Intensity of the illumination source"), context=None):
+    def set_illumination(self, channel: int=Field(0, description="Light source (e.g., 0 for Bright Field, Fluorescence channels: 11 for 405 nm, 12 for 488 nm, 13 for 638nm, 14 for 561 nm, 15 for 730 nm)"), intensity: int=Field(50, description="Intensity of the illumination source (range: 0-100)"), context=None):
         """
         Set the intensity of light source
         Returns:A string message
@@ -1222,7 +1222,7 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    def set_camera_exposure(self,channel: int=Field(..., description="Light source (e.g., 0 for Bright Field, Fluorescence channels: 11 for 405 nm, 12 for 488 nm, 13 for 638nm, 14 for 561 nm, 15 for 730 nm)"), exposure_time: int=Field(..., description="Exposure time in milliseconds"), context=None):
+    def set_camera_exposure(self,channel: int=Field(..., description="Light source (e.g., 0 for Bright Field, Fluorescence channels: 11 for 405 nm, 12 for 488 nm, 13 for 638nm, 14 for 561 nm, 15 for 730 nm)"), exposure_time: int=Field(..., description="Exposure time in milliseconds (range: 1-900)"), context=None):
         """
         Set the exposure time of the camera
         Returns: A string message
@@ -1342,7 +1342,7 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def auto_focus(self, context=None):
+    async def contrast_autofocus(self, context=None):
         """
         Do contrast-based autofocus
         Returns: A string message
@@ -1361,7 +1361,7 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def do_laser_autofocus(self, context=None):
+    async def reflection_autofocus(self, context=None):
         """
         Do reflection-based autofocus
         Returns: A string message
@@ -1380,7 +1380,7 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def set_laser_reference(self, context=None):
+    async def autofocus_set_reflection_reference(self, context=None):
         """
         Set the reference of the laser
         Returns: A string message
@@ -1559,7 +1559,7 @@ class MicroscopeHyphaService:
     
     class SetFilterWheelPositionInput(BaseModel):
         """Set filter wheel to a specific position."""
-        position: int = Field(..., description="Filter position (1-8)", ge=1, le=8)
+        position: int = Field(..., description="Filter position (range: 1-8)", ge=1, le=8)
     
     class SwitchObjectiveInput(BaseModel):
         """Switch to a specific objective."""
@@ -1646,8 +1646,8 @@ class MicroscopeHyphaService:
         response = await self.do_laser_autofocus(context)
         return {"result": response}
 
-    async def set_laser_reference_schema(self, context=None):
-        response = await self.set_laser_reference(context)
+    async def autofocus_set_reflection_reference_schema(self, context=None):
+        response = await self.autofocus_set_reflection_reference(context)
         return {"result": response}
 
     def get_status_schema(self, context=None):
@@ -1676,7 +1676,7 @@ class MicroscopeHyphaService:
             "set_illumination": self.SetIlluminationInput.model_json_schema(),
             "set_camera_exposure": self.SetCameraExposureInput.model_json_schema(),
             "do_laser_autofocus": self.DoLaserAutofocusInput.model_json_schema(),
-            "set_laser_reference": self.SetLaserReferenceInput.model_json_schema(),
+            "autofocus_set_reflection_reference": self.SetLaserReferenceInput.model_json_schema(),
             "get_status": self.GetStatusInput.model_json_schema(),
             "get_current_well_location": self.GetCurrentWellLocationInput.model_json_schema(),
             "get_microscope_configuration": self.GetMicroscopeConfigurationInput.model_json_schema(),
@@ -1757,7 +1757,7 @@ class MicroscopeHyphaService:
             "get_simulated_sample_data_alias": self.get_simulated_sample_data_alias,
             "auto_focus": self.auto_focus,
             "do_laser_autofocus": self.do_laser_autofocus,
-            "set_laser_reference": self.set_laser_reference,
+            "autofocus_set_reflection_reference": self.autofocus_set_reflection_reference,
             "get_status": self.get_status,
             "update_parameters_from_client": self.update_parameters_from_client,
             "get_chatbot_url": self.get_chatbot_url,
@@ -1843,7 +1843,7 @@ class MicroscopeHyphaService:
                 "set_illumination": self.set_illumination_schema,
                 "set_camera_exposure": self.set_camera_exposure_schema,
                 "do_laser_autofocus": self.do_laser_autofocus_schema,
-                "set_laser_reference": self.set_laser_reference_schema,
+                "autofocus_set_reflection_reference": self.autofocus_set_reflection_reference_schema,
                 "get_status": self.get_status_schema,
                 "get_current_well_location": self.get_current_well_location_schema,
                 "get_microscope_configuration": self.get_microscope_configuration_schema,
@@ -2490,7 +2490,7 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def get_canvas_chunk(self, x_mm: float = Field(..., description="X coordinate of the stage location in millimeters"), y_mm: float = Field(..., description="Y coordinate of the stage location in millimeters"), scale_level: int = Field(1, description="Scale level for the chunk (0-2, where 0 is highest resolution)"), context=None):
+    async def get_canvas_chunk(self, x_mm: float = Field(..., description="X coordinate of the stage location in millimeters"), y_mm: float = Field(..., description="Y coordinate of the stage location in millimeters"), scale_level: int = Field(1, description="Scale level for the chunk (range: 0-2, where 0 is highest resolution)"), context=None):
         """Get a canvas chunk based on microscope stage location (available only in simulation mode when not running locally)"""
 
         # Check if this function is available in current mode
@@ -2907,7 +2907,7 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def list_gallery_datasets(self, gallery_id: str = Field(None, description="Gallery (collection) artifact ID, e.g. agent-lens/1-..."), microscope_service_id: str = Field(None, description="Microscope service ID (optional, used to find gallery if gallery_id not given)"), experiment_id: str = Field(None, description="Experiment ID (optional, used to find gallery if gallery_id not given)"), context=None):
+    async def list_gallery_datasets(self, gallery_id: Optional[str] = Field(None, description="Gallery (collection) artifact ID, e.g. agent-lens/1-..."), microscope_service_id: Optional[str] = Field(None, description="Microscope service ID (optional, used to find gallery if gallery_id not given)"), experiment_id: Optional[str] = Field(None, description="Experiment ID (optional, used to find gallery if gallery_id not given)"), context=None):
         """
         List all datasets in a gallery (collection).
         You can specify the gallery by its artifact ID, or provide microscope_service_id and/or experiment_id to find the gallery.
@@ -3156,9 +3156,9 @@ class MicroscopeHyphaService:
 
     @schema_function(skip_self=True)
     async def quick_scan_with_stitching(self, wellplate_type: str = Field('96', description="Well plate type ('6', '12', '24', '96', '384')"),
-                                      exposure_time: float = Field(5, description="Camera exposure time in milliseconds (max 30ms)"),
-                                      intensity: float = Field(70, description="Brightfield LED intensity (0-100)"),
-                                      fps_target: int = Field(10, description="Target frame rate for acquisition (default 10fps)"),
+                                      exposure_time: float = Field(5, description="Camera exposure time in milliseconds (range: 1-30)"),
+                                      intensity: float = Field(70, description="Brightfield LED intensity (range: 0-100)"),
+                                      fps_target: int = Field(10, description="Target frame rate for acquisition (range: 1-10 fps)"),
                                       action_ID: str = Field('quick_scan_stitching', description="Identifier for this scan"),
                                       n_stripes: int = Field(4, description="Number of stripes per well (default 4)"),
                                       stripe_width_mm: float = Field(4.0, description="Length of each stripe inside a well in mm (default 4.0)"),
@@ -3354,12 +3354,12 @@ class MicroscopeHyphaService:
                            width_mm: float = Field(5.0, description="Width of region in mm"),
                            height_mm: float = Field(5.0, description="Height of region in mm"),
                            wellplate_type: str = Field('96', description="Well plate type ('6', '12', '24', '96', '384')"),
-                           scale_level: int = Field(0, description="Scale level (0=full resolution, 1=1/4, 2=1/16, etc)"),
+                           scale_level: int = Field(0, description="Scale level (range: 0-5, where 0=full resolution, 1=1/4, 2=1/16, 3=1/64, 4=1/256, 5=1/1024)"),
                            channel_name: str = Field('BF LED matrix full', description="Channel names to retrieve and merge (comma-separated string or single channel name, e.g., 'BF LED matrix full' or 'BF LED matrix full,Fluorescence 488 nm Ex')"),
                            timepoint: int = Field(0, description="Timepoint index to retrieve (default 0)"),
                            well_padding_mm: float = Field(1.0, description="Padding around wells in mm"),
                            output_format: str = Field('base64', description="Output format: 'base64' or 'array'"),
-                           experiment_name: str = Field(None, description="Name of the experiment to retrieve data from (default: None uses current experiment)"),
+                           experiment_name: Optional[str] = Field(None, description="Name of the experiment to retrieve data from (default: None uses current experiment)"),
                            context=None):
         """
         Get a stitched region that may span multiple wells by determining which wells 
@@ -3892,7 +3892,7 @@ class MicroscopeHyphaService:
     @schema_function
     async def set_filter_wheel_position(
         self,
-        position: int = Field(..., description="Filter position (1-8)"),
+        position: int = Field(..., description="Filter position (range: 1-8)"),
         context=None
     ):
         """

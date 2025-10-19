@@ -854,8 +854,8 @@ async def test_additional_schema_methods(test_microscope_service):
     assert isinstance(result, dict)
     assert "result" in result
 
-    # Test set_laser_reference_schema
-    result = await microscope.set_laser_reference_schema()
+    # Test autofocus_set_reflection_reference_schema
+    result = await microscope.autofocus_set_reflection_reference_schema()
     assert isinstance(result, dict)
     assert "result" in result
 
@@ -962,7 +962,7 @@ async def test_laser_functionality(test_microscope_service):
     microscope, service = test_microscope_service
 
     # Test setting laser reference
-    result = await service.set_laser_reference()
+    result = await service.autofocus_set_reflection_reference()
     assert "laser reference" in result.lower()
 
     # Test laser autofocus
