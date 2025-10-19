@@ -355,7 +355,7 @@ async def test_navigate_to_well_service(test_microscope_service):
     microscope, service = test_microscope_service
 
     result = await asyncio.wait_for(
-        service.navigate_to_well(row='B', col=3, wellplate_type='96'),
+        service.navigate_to_well(row='B', col=3, well_plate_type='96'),
         timeout=15
     )
 
@@ -556,7 +556,7 @@ async def test_schema_methods(test_microscope_service):
     assert "![Image](" in result
 
     # Test navigate_to_well_schema
-    config = MicroscopeHyphaService.NavigateToWellInput(row='B', col=3, wellplate_type='96')
+    config = MicroscopeHyphaService.NavigateToWellInput(row='B', col=3, well_plate_type='96')
     result = await microscope.navigate_to_well_schema(config)
     assert isinstance(result, str)
     assert "B,3" in result
@@ -650,8 +650,8 @@ async def test_edge_cases_and_error_handling(test_microscope_service):
     await service.set_camera_exposure(channel=0, exposure_time=5000)
 
     # Test navigation to edge wells
-    await service.navigate_to_well(row='A', col=1, wellplate_type='96')  # Top-left
-    await service.navigate_to_well(row='H', col=12, wellplate_type='96')  # Bottom-right
+    await service.navigate_to_well(row='A', col=1, well_plate_type='96')  # Top-left
+    await service.navigate_to_well(row='H', col=12, well_plate_type='96')  # Bottom-right
 
 
 
@@ -824,15 +824,15 @@ async def test_comprehensive_well_navigation(test_microscope_service):
 
     for plate_type in well_plate_types:
         # Test navigation to first well
-        result = await service.navigate_to_well(row='A', col=1, wellplate_type=plate_type)
+        result = await service.navigate_to_well(row='A', col=1, well_plate_type=plate_type)
         assert "A,1" in result
 
         # Test different well positions based on plate type
         if plate_type == '96':
-            result = await service.navigate_to_well(row='H', col=12, wellplate_type=plate_type)
+            result = await service.navigate_to_well(row='H', col=12, well_plate_type=plate_type)
             assert "H,12" in result
         elif plate_type == '384':
-            result = await service.navigate_to_well(row='P', col=24, wellplate_type=plate_type)
+            result = await service.navigate_to_well(row='P', col=24, well_plate_type=plate_type)
             assert "P,24" in result
 
 # Additional schema method tests
@@ -894,10 +894,10 @@ async def test_pydantic_input_models():
     assert snap_input.intensity == 50
 
     # Test NavigateToWellInput
-    well_input = MicroscopeHyphaService.NavigateToWellInput(row='B', col=3, wellplate_type='96')
+    well_input = MicroscopeHyphaService.NavigateToWellInput(row='B', col=3, well_plate_type='96')
     assert well_input.row == 'B'
     assert well_input.col == 3
-    assert well_input.wellplate_type == '96'
+    assert well_input.well_plate_type == '96'
 
     # Test SetIlluminationInput
     illum_input = MicroscopeHyphaService.SetIlluminationInput(channel=11, intensity=75)
@@ -1277,10 +1277,10 @@ async def test_well_location_detection_service(test_microscope_service):
     try:
         # Test 1: Navigate to a specific well and check location
         print("1. Testing navigation to well C5 and location detection...")
-        await service.navigate_to_well(row='C', col=5, wellplate_type='96')
+        await service.navigate_to_well(row='C', col=5, well_plate_type='96')
 
         # Get current well location
-        well_location = await service.get_current_well_location(wellplate_type='96')
+        well_location = await service.get_current_well_location(well_plate_type='96')
 
         print(f"   Expected: C5, Got: {well_location}")
         assert isinstance(well_location, dict)
@@ -1296,8 +1296,8 @@ async def test_well_location_detection_service(test_microscope_service):
         print("2. Testing different plate types...")
 
         # Test 24-well plate
-        await service.navigate_to_well(row='B', col=3, wellplate_type='24')
-        well_location = await service.get_current_well_location(wellplate_type='24')
+        await service.navigate_to_well(row='B', col=3, well_plate_type='24')
+        well_location = await service.get_current_well_location(well_plate_type='24')
 
         print(f"   24-well: Expected B3, Got: {well_location['well_id']}")
         assert well_location['row'] == 'B'
@@ -1306,8 +1306,8 @@ async def test_well_location_detection_service(test_microscope_service):
         assert well_location['plate_type'] == '24'
 
         # Test 384-well plate
-        await service.navigate_to_well(row='D', col=12, wellplate_type='384')
-        well_location = await service.get_current_well_location(wellplate_type='384')
+        await service.navigate_to_well(row='D', col=12, well_plate_type='384')
+        well_location = await service.get_current_well_location(well_plate_type='384')
 
         print(f"   384-well: Expected D12, Got: {well_location['well_id']}")
         assert well_location['row'] == 'D'
@@ -1339,9 +1339,9 @@ async def test_well_location_detection_service(test_microscope_service):
 
         for row, col in test_wells:
             print(f"   Testing well {row}{col}...")
-            await service.navigate_to_well(row=row, col=col, wellplate_type='96')
+            await service.navigate_to_well(row=row, col=col, well_plate_type='96')
 
-            well_location = await service.get_current_well_location(wellplate_type='96')
+            well_location = await service.get_current_well_location(well_plate_type='96')
             expected_well_id = f"{row}{col}"
 
             print(f"      Expected: {expected_well_id}, Got: {well_location['well_id']}")
@@ -1389,10 +1389,10 @@ async def test_well_location_edge_cases_service(test_microscope_service):
             print(f"   Testing {row}{col} on {plate_type}-well plate...")
 
             # Navigate to position
-            await service.navigate_to_well(row=row, col=col, wellplate_type=plate_type)
+            await service.navigate_to_well(row=row, col=col, well_plate_type=plate_type)
 
             # Detect location
-            well_location = await service.get_current_well_location(wellplate_type=plate_type)
+            well_location = await service.get_current_well_location(well_plate_type=plate_type)
 
             # Verify consistency
             assert well_location['row'] == row
@@ -1404,8 +1404,8 @@ async def test_well_location_edge_cases_service(test_microscope_service):
 
         # Test 3: Position accuracy metrics
         print("3. Testing position accuracy metrics...")
-        await service.navigate_to_well(row='F', col=8, wellplate_type='96')
-        well_location = await service.get_current_well_location(wellplate_type='96')
+        await service.navigate_to_well(row='F', col=8, well_plate_type='96')
+        well_location = await service.get_current_well_location(well_plate_type='96')
 
         print("   Position metrics for F8:")
         print(f"      Distance from center: {well_location['distance_from_center']:.4f}mm")
@@ -1436,7 +1436,7 @@ async def test_get_status_well_location_integration(test_microscope_service):
 
         for row, col in test_wells:
             print(f"   Moving to well {row}{col}...")
-            await service.navigate_to_well(row=row, col=col, wellplate_type='96')
+            await service.navigate_to_well(row=row, col=col, well_plate_type='96')
 
             # Get full status
             status = await service.get_status()
@@ -1462,7 +1462,7 @@ async def test_get_status_well_location_integration(test_microscope_service):
 
         # Test 2: Verify status coordinates match well location calculation
         print("2. Testing coordinate consistency...")
-        await service.navigate_to_well(row='D', col=6, wellplate_type='96')
+        await service.navigate_to_well(row='D', col=6, well_plate_type='96')
         status = await service.get_status()
 
         # Extract coordinates from status
@@ -2264,7 +2264,7 @@ async def test_scan_start_full_zarr_profile(test_microscope_service):
             Nx=3, Ny=3,
             dx_mm=0.9, dy_mm=0.9,
             wells_to_scan=['A1', 'B2'],
-            wellplate_type='96',
+            well_plate_type='96',
             experiment_name='test_experiment',
             uploading=False,
             action_ID="test_full_zarr"

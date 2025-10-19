@@ -1480,11 +1480,11 @@ async def test_experiment_creation(sim_controller_fixture):
 
         # Test creating a new experiment
         experiment_name = "test_experiment_1"
-        result = controller.experiment_manager.create_experiment(experiment_name, wellplate_type='96')
+        result = controller.experiment_manager.create_experiment(experiment_name, well_plate_type='96')
 
         assert isinstance(result, dict)
         assert result["experiment_name"] == experiment_name
-        assert result["wellplate_type"] == '96'
+        assert result["well_plate_type"] == '96'
         assert "experiment_path" in result
         assert "initialized_wells" in result
 
@@ -1495,10 +1495,10 @@ async def test_experiment_creation(sim_controller_fixture):
 
         # Test creating another experiment
         experiment_name_2 = "test_experiment_2"
-        result_2 = controller.experiment_manager.create_experiment(experiment_name_2, wellplate_type='384')
+        result_2 = controller.experiment_manager.create_experiment(experiment_name_2, well_plate_type='384')
 
         assert result_2["experiment_name"] == experiment_name_2
-        assert result_2["wellplate_type"] == '384'
+        assert result_2["well_plate_type"] == '384'
         assert controller.experiment_manager.current_experiment == experiment_name_2
 
         print(f"   ✓ Created second experiment '{experiment_name_2}' successfully")
@@ -1534,7 +1534,7 @@ async def test_experiment_listing(sim_controller_fixture):
         # Create some experiments
         test_experiments = ["experiment_a", "experiment_b", "experiment_c"]
         for experiment_name in test_experiments:
-            controller.experiment_manager.create_experiment(experiment_name, wellplate_type='96')
+            controller.experiment_manager.create_experiment(experiment_name, well_plate_type='96')
 
         # List experiments again
         result = controller.experiment_manager.list_experiments()
@@ -1573,7 +1573,7 @@ async def test_experiment_activation(sim_controller_fixture):
         # Create multiple experiments
         test_experiments = ["project_alpha", "project_beta", "project_gamma"]
         for experiment_name in test_experiments:
-            controller.experiment_manager.create_experiment(experiment_name, wellplate_type='96')
+            controller.experiment_manager.create_experiment(experiment_name, well_plate_type='96')
 
         # The last created should be active
         assert controller.experiment_manager.current_experiment == test_experiments[-1]
@@ -1611,7 +1611,7 @@ async def test_experiment_removal(sim_controller_fixture):
         # Create multiple experiments
         test_experiments = ["temp_exp_1", "temp_exp_2", "temp_exp_3"]
         for experiment_name in test_experiments:
-            controller.experiment_manager.create_experiment(experiment_name, wellplate_type='96')
+            controller.experiment_manager.create_experiment(experiment_name, well_plate_type='96')
 
         # Verify all experiments exist
         list_result = controller.experiment_manager.list_experiments()
@@ -1666,7 +1666,7 @@ async def test_experiment_reset(sim_controller_fixture):
 
         # Create an experiment
         experiment_name = "test_reset_experiment"
-        controller.experiment_manager.create_experiment(experiment_name, wellplate_type='96')
+        controller.experiment_manager.create_experiment(experiment_name, well_plate_type='96')
 
         # Create some well canvases in the experiment
         well_canvas = controller.experiment_manager.get_well_canvas('A', 1, '96')
@@ -1710,7 +1710,7 @@ async def test_well_canvas_management(sim_controller_fixture):
             pass
 
         # Create an experiment
-        controller.experiment_manager.create_experiment(experiment_name, wellplate_type='96')
+        controller.experiment_manager.create_experiment(experiment_name, well_plate_type='96')
 
         # Test getting well canvas
         well_canvas = controller.experiment_manager.get_well_canvas('A', 1, '96')
@@ -1748,7 +1748,7 @@ async def test_well_canvas_management(sim_controller_fixture):
             if canvas_info.get("status") == "active":
                 assert "well_row" in canvas_info
                 assert "well_column" in canvas_info
-                assert "wellplate_type" in canvas_info
+                assert "well_plate_type" in canvas_info
                 assert "well_center_x_mm" in canvas_info
                 assert "well_center_y_mm" in canvas_info
                 assert "padding_mm" in canvas_info
@@ -1837,7 +1837,7 @@ async def test_experiment_error_handling(sim_controller_fixture):
 
         for invalid_name in invalid_names:
             try:
-                controller.experiment_manager.create_experiment(invalid_name, wellplate_type='96')
+                controller.experiment_manager.create_experiment(invalid_name, well_plate_type='96')
                 # If it doesn't raise an error, that's also fine - depends on implementation
                 print(f"   Note: Invalid name '{invalid_name}' was accepted (implementation choice)")
             except (ValueError, RuntimeError) as e:

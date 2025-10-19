@@ -1423,7 +1423,7 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def navigate_to_well(self, row: str=Field('A', description="Row number of the well position (e.g., 'A')"), col: int=Field(1, description="Column number of the well position"), wellplate_type: str=Field('96', description="Type of the well plate (e.g., '6', '12', '24', '96', '384')"), context=None):
+    async def navigate_to_well(self, row: str=Field('A', description="Row number of the well position (e.g., 'A')"), col: int=Field(1, description="Column number of the well position"), well_plate_type: str=Field('96', description="Type of the well plate (e.g., '6', '12', '24', '96', '384')"), context=None):
         """
         Navigate to the specified well position in the well plate.
         Returns: A string message
@@ -1434,8 +1434,8 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            if wellplate_type is None:
-                wellplate_type = '96'
+            if well_plate_type is None:
+                well_plate_type = '96'
             # Run the blocking move_to_well operation in a separate thread executor
             # This prevents the asyncio event loop from being blocked during stage movement
             await asyncio.get_event_loop().run_in_executor(
@@ -1443,7 +1443,7 @@ class MicroscopeHyphaService:
                 self.squidController.move_to_well,
                 row,
                 col,
-                wellplate_type
+                well_plate_type
             )
             logger.info(f'The stage moved to well position ({row},{col})')
             return f'The stage moved to well position ({row},{col})'
@@ -1522,7 +1522,7 @@ class MicroscopeHyphaService:
         """Navigate to a well position in the well plate."""
         row: str = Field(..., description="Row number of the well position (e.g., 'A')")
         col: int = Field(..., description="Column number of the well position")
-        wellplate_type: str = Field('96', description="Type of the well plate (e.g., '6', '12', '24', '96', '384')")
+        well_plate_type: str = Field('96', description="Type of the well plate (e.g., '6', '12', '24', '96', '384')")
 
     class MoveToLoadingPositionInput(BaseModel):
         """Move the stage to the loading position."""
@@ -1559,7 +1559,7 @@ class MicroscopeHyphaService:
 
     class GetCurrentWellLocationInput(BaseModel):
         """Get the current well location based on the stage position."""
-        wellplate_type: str = Field('96', description="Type of the well plate (e.g., '6', '12', '24', '96', '384')")
+        well_plate_type: str = Field('96', description="Type of the well plate (e.g., '6', '12', '24', '96', '384')")
 
     class GetMicroscopeConfigurationInput(BaseModel):
         """Get microscope configuration information in JSON format."""
@@ -1635,7 +1635,7 @@ class MicroscopeHyphaService:
         return f"![Image]({image_url})"
 
     async def navigate_to_well_schema(self, config: NavigateToWellInput, context=None):
-        await self.navigate_to_well(config.row, config.col, config.wellplate_type, context)
+        await self.navigate_to_well(config.row, config.col, config.well_plate_type, context)
         return f'The stage moved to well position ({config.row},{config.col})'
 
     async def inspect_tool_schema(self, config: InspectToolInput, context=None):
@@ -1671,7 +1671,7 @@ class MicroscopeHyphaService:
         return {"result": response}
 
     def get_current_well_location_schema(self, config: GetCurrentWellLocationInput, context=None):
-        response = self.get_current_well_location(config.wellplate_type, context)
+        response = self.get_current_well_location(config.well_plate_type, context)
         return {"result": response}
 
     def get_microscope_configuration_schema(self, config: GetMicroscopeConfigurationInput, context=None):
@@ -2410,7 +2410,7 @@ class MicroscopeHyphaService:
         logger.info("Video idle monitoring stopped")
 
     @schema_function(skip_self=True)
-    def get_current_well_location(self, wellplate_type: str=Field('96', description="Type of the well plate (e.g., '6', '12', '24', '96', '384')"), context=None):
+    def get_current_well_location(self, well_plate_type: str=Field('96', description="Type of the well plate (e.g., '6', '12', '24', '96', '384')"), context=None):
         """
         Get the current well location based on the stage position.
         Returns: Dictionary with well location information including row, column, well_id, and position status
@@ -2420,7 +2420,7 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            well_info = self.squidController.get_well_from_position(wellplate_type)
+            well_info = self.squidController.get_well_from_position(well_plate_type)
             logger.info(f'Current well location: {well_info["well_id"]} ({well_info["position_status"]})')
             return well_info
         except Exception as e:
@@ -2712,7 +2712,7 @@ class MicroscopeHyphaService:
                     if well_name.startswith("well_"):
                         well_info = well_name[5:]  # "A1_96"
                         if "_" in well_info:
-                            well_part, wellplate_type = well_info.rsplit("_", 1)
+                            well_part, well_plate_type = well_info.rsplit("_", 1)
                             if len(well_part) >= 2:
                                 well_row = well_part[0]
                                 well_column = int(well_part[1:])
@@ -2721,7 +2721,7 @@ class MicroscopeHyphaService:
                                 temp_canvas = WellZarrCanvas(
                                     well_row=well_row,
                                     well_column=well_column,
-                                    wellplate_type=wellplate_type,
+                                    well_plate_type=well_plate_type,
                                     padding_mm=1.0,
                                     base_path=str(well_path.parent),
                                     pixel_size_xy_um=self.squidController.pixel_size_xy,
@@ -2740,7 +2740,7 @@ class MicroscopeHyphaService:
                                     "num_scales": export_info.get("num_scales"),
                                     "microscope_service_id": self.service_id,
                                     "experiment_name": experiment_name,
-                                    "wellplate_type": wellplate_type
+                                    "well_plate_type": well_plate_type
                                 }
                 except Exception as e:
                     logger.warning(f"Could not get detailed acquisition settings: {e}")
@@ -2777,7 +2777,7 @@ class MicroscopeHyphaService:
                     if well_name.startswith("well_"):
                         well_info_part = well_name[5:]  # "A1_96"
                         if "_" in well_info_part:
-                            well_part, wellplate_type = well_info_part.rsplit("_", 1)
+                            well_part, well_plate_type = well_info_part.rsplit("_", 1)
                             if len(well_part) >= 2:
                                 well_row = well_part[0]
                                 well_column = int(well_part[1:])
@@ -2786,7 +2786,7 @@ class MicroscopeHyphaService:
                                 temp_canvas = WellZarrCanvas(
                                     well_row=well_row,
                                     well_column=well_column,
-                                    wellplate_type=wellplate_type,
+                                    well_plate_type=well_plate_type,
                                     padding_mm=1.0,
                                     base_path=str(well_path.parent),
                                     pixel_size_xy_um=self.squidController.pixel_size_xy,
@@ -2810,7 +2810,7 @@ class MicroscopeHyphaService:
                                     "well_name": well_name,
                                     "well_row": well_row,
                                     "well_column": well_column,
-                                    "wellplate_type": wellplate_type,
+                                    "well_plate_type": well_plate_type,
                                     "size_mb": well_size_mb
                                 })
 
@@ -3014,7 +3014,7 @@ class MicroscopeHyphaService:
         """Get available objectives with schema validation."""
         return self.get_available_objectives(context)
 
-    async def scan_region_to_zarr(self, start_x_mm: float = 20, start_y_mm: float = 20, Nx: int = 5, Ny: int = 5, dx_mm: float = 0.9, dy_mm: float = 0.9, illumination_settings: Optional[List[dict]] = None, do_contrast_autofocus: bool = False, do_reflection_af: bool = False, action_ID: str = 'normal_scan_stitching', timepoint: int = 0, experiment_name: Optional[str] = None, wells_to_scan: List[str] = None, wellplate_type: str = '96', well_padding_mm: float = 1.0, uploading: bool = False, context=None):
+    async def scan_region_to_zarr(self, start_x_mm: float = 20, start_y_mm: float = 20, Nx: int = 5, Ny: int = 5, dx_mm: float = 0.9, dy_mm: float = 0.9, illumination_settings: Optional[List[dict]] = None, do_contrast_autofocus: bool = False, do_reflection_af: bool = False, action_ID: str = 'normal_scan_stitching', timepoint: int = 0, experiment_name: Optional[str] = None, wells_to_scan: List[str] = None, well_plate_type: str = '96', well_padding_mm: float = 1.0, uploading: bool = False, context=None):
         """
         DEPRECATED: Use scan_start() with saved_data_type='full_zarr' instead.
         
@@ -3035,7 +3035,7 @@ class MicroscopeHyphaService:
             timepoint: Timepoint index for this scan (default 0)
             experiment_name: Name of the experiment to use. If None, uses active experiment or 'default' as fallback
             wells_to_scan: List of wells to scan (e.g., ['A1', 'B2', 'C3'])
-            wellplate_type: Well plate type ('6', '12', '24', '96', '384')
+            well_plate_type: Well plate type ('6', '12', '24', '96', '384')
             well_padding_mm: Padding around well in mm
             uploading: Enable upload after scanning is complete
             
@@ -3085,7 +3085,7 @@ class MicroscopeHyphaService:
                 timepoint=timepoint,
                 experiment_name=experiment_name,
                 wells_to_scan=wells_to_scan,
-                wellplate_type=wellplate_type,
+                well_plate_type=well_plate_type,
                 well_padding_mm=well_padding_mm
             )
 
@@ -3163,7 +3163,7 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to reset stitching canvas: {e}")
             raise e
 
-    async def quick_scan_brightfield_to_zarr(self, wellplate_type: str = '96', exposure_time: float = 5, intensity: float = 70, fps_target: int = 10, action_ID: str = 'quick_scan_stitching', n_stripes: int = 4, stripe_width_mm: float = 4.0, dy_mm: float = 0.9, velocity_scan_mm_per_s: float = 7.0, do_contrast_autofocus: bool = False, do_reflection_af: bool = False, experiment_name: Optional[str] = None, well_padding_mm: float = 1.0, uploading: bool = False, context=None):
+    async def quick_scan_brightfield_to_zarr(self, well_plate_type: str = '96', exposure_time: float = 5, intensity: float = 70, fps_target: int = 10, action_ID: str = 'quick_scan_stitching', n_stripes: int = 4, stripe_width_mm: float = 4.0, dy_mm: float = 0.9, velocity_scan_mm_per_s: float = 7.0, do_contrast_autofocus: bool = False, do_reflection_af: bool = False, experiment_name: Optional[str] = None, well_padding_mm: float = 1.0, uploading: bool = False, context=None):
         """
         DEPRECATED: Use scan_start() with saved_data_type='quick_zarr' instead.
         
@@ -3173,7 +3173,7 @@ class MicroscopeHyphaService:
         Always uses well-based approach with individual canvases per well.
         
         Args:
-            wellplate_type: Well plate format ('6', '12', '24', '96', '384')
+            well_plate_type: Well plate format ('6', '12', '24', '96', '384')
             exposure_time: Camera exposure time in milliseconds (must be ≤ 30ms)
             intensity: Brightfield LED intensity (0-100)
             fps_target: Target frame rate for acquisition (default 10fps)
@@ -3201,7 +3201,7 @@ class MicroscopeHyphaService:
             if exposure_time > 30:
                 raise ValueError(f"Quick scan exposure time must not exceed 30ms (got {exposure_time}ms)")
 
-            logger.info(f"Starting quick scan with stitching: {wellplate_type} well plate, {n_stripes} stripes × {stripe_width_mm}mm, dy={dy_mm}mm, scan_velocity={velocity_scan_mm_per_s}mm/s, fps={fps_target}")
+            logger.info(f"Starting quick scan with stitching: {well_plate_type} well plate, {n_stripes} stripes × {stripe_width_mm}mm, dy={dy_mm}mm, scan_velocity={velocity_scan_mm_per_s}mm/s, fps={fps_target}")
 
             # Check if video buffering is active and stop it during scanning
             video_buffering_was_active = self.frame_acquisition_running
@@ -3220,7 +3220,7 @@ class MicroscopeHyphaService:
 
             # Perform the quick brightfield scan to Zarr
             await self.squidController.quick_scan_brightfield_to_zarr(
-                wellplate_type=wellplate_type,
+                well_plate_type=well_plate_type,
                 exposure_time=exposure_time,
                 intensity=intensity,
                 fps_target=fps_target,
@@ -3247,8 +3247,8 @@ class MicroscopeHyphaService:
                 '384': {'rows': 16, 'cols': 24}
             }
 
-            # Convert wellplate_type to string to avoid ObjectProxy issues
-            wellplate_type_str = str(wellplate_type)
+            # Convert well_plate_type to string to avoid ObjectProxy issues
+            wellplate_type_str = str(well_plate_type)
             config = wellplate_configs.get(wellplate_type_str, wellplate_configs['96'])
             total_wells = config['rows'] * config['cols']
             total_stripes = total_wells * n_stripes
@@ -3272,7 +3272,7 @@ class MicroscopeHyphaService:
                 "success": True,
                 "message": "Quick scan with stitching completed successfully",
                 "scan_parameters": {
-                    "wellplate_type": wellplate_type_str,
+                    "well_plate_type": wellplate_type_str,
                     "wells_scanned": total_wells,
                     "stripes_per_well": n_stripes,
                     "stripe_width_mm": stripe_width_mm,
@@ -3316,7 +3316,7 @@ class MicroscopeHyphaService:
                            center_y_mm: float = Field(..., description="Center Y position in absolute stage coordinates (mm)"),
                            width_mm: float = Field(5.0, description="Width of region in mm"),
                            height_mm: float = Field(5.0, description="Height of region in mm"),
-                           wellplate_type: str = Field('96', description="Well plate type ('6', '12', '24', '96', '384')"),
+                           well_plate_type: str = Field('96', description="Well plate type ('6', '12', '24', '96', '384')"),
                            scale_level: int = Field(0, description="Scale level (range: 0-5, where 0=full resolution, 1=1/4, 2=1/16, 3=1/64, 4=1/256, 5=1/1024)"),
                            channel_name: str = Field('BF LED matrix full', description="Channel names to retrieve and merge (comma-separated string or single channel name, e.g., 'BF LED matrix full' or 'BF LED matrix full,Fluorescence 488 nm Ex')"),
                            timepoint: int = Field(0, description="Timepoint index to retrieve (default 0)"),
@@ -3337,7 +3337,7 @@ class MicroscopeHyphaService:
             center_y_mm: Center Y position in absolute stage coordinates (mm)
             width_mm: Width of region in mm
             height_mm: Height of region in mm
-            wellplate_type: Well plate type ('6', '12', '24', '96', '384')
+            well_plate_type: Well plate type ('6', '12', '24', '96', '384')
             scale_level: Scale level (0=full resolution, 1=1/4, 2=1/16, etc)
             channel_name: Channel names to retrieve and merge (comma-separated string or single channel name)
             timepoint: Timepoint index to retrieve (default 0)
@@ -3352,7 +3352,7 @@ class MicroscopeHyphaService:
             logger.info(f"get_stitched_region called with parameters:")
             logger.info(f"  center_x_mm={center_x_mm}, center_y_mm={center_y_mm}")
             logger.info(f"  width_mm={width_mm}, height_mm={height_mm}")
-            logger.info(f"  wellplate_type='{wellplate_type}', scale_level={scale_level}")
+            logger.info(f"  well_plate_type='{well_plate_type}', scale_level={scale_level}")
             logger.info(f"  channel_name='{channel_name}', timepoint={timepoint}")
             logger.info(f"  well_padding_mm={well_padding_mm}, output_format='{output_format}'")
             
@@ -3384,7 +3384,7 @@ class MicroscopeHyphaService:
                         "center_y_mm": center_y_mm,
                         "width_mm": width_mm,
                         "height_mm": height_mm,
-                        "wellplate_type": wellplate_type,
+                        "well_plate_type": well_plate_type,
                         "scale_level": scale_level,
                         "channels": channel_list,
                         "timepoint": timepoint,
@@ -3402,7 +3402,7 @@ class MicroscopeHyphaService:
                     center_y_mm=center_y_mm,
                     width_mm=width_mm,
                     height_mm=height_mm,
-                    wellplate_type=wellplate_type,
+                    well_plate_type=well_plate_type,
                     scale_level=scale_level,
                     channel_name=ch_name,
                     timepoint=timepoint,
@@ -3427,7 +3427,7 @@ class MicroscopeHyphaService:
                         "center_y_mm": center_y_mm,
                         "width_mm": width_mm,
                         "height_mm": height_mm,
-                        "wellplate_type": wellplate_type,
+                        "well_plate_type": well_plate_type,
                         "scale_level": scale_level,
                         "channels": channel_list,
                         "timepoint": timepoint,
@@ -3458,7 +3458,7 @@ class MicroscopeHyphaService:
                         "center_y_mm": center_y_mm,
                         "width_mm": width_mm,
                         "height_mm": height_mm,
-                        "wellplate_type": wellplate_type,
+                        "well_plate_type": well_plate_type,
                         "scale_level": scale_level,
                         "channels": channel_list,
                         "timepoint": timepoint,
@@ -3519,7 +3519,7 @@ class MicroscopeHyphaService:
                         "center_y_mm": center_y_mm,
                         "width_mm": width_mm,
                         "height_mm": height_mm,
-                        "wellplate_type": wellplate_type,
+                        "well_plate_type": well_plate_type,
                         "scale_level": scale_level,
                         "channels": channel_list,
                         "timepoint": timepoint,
@@ -3541,7 +3541,7 @@ class MicroscopeHyphaService:
                         "center_y_mm": center_y_mm,
                         "width_mm": width_mm,
                         "height_mm": height_mm,
-                        "wellplate_type": wellplate_type,
+                        "well_plate_type": well_plate_type,
                         "scale_level": scale_level,
                         "channels": channel_list,
                         "timepoint": timepoint,
@@ -3907,7 +3907,7 @@ class MicroscopeHyphaService:
                         start_x_mm: float = Field(20, description="Starting X position in mm (for full_zarr)"),
                         start_y_mm: float = Field(20, description="Starting Y position in mm (for full_zarr)"),
                         wells_to_scan: List[str] = Field(default_factory=lambda: ['A1'], description="List of wells to scan (for full_zarr)"),
-                        wellplate_type: str = Field('96', description="Well plate type (for full_zarr)"),
+                        well_plate_type: str = Field('96', description="Well plate type (for full_zarr)"),
                         well_padding_mm: float = Field(1.0, description="Padding around well in mm (for full_zarr, quick_zarr)"),
                         experiment_name: Optional[str] = Field(None, description="Experiment name (for full_zarr, quick_zarr)"),
                         uploading: bool = Field(False, description="Enable upload after scanning (for full_zarr, quick_zarr)"),
@@ -4000,7 +4000,7 @@ class MicroscopeHyphaService:
                     timepoint=timepoint,
                     experiment_name=experiment_name,
                     wells_to_scan=wells_to_scan,
-                    wellplate_type=wellplate_type,
+                    well_plate_type=well_plate_type,
                     well_padding_mm=well_padding_mm,
                     uploading=uploading,
                     context=context
@@ -4010,7 +4010,7 @@ class MicroscopeHyphaService:
                 # Prepare scan method and parameters for quick zarr scanning
                 scan_coro = self._run_scan_with_state_tracking(
                     self.quick_scan_brightfield_to_zarr,
-                    wellplate_type=well_plate_type,  # Note: quick scan uses well_plate_type param
+                    well_plate_type=well_plate_type,  # Note: quick scan uses well_plate_type param
                     exposure_time=exposure_time,
                     intensity=intensity,
                     fps_target=fps_target,

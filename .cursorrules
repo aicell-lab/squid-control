@@ -800,7 +800,7 @@ python squid_control/run_mirror_service.py [options]
 - **`WellZarrCanvas`**: Well-specific implementation with automatic coordinate conversion
 - **Well Center Calculation**: Automatic well center calculation from well plate formats
 - **Canvas Size**: Based on well diameter + configurable padding (default: 2.0mm)
-- **Fileset Naming**: Well-specific naming pattern (well_{row}{column}_{wellplate_type})
+- **Fileset Naming**: Well-specific naming pattern (well_{row}{column}_{well_plate_type})
 
 ### Image Writing Best Practices
 - **Bounds Validation**: Calculate and validate all coordinate bounds before any zarr write operation
