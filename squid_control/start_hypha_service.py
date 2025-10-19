@@ -281,6 +281,14 @@ class MicroscopeHyphaService:
         # Scanning control attributes
         self.scanning_in_progress = False  # Flag to prevent video buffering during scans
 
+        # Unified scan state tracking (single scan at a time)
+        self.scan_state = {
+            'state': 'idle',  # idle, running, completed, failed
+            'error_message': None,
+            'scan_task': None,  # asyncio.Task for the running scan
+            'saved_data_type': None,  # raw_images, full_zarr, quick_zarr
+        }
+
         # Initialize coverage tracking if in test mode
         if os.environ.get('SQUID_TEST_MODE'):
             self.coverage_enabled = True
@@ -1104,9 +1112,12 @@ class MicroscopeHyphaService:
     @schema_function(skip_self=True)
     async def scan_plate_save_raw_images(self, well_plate_type: str=Field("96", description="Type of the well plate (e.g., '6', '12', '24', '96', '384')"), illumination_settings: List[dict]=Field(default_factory=lambda: [{'channel': 'BF LED matrix full', 'intensity': 28.0, 'exposure_time': 20.0}, {'channel': 'Fluorescence 488 nm Ex', 'intensity': 27.0, 'exposure_time': 60.0}, {'channel': 'Fluorescence 561 nm Ex', 'intensity': 98.0, 'exposure_time': 100.0}], description="Illumination settings with channel name, intensity (0-100), and exposure time (ms) for each channel"), do_contrast_autofocus: bool=Field(False, description="Whether to do contrast based autofocus"), do_reflection_af: bool=Field(True, description="Whether to do reflection based autofocus"), scanning_zone: List[tuple]=Field(default_factory=lambda: [(0,0),(0,0)], description="The scanning zone of the well plate, for 96 well plate, it should be[(0,0),(7,11)] "), Nx: int=Field(3, description="Number of columns to scan"), Ny: int=Field(3, description="Number of rows to scan"), dx: float=Field(0.8, description="Distance between X positions in mm"), dy: float=Field(0.8, description="Distance between Y positions in mm"), action_ID: str=Field('testPlateScan', description="The ID of the action"), context=None):
         """
+        DEPRECATED: Use scan_start() with saved_data_type='raw_images' instead.
+        
         Scan the well plate according to the pre-defined position list with custom illumination settings
         Returns: The message of the action
         """
+        logger.warning("DEPRECATED: scan_plate_save_raw_images is deprecated and will be removed in a future release. Use scan_start() with saved_data_type='raw_images' instead.")
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -1755,8 +1766,8 @@ class MicroscopeHyphaService:
             "move_to_loading_position": self.move_to_loading_position,
             "set_simulated_sample_data_alias": self.set_simulated_sample_data_alias,
             "get_simulated_sample_data_alias": self.get_simulated_sample_data_alias,
-            "auto_focus": self.auto_focus,
-            "do_laser_autofocus": self.do_laser_autofocus,
+            "contrast_autofocus": self.contrast_autofocus,
+            "reflection_autofocus": self.reflection_autofocus,
             "autofocus_set_reflection_reference": self.autofocus_set_reflection_reference,
             "get_status": self.get_status,
             "update_parameters_from_client": self.update_parameters_from_client,
@@ -1769,6 +1780,10 @@ class MicroscopeHyphaService:
             "get_current_well_location": self.get_current_well_location,
             "get_microscope_configuration": self.get_microscope_configuration,
             "set_stage_velocity": self.set_stage_velocity,
+            # Unified Scan API
+            "scan_start": self.scan_start,
+            "scan_get_status": self.scan_get_status,
+            "scan_cancel": self.scan_cancel,
             # Stitching functions
             "scan_region_to_zarr": self.scan_region_to_zarr,
             "quick_scan_brightfield_to_zarr": self.quick_scan_brightfield_to_zarr,
@@ -3014,6 +3029,8 @@ class MicroscopeHyphaService:
                                        uploading: bool = Field(False, description="Enable upload after scanning is complete"),
                                        context=None):
         """
+        DEPRECATED: Use scan_start() with saved_data_type='full_zarr' instead.
+        
         Perform a region scan with live stitching to OME-Zarr canvas using well-based approach.
         The images are saved to well-specific zarr canvases within an experiment folder.
         
@@ -3038,6 +3055,7 @@ class MicroscopeHyphaService:
         Returns:
             dict: Status of the scan
         """
+        logger.warning("DEPRECATED: scan_region_to_zarr is deprecated and will be removed in a future release. Use scan_start() with saved_data_type='full_zarr' instead.")
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -3171,6 +3189,8 @@ class MicroscopeHyphaService:
                                       uploading: bool = Field(False, description="Enable upload after scanning is complete"),
                                       context=None):
         """
+        DEPRECATED: Use scan_start() with saved_data_type='quick_zarr' instead.
+        
         Perform a quick brightfield scan with live stitching to OME-Zarr canvas.
         Uses 4-stripe x 4 mm scanning pattern with serpentine motion per well.
         Only supports brightfield channel with exposure time ≤ 30ms.
@@ -3195,6 +3215,7 @@ class MicroscopeHyphaService:
         Returns:
             dict: Status of the scan with performance metrics
         """
+        logger.warning("DEPRECATED: quick_scan_brightfield_to_zarr is deprecated and will be removed in a future release. Use scan_start() with saved_data_type='quick_zarr' instead.")
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -3885,6 +3906,292 @@ class MicroscopeHyphaService:
             
         except Exception as e:
             logger.error(f"Error in offline stitching and upload service method: {e}")
+            raise e
+
+    # ===== Unified Scan API Methods =====
+
+    async def _run_scan_with_state_tracking(self, scan_method, *args, **kwargs):
+        """
+        Internal wrapper that updates scan state during execution.
+        
+        This method wraps existing scan methods to provide unified state tracking
+        for the scan_start/scan_get_status/scan_cancel API.
+        
+        Args:
+            scan_method: The async scan method to execute
+            *args, **kwargs: Arguments to pass to the scan method
+            
+        Returns:
+            The result from the scan method, or None if failed
+        """
+        try:
+            self.scan_state['state'] = 'running'
+            self.scan_state['error_message'] = None
+            
+            logger.info(f"Starting scan with method: {scan_method.__name__}")
+            
+            # Run the actual scan method
+            result = await scan_method(*args, **kwargs)
+            
+            self.scan_state['state'] = 'completed'
+            logger.info(f"Scan completed successfully: {scan_method.__name__}")
+            return result
+            
+        except asyncio.CancelledError:
+            self.scan_state['state'] = 'failed'
+            self.scan_state['error_message'] = 'Scan was cancelled by user'
+            logger.info("Scan was cancelled by user")
+            raise
+            
+        except Exception as e:
+            self.scan_state['state'] = 'failed'
+            self.scan_state['error_message'] = str(e)
+            logger.error(f"Scan failed: {e}", exc_info=True)
+            
+        finally:
+            self.scan_state['scan_task'] = None
+
+    @schema_function(skip_self=True)
+    async def scan_start(self, 
+                        saved_data_type: str = Field(..., description="Type of scan: 'raw_images', 'full_zarr', or 'quick_zarr'"),
+                        action_ID: str = Field('unified_scan', description="Identifier for this scan"),
+                        do_contrast_autofocus: bool = Field(False, description="Whether to perform contrast-based autofocus"),
+                        do_reflection_af: bool = Field(True, description="Whether to perform reflection-based autofocus"),
+                        # raw_images parameters
+                        well_plate_type: str = Field("96", description="Type of well plate (for raw_images, quick_zarr)"),
+                        illumination_settings: Optional[List[dict]] = Field(None, description="Illumination settings (for raw_images, full_zarr)"),
+                        scanning_zone: List[tuple] = Field(default_factory=lambda: [(0,0),(7,11)], description="Scanning zone (for raw_images)"),
+                        # full_zarr parameters
+                        start_x_mm: float = Field(20, description="Starting X position in mm (for full_zarr)"),
+                        start_y_mm: float = Field(20, description="Starting Y position in mm (for full_zarr)"),
+                        wells_to_scan: List[str] = Field(default_factory=lambda: ['A1'], description="List of wells to scan (for full_zarr)"),
+                        wellplate_type: str = Field('96', description="Well plate type (for full_zarr)"),
+                        well_padding_mm: float = Field(1.0, description="Padding around well in mm (for full_zarr, quick_zarr)"),
+                        experiment_name: Optional[str] = Field(None, description="Experiment name (for full_zarr, quick_zarr)"),
+                        uploading: bool = Field(False, description="Enable upload after scanning (for full_zarr, quick_zarr)"),
+                        # Common grid parameters
+                        Nx: int = Field(3, description="Number of positions in X direction"),
+                        Ny: int = Field(3, description="Number of positions in Y direction"),
+                        dx: float = Field(0.8, description="X interval in mm (for raw_images)"),
+                        dy: float = Field(0.8, description="Y interval in mm (for raw_images)"),
+                        dx_mm: float = Field(0.9, description="X interval in mm (for full_zarr)"),
+                        dy_mm: float = Field(0.9, description="Y interval in mm (for full_zarr, quick_zarr)"),
+                        # quick_zarr parameters
+                        exposure_time: float = Field(5, description="Camera exposure time in ms (for quick_zarr)"),
+                        intensity: float = Field(70, description="Brightfield LED intensity (for quick_zarr)"),
+                        fps_target: int = Field(10, description="Target frame rate for acquisition (for quick_zarr)"),
+                        n_stripes: int = Field(4, description="Number of stripes per well (for quick_zarr)"),
+                        stripe_width_mm: float = Field(4.0, description="Length of each stripe in mm (for quick_zarr)"),
+                        velocity_scan_mm_per_s: float = Field(7.0, description="Stage velocity during scanning (for quick_zarr)"),
+                        timepoint: int = Field(0, description="Timepoint index (for full_zarr)"),
+                        context=None):
+        """
+        Start a unified scan operation with the specified profile.
+        
+        This endpoint consolidates three separate scanning methods into one unified API:
+        - "raw_images": Traditional well plate scanning that saves raw images directly from camera
+        - "full_zarr": Region scanning with live stitching to OME-Zarr canvas (normal scan)
+        - "quick_zarr": Fast brightfield scanning with stripe pattern and live stitching, stage will move during image acquisition
+        
+        The scan runs in the background and returns immediately. Use scan_get_status() to poll
+        the scan progress and scan_cancel() to cancel an ongoing scan.
+        
+        Args:
+            saved_data_type: Type of scan profile ('raw_images', 'full_zarr', or 'quick_zarr')
+            action_ID: Unique identifier for this scan operation
+            [Additional parameters depend on the selected profile]
+            
+        Returns:
+            dict: Status with success flag and scan information
+        """
+        try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+
+            # Check if scan already running
+            if self.scan_state['state'] == 'running':
+                raise Exception("A scan is already in progress. Use scan_cancel() to stop it first.")
+
+            # Validate saved_data_type
+            valid_types = ['raw_images', 'full_zarr', 'quick_zarr']
+            if saved_data_type not in valid_types:
+                raise ValueError(f"Invalid saved_data_type '{saved_data_type}'. Must be one of: {valid_types}")
+
+            # Store the scan type
+            self.scan_state['saved_data_type'] = saved_data_type
+            
+            logger.info(f"Starting unified scan with profile: {saved_data_type}")
+
+            # Route to appropriate scan method based on profile
+            if saved_data_type == 'raw_images':
+                # Prepare scan method and parameters for raw image scanning
+                scan_coro = self._run_scan_with_state_tracking(
+                    self.scan_plate_save_raw_images,
+                    well_plate_type=well_plate_type,
+                    illumination_settings=illumination_settings,
+                    do_contrast_autofocus=do_contrast_autofocus,
+                    do_reflection_af=do_reflection_af,
+                    scanning_zone=scanning_zone,
+                    Nx=Nx,
+                    Ny=Ny,
+                    dx=dx,
+                    dy=dy,
+                    action_ID=action_ID,
+                    context=context
+                )
+                
+            elif saved_data_type == 'full_zarr':
+                # Prepare scan method and parameters for full zarr scanning
+                scan_coro = self._run_scan_with_state_tracking(
+                    self.scan_region_to_zarr,
+                    start_x_mm=start_x_mm,
+                    start_y_mm=start_y_mm,
+                    Nx=Nx,
+                    Ny=Ny,
+                    dx_mm=dx_mm,
+                    dy_mm=dy_mm,
+                    illumination_settings=illumination_settings,
+                    do_contrast_autofocus=do_contrast_autofocus,
+                    do_reflection_af=do_reflection_af,
+                    action_ID=action_ID,
+                    timepoint=timepoint,
+                    experiment_name=experiment_name,
+                    wells_to_scan=wells_to_scan,
+                    wellplate_type=wellplate_type,
+                    well_padding_mm=well_padding_mm,
+                    uploading=uploading,
+                    context=context
+                )
+                
+            elif saved_data_type == 'quick_zarr':
+                # Prepare scan method and parameters for quick zarr scanning
+                scan_coro = self._run_scan_with_state_tracking(
+                    self.quick_scan_brightfield_to_zarr,
+                    wellplate_type=well_plate_type,  # Note: quick scan uses well_plate_type param
+                    exposure_time=exposure_time,
+                    intensity=intensity,
+                    fps_target=fps_target,
+                    action_ID=action_ID,
+                    n_stripes=n_stripes,
+                    stripe_width_mm=stripe_width_mm,
+                    dy_mm=dy_mm,
+                    velocity_scan_mm_per_s=velocity_scan_mm_per_s,
+                    do_contrast_autofocus=do_contrast_autofocus,
+                    do_reflection_af=do_reflection_af,
+                    experiment_name=experiment_name,
+                    well_padding_mm=well_padding_mm,
+                    uploading=uploading,
+                    context=context
+                )
+
+            # Launch scan in background
+            self.scan_state['scan_task'] = asyncio.create_task(scan_coro)
+            
+            logger.info(f"Scan started in background with profile: {saved_data_type}")
+
+            return {
+                "success": True,
+                "message": f"Scan started with profile '{saved_data_type}'",
+                "saved_data_type": saved_data_type,
+                "action_ID": action_ID,
+                "state": "running"
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to start scan: {e}")
+            raise e
+
+    @schema_function(skip_self=True)
+    def scan_get_status(self, context=None):
+        """
+        Get the current status of the scanning operation.
+        
+        This endpoint allows clients to poll the scan progress without losing state
+        during long-running scan operations. The state will persist even if the client
+        disconnects and reconnects.
+        
+        Returns:
+            dict: Current scan state and error message (if any)
+                - state: 'idle', 'running', 'completed', or 'failed'
+                - error_message: Error description if state is 'failed', None otherwise
+        """
+        try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+
+            return {
+                "success": True,
+                "state": self.scan_state['state'],
+                "error_message": self.scan_state['error_message'],
+                "saved_data_type": self.scan_state['saved_data_type']
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get scan status: {e}")
+            raise e
+
+    @schema_function(skip_self=True)
+    async def scan_cancel(self, context=None):
+        """
+        Cancel the currently running scan operation.
+        
+        This endpoint will interrupt any ongoing scan (raw_images, full_zarr, or quick_zarr)
+        and return the system to idle state. The scan will be stopped gracefully where possible.
+        
+        Returns:
+            dict: Status of the cancellation request
+        """
+        try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+
+            # Check if scan is running
+            if self.scan_state['state'] != 'running':
+                return {
+                    "success": True,
+                    "message": f"No scan to cancel. Current state: {self.scan_state['state']}",
+                    "state": self.scan_state['state']
+                }
+
+            logger.info("Scan cancellation requested")
+
+            # Set stop flags at controller level
+            if hasattr(self.squidController, 'scan_stop_requested'):
+                self.squidController.scan_stop_requested = True
+                logger.info("Set squidController.scan_stop_requested = True")
+
+            # Call controller's stop method
+            self.squidController.stop_scan_and_stitching()
+
+            # Cancel the scan task
+            if self.scan_state['scan_task'] and not self.scan_state['scan_task'].done():
+                self.scan_state['scan_task'].cancel()
+                logger.info("Cancelled scan task")
+                
+                # Wait a moment for cancellation to propagate
+                try:
+                    await asyncio.wait_for(self.scan_state['scan_task'], timeout=1.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+
+            # Update state
+            self.scan_state['state'] = 'failed'
+            self.scan_state['error_message'] = 'Scan cancelled by user'
+            self.scan_state['scan_task'] = None
+
+            logger.info("Scan cancelled successfully")
+
+            return {
+                "success": True,
+                "message": "Scan cancelled successfully",
+                "state": self.scan_state['state']
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to cancel scan: {e}")
             raise e
 
     # ===== Squid+ Specific API Methods =====
