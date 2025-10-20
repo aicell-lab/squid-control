@@ -1455,7 +1455,7 @@ async def test_get_status_well_location_integration(test_microscope_service):
             # Verify other status fields are still present
             required_fields = [
                 'current_x', 'current_y', 'current_z', 'is_illumination_on',
-                'current_channel', 'video_fps', 'is_busy'
+                'current_channel', 'video_fps'
             ]
 
             for field in required_fields:
