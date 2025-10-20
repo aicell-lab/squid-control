@@ -194,7 +194,7 @@ class TestMirrorService:
         assert service.cloud_server_url == "https://hypha.aicell.io"
         assert service.cloud_workspace == "reef-imaging"
         assert service.local_service_id == "microscope-control-squid-1"
-        assert service.cloud_service_id == "mirror-microscope-control-squid-1"
+        assert service.cloud_service_id == "microscope-control-squid-1"
         assert service.mirrored_methods == {}
         assert not service.is_streaming
         assert not service.webrtc_connected

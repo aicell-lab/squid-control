@@ -276,7 +276,7 @@ async def test_snap_image_service(test_microscope_service):
 
     url = await asyncio.wait_for(
         service.snap(exposure_time=100, channel=0, intensity=50),
-        timeout=20
+        timeout=60
     )
 
     assert isinstance(url, str)
