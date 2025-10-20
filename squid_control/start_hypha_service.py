@@ -3824,42 +3824,49 @@ class MicroscopeHyphaService:
 
     @schema_function(skip_self=True)
     async def scan_start(self, 
-                        saved_data_type: str = Field(..., description="Scan profile: 'raw_images' (traditional well scan), 'full_zarr' (multi-channel stitched), or 'quick_zarr' (fast brightfield stripe scan)"),
-                        action_ID: str = Field('unified_scan', description="Unique identifier for this scan operation"),
-                        do_contrast_autofocus: bool = Field(False, description="Enable contrast-based autofocus at each position (slow but works with any sample)"),
-                        do_reflection_af: bool = Field(True, description="Enable reflection-based laser autofocus (fast, requires calibration)"),
-                        # Common parameters
-                        well_plate_type: str = Field("96", description="Well plate format: '6', '12', '24', '96', or '384' (for all scan types)"),
-                        # raw_images parameters
-                        illumination_settings: Optional[List[dict]] = Field(None, description="Illumination settings (for raw_images, full_zarr)"),
-                        scanning_zone: List[tuple] = Field(default_factory=lambda: [(0,0),(7,11)], description="Scanning zone (for raw_images)"),
-                        # full_zarr parameters
-                        start_x_mm: float = Field(20, description="Starting X position in mm (for full_zarr)"),
-                        start_y_mm: float = Field(20, description="Starting Y position in mm (for full_zarr)"),
-                        wells_to_scan: List[str] = Field(default_factory=lambda: ['A1'], description="List of wells to scan (for full_zarr)"),
-                        well_padding_mm: float = Field(1.0, description="Padding around well in mm (for full_zarr, quick_zarr)"),
-                        experiment_name: Optional[str] = Field(None, description="Experiment name (for full_zarr, quick_zarr)"),
-                        uploading: bool = Field(False, description="Enable upload after scanning (for full_zarr, quick_zarr)"),
-                        # Common grid parameters
-                        Nx: int = Field(3, description="Number of positions in X direction"),
-                        Ny: int = Field(3, description="Number of positions in Y direction"),
-                        dx: float = Field(0.8, description="X interval in mm (for raw_images)"),
-                        dy: float = Field(0.8, description="Y interval in mm (for raw_images)"),
-                        dx_mm: float = Field(0.9, description="X interval in mm (for full_zarr)"),
-                        dy_mm: float = Field(0.9, description="Y interval in mm (for full_zarr, quick_zarr)"),
-                        # quick_zarr parameters
-                        exposure_time: float = Field(5, description="Camera exposure time in ms (for quick_zarr)"),
-                        intensity: float = Field(70, description="Brightfield LED intensity (for quick_zarr)"),
-                        fps_target: int = Field(10, description="Target frame rate for acquisition (for quick_zarr)"),
-                        n_stripes: int = Field(4, description="Number of stripes per well (for quick_zarr)"),
-                        stripe_width_mm: float = Field(4.0, description="Length of each stripe in mm (for quick_zarr)"),
-                        velocity_scan_mm_per_s: float = Field(7.0, description="Stage velocity during scanning (for quick_zarr)"),
-                        timepoint: int = Field(0, description="Timepoint index for time-lapse experiments (for full_zarr)"),
+                        config: dict = Field(..., description="Scan configuration dictionary containing all scan parameters"),
                         context=None):
         """
         Launch a background scanning operation with one of three profiles: raw_images, full_zarr, or quick_zarr.
         Returns: Dictionary with success status, profile type, action_ID, and scan state ('running').
-        Notes: Scan executes asynchronously. Use scan_get_status() to monitor progress and scan_cancel() to abort. Profile 'raw_images' saves individual files, 'full_zarr' creates multi-channel stitched OME-Zarr, 'quick_zarr' performs fast brightfield stripe scanning with continuous stage motion.
+        Notes: Scan executes asynchronously. Use scan_get_status() to monitor progress and scan_cancel() to abort.
+        
+        Config dictionary must contain 'saved_data_type' (str): 'raw_images', 'full_zarr', or 'quick_zarr'
+        
+        Common parameters:
+        - action_ID (str): Unique identifier for this scan operation
+        - well_plate_type (str): Well plate format: '6', '12', '24', '96', or '384'
+        - do_contrast_autofocus (bool): Enable contrast-based autofocus
+        - do_reflection_af (bool): Enable reflection-based laser autofocus
+        
+        For 'raw_images':
+        - illumination_settings (List[dict]): Illumination settings
+        - scanning_zone (List[tuple]): Scanning zone coordinates
+        - Nx, Ny (int): Grid dimensions
+        - dx, dy (float): Position intervals in mm
+        
+        For 'full_zarr':
+        - start_x_mm, start_y_mm (float): Starting position in mm
+        - Nx, Ny (int): Grid dimensions
+        - dx_mm, dy_mm (float): Position intervals in mm
+        - illumination_settings (List[dict]): Illumination settings
+        - wells_to_scan (List[str]): List of wells to scan
+        - well_padding_mm (float): Padding around well in mm
+        - experiment_name (str): Experiment name
+        - uploading (bool): Enable upload after scanning
+        - timepoint (int): Timepoint index for time-lapse
+        
+        For 'quick_zarr':
+        - well_padding_mm (float): Padding around well in mm
+        - dy_mm (float): Y interval in mm
+        - exposure_time (float): Camera exposure time in ms
+        - intensity (float): Brightfield LED intensity
+        - fps_target (int): Target frame rate
+        - n_stripes (int): Number of stripes per well
+        - stripe_width_mm (float): Length of each stripe in mm
+        - velocity_scan_mm_per_s (float): Stage velocity during scanning
+        - experiment_name (str): Experiment name
+        - uploading (bool): Enable upload after scanning
         """
         try:
             # Check authentication
@@ -3870,6 +3877,11 @@ class MicroscopeHyphaService:
             if self.scan_state['state'] == 'running':
                 raise Exception("A scan is already in progress. Use scan_cancel() to stop it first.")
 
+            # Extract saved_data_type from config
+            saved_data_type = config.get('saved_data_type')
+            if not saved_data_type:
+                raise ValueError("Config must contain 'saved_data_type' parameter")
+
             # Validate saved_data_type
             valid_types = ['raw_images', 'full_zarr', 'quick_zarr']
             if saved_data_type not in valid_types:
@@ -3878,11 +3890,24 @@ class MicroscopeHyphaService:
             # Store the scan type
             self.scan_state['saved_data_type'] = saved_data_type
             
+            # Extract common parameters with defaults
+            action_ID = config.get('action_ID', 'unified_scan')
+            do_contrast_autofocus = config.get('do_contrast_autofocus', False)
+            do_reflection_af = config.get('do_reflection_af', True)
+            well_plate_type = config.get('well_plate_type', '96')
+            
             logger.info(f"Starting unified scan with profile: {saved_data_type}")
 
             # Route to appropriate scan method based on profile
             if saved_data_type == 'raw_images':
-                # Prepare scan method and parameters for raw image scanning
+                # Extract raw_images specific parameters
+                illumination_settings = config.get('illumination_settings')
+                scanning_zone = config.get('scanning_zone', [(0,0),(7,11)])
+                Nx = config.get('Nx', 3)
+                Ny = config.get('Ny', 3)
+                dx = config.get('dx', 0.8)
+                dy = config.get('dy', 0.8)
+                
                 scan_coro = self._run_scan_with_state_tracking(
                     self.scan_plate_save_raw_images,
                     well_plate_type=well_plate_type,
@@ -3899,7 +3924,20 @@ class MicroscopeHyphaService:
                 )
                 
             elif saved_data_type == 'full_zarr':
-                # Prepare scan method and parameters for full zarr scanning
+                # Extract full_zarr specific parameters
+                start_x_mm = config.get('start_x_mm', 20)
+                start_y_mm = config.get('start_y_mm', 20)
+                Nx = config.get('Nx', 3)
+                Ny = config.get('Ny', 3)
+                dx_mm = config.get('dx_mm', 0.9)
+                dy_mm = config.get('dy_mm', 0.9)
+                illumination_settings = config.get('illumination_settings')
+                wells_to_scan = config.get('wells_to_scan', ['A1'])
+                well_padding_mm = config.get('well_padding_mm', 1.0)
+                experiment_name = config.get('experiment_name')
+                uploading = config.get('uploading', False)
+                timepoint = config.get('timepoint', 0)
+                
                 scan_coro = self._run_scan_with_state_tracking(
                     self.scan_region_to_zarr,
                     start_x_mm=start_x_mm,
@@ -3922,10 +3960,21 @@ class MicroscopeHyphaService:
                 )
                 
             elif saved_data_type == 'quick_zarr':
-                # Prepare scan method and parameters for quick zarr scanning
+                # Extract quick_zarr specific parameters
+                well_padding_mm = config.get('well_padding_mm', 1.0)
+                dy_mm = config.get('dy_mm', 0.85)
+                exposure_time = config.get('exposure_time', 5)
+                intensity = config.get('intensity', 70)
+                fps_target = config.get('fps_target', 10)
+                n_stripes = config.get('n_stripes', 4)
+                stripe_width_mm = config.get('stripe_width_mm', 4.0)
+                velocity_scan_mm_per_s = config.get('velocity_scan_mm_per_s', 7.0)
+                experiment_name = config.get('experiment_name')
+                uploading = config.get('uploading', False)
+                
                 scan_coro = self._run_scan_with_state_tracking(
                     self.quick_scan_brightfield_to_zarr,
-                    well_plate_type=well_plate_type,  # Note: quick scan uses well_plate_type param
+                    well_plate_type=well_plate_type,
                     exposure_time=exposure_time,
                     intensity=intensity,
                     fps_target=fps_target,
