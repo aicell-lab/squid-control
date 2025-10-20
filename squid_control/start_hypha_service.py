@@ -1654,6 +1654,11 @@ class MicroscopeHyphaService:
         response = await self.return_stage(context)
         return {"result": response}
 
+    async def move_to_loading_position_schema(self, config: MoveToLoadingPositionInput, context=None):
+        """Move the stage to the loading position with schema validation."""
+        response = await self.MoveToLoadingPositionInput(context)
+        return {"result": response}
+
     def set_illumination_schema(self, config: SetIlluminationInput, context=None):
         response = self.set_illumination(config.channel, config.intensity, context)
         return {"result": response}
@@ -1859,7 +1864,7 @@ class MicroscopeHyphaService:
                 "snap_image": self.snap_image_schema,
                 "home_stage": self.home_stage_schema,
                 "return_stage": self.return_stage_schema,
-                "load_position": self.move_to_loading_position,
+                "load_position": self.move_to_loading_position_schema,
                 "navigate_to_well": self.navigate_to_well_schema,
                 "inspect_tool": self.inspect_tool_schema,
                 "set_illumination": self.set_illumination_schema,
