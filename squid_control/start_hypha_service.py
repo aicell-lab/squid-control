@@ -532,12 +532,10 @@ class MicroscopeHyphaService:
             current_x, current_y, current_z, current_theta = self.squidController.navigationController.update_pos(microcontroller=self.squidController.microcontroller)
             is_illumination_on = self.squidController.liveController.illumination_on
             #scan_channel = self.squidController.multipointController.selected_configurations
-            is_busy = self.squidController.is_busy
             # Get current well location information
             well_info = self.squidController.get_well_from_position('96')  # Default to 96-well plate
 
             self.parameters = {
-                'is_busy': is_busy,
                 'current_x': current_x,
                 'current_y': current_y,
                 'current_z': current_z,

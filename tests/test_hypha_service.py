@@ -238,7 +238,6 @@ async def test_get_status_service(test_microscope_service):
     assert 'current_y' in status
     assert 'current_z' in status
     assert 'is_illumination_on' in status
-    assert 'is_busy' in status
     # Verify scan status is included
     assert 'scan_status' in status
     assert isinstance(status['scan_status'], dict)
@@ -2611,7 +2610,7 @@ async def test_scan_status_in_get_status(test_microscope_service):
     status = await service.get_status()
     
     expected_fields = [
-        'is_busy', 'current_x', 'current_y', 'current_z',
+        'current_x', 'current_y', 'current_z',
         'is_illumination_on', 'current_channel', 'video_fps',
         'current_well_location', 'scan_status'
     ]
