@@ -430,8 +430,14 @@ class MirrorMicroscopeService:
                         # Continue anyway - get_video_frame should auto-start it
                     
                     self.video_track = MicroscopeVideoTrack(self.local_service, self)
-                    peer_connection.addTrack(self.video_track)
-                    logger.info("Added MicroscopeVideoTrack to peer connection")
+                    logger.info(f"Created MicroscopeVideoTrack: id={self.video_track.id}, kind={self.video_track.kind}, running={self.video_track.running}")
+                    
+                    track_sender = peer_connection.addTrack(self.video_track)
+                    logger.info(f"Added MicroscopeVideoTrack to peer connection, track_sender={track_sender}")
+                    logger.info(f"Peer connection state: {peer_connection.connectionState}")
+                    logger.info(f"Peer connection signalingState: {peer_connection.signalingState}")
+                    logger.info(f"Number of senders: {len(peer_connection.getSenders())}")
+                    logger.info(f"Number of transceivers: {len(peer_connection.getTransceivers())}")
                 except Exception as e:
                     logger.error(f"Failed to create video track: {e}", exc_info=True)
                     return
