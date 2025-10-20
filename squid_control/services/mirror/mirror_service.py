@@ -474,8 +474,7 @@ class MirrorMicroscopeService:
                 server,
                 service_id=self.webrtc_service_id,
                 config={
-                    "visibility": "protected",
-                    "require_context": True,  # Always require context for consistent schema
+                    "visibility": "public",  # Match main service - public visibility for WebRTC
                     "ice_servers": ice_servers,
                     "on_init": on_init,
                 },
