@@ -380,8 +380,11 @@ class MirrorMicroscopeService:
                     # Mark as disconnected
                     self.webrtc_connected = False
                     self.metadata_data_channel = None
-                    self.local_service.turn_off_illumination()
-                    logger.info("Illumination closed")
+                    try:
+                        await self.local_service.turn_off_illumination()
+                        logger.info("Illumination closed")
+                    except Exception as e:
+                        logger.error(f"Failed to turn off illumination: {e}")
                     if self.video_track and self.video_track.running:
                         logger.info(f"Connection state is {peer_connection.connectionState}. Stopping video track.")
                         self.video_track.stop()
@@ -390,7 +393,7 @@ class MirrorMicroscopeService:
                     self.webrtc_connected = True
 
             @peer_connection.on("track")
-            def on_track(track):
+            async def on_track(track):
                 logger.info(f"Track {track.kind} received from client")
 
                 if self.video_track and self.video_track.running:
@@ -402,7 +405,7 @@ class MirrorMicroscopeService:
                     return
 
                 try:
-                    self.local_service.turn_on_illumination()
+                    await self.local_service.turn_on_illumination()
                     logger.info("Illumination opened")
                     self.video_track = MicroscopeVideoTrack(self.local_service, self)
                     peer_connection.addTrack(self.video_track)
@@ -412,10 +415,13 @@ class MirrorMicroscopeService:
                     return
 
                 @track.on("ended")
-                def on_ended():
+                async def on_ended():
                     logger.info(f"Client track {track.kind} ended")
-                    self.local_service.turn_off_illumination()
-                    logger.info("Illumination closed")
+                    try:
+                        await self.local_service.turn_off_illumination()
+                        logger.info("Illumination closed")
+                    except Exception as e:
+                        logger.error(f"Failed to turn off illumination: {e}")
                     if self.video_track:
                         logger.info("Stopping MicroscopeVideoTrack.")
                         self.video_track.stop()  # Now synchronous
