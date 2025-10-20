@@ -402,9 +402,13 @@ class MirrorMicroscopeService:
 
             @peer_connection.on("track")
             async def on_track(track):
+                logger.info(f"=== on_track handler called ===")
                 logger.info(f"Track {track.kind} received from client")
+                logger.info(f"Track id: {track.id}")
+                logger.info(f"Peer connection state at track receipt: {peer_connection.connectionState}")
 
                 if self.video_track and self.video_track.running:
+                    logger.info(f"Stopping existing video track")
                     self.video_track.stop()
 
                 # Ensure local_service is available before creating video track
