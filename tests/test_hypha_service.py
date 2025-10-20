@@ -2124,8 +2124,10 @@ async def test_scan_start_validation(test_microscope_service):
     # Test with invalid saved_data_type
     try:
         result = await service.scan_start(
-            saved_data_type="invalid_type",
-            action_ID="test_invalid"
+            config={
+                "saved_data_type": "invalid_type",
+                "action_ID": "test_invalid"
+            }
         )
         pytest.fail("Should have raised exception for invalid saved_data_type")
     except Exception as e:
@@ -2155,10 +2157,13 @@ async def test_scan_start_concurrent_prevention(test_microscope_service):
     with patch.object(microscope, 'scan_plate_save_raw_images', new=AsyncMock(side_effect=mock_long_scan)):
         # Start first scan
         result1 = await service.scan_start(
-            saved_data_type="raw_images",
-            well_plate_type="96",
-            Nx=2, Ny=2,
-            action_ID="test_concurrent_1"
+            config={
+                "saved_data_type": "raw_images",
+                "well_plate_type": "96",
+                "Nx": 2,
+                "Ny": 2,
+                "action_ID": "test_concurrent_1"
+            }
         )
         
         assert result1['success'] == True, "First scan should start successfully"
@@ -2171,10 +2176,14 @@ async def test_scan_start_concurrent_prevention(test_microscope_service):
         # Try to start second scan while first is running
         try:
             result2 = await service.scan_start(
-                saved_data_type="full_zarr",
-                start_x_mm=20, start_y_mm=20,
-                Nx=2, Ny=2,
-                action_ID="test_concurrent_2"
+                config={
+                    "saved_data_type": "full_zarr",
+                    "start_x_mm": 20,
+                    "start_y_mm": 20,
+                    "Nx": 2,
+                    "Ny": 2,
+                    "action_ID": "test_concurrent_2"
+                }
             )
             pytest.fail("Should have raised exception for concurrent scan")
         except Exception as e:
@@ -2204,15 +2213,19 @@ async def test_scan_start_raw_images_profile(test_microscope_service):
     with patch.object(microscope, 'scan_plate_save_raw_images', new=mock_scan):
         # Start scan with raw_images profile
         result = await service.scan_start(
-            saved_data_type="raw_images",
-            well_plate_type="96",
-            illumination_settings=[
-                {'channel': 'BF LED matrix full', 'intensity': 50, 'exposure_time': 100}
-            ],
-            scanning_zone=[(0,0),(2,2)],
-            Nx=3, Ny=3,
-            dx=0.8, dy=0.8,
-            action_ID="test_raw_images"
+            config={
+                "saved_data_type": "raw_images",
+                "well_plate_type": "96",
+                "illumination_settings": [
+                    {'channel': 'BF LED matrix full', 'intensity': 50, 'exposure_time': 100}
+                ],
+                "scanning_zone": [(0,0),(2,2)],
+                "Nx": 3,
+                "Ny": 3,
+                "dx": 0.8,
+                "dy": 0.8,
+                "action_ID": "test_raw_images"
+            }
         )
         
         assert result['success'] == True, "Scan should start successfully"
@@ -2260,15 +2273,20 @@ async def test_scan_start_full_zarr_profile(test_microscope_service):
     with patch.object(microscope, 'scan_region_to_zarr', new=mock_scan):
         # Start scan with full_zarr profile
         result = await service.scan_start(
-            saved_data_type="full_zarr",
-            start_x_mm=20.0, start_y_mm=20.0,
-            Nx=3, Ny=3,
-            dx_mm=0.9, dy_mm=0.9,
-            wells_to_scan=['A1', 'B2'],
-            well_plate_type='96',
-            experiment_name='test_experiment',
-            uploading=False,
-            action_ID="test_full_zarr"
+            config={
+                "saved_data_type": "full_zarr",
+                "start_x_mm": 20.0,
+                "start_y_mm": 20.0,
+                "Nx": 3,
+                "Ny": 3,
+                "dx_mm": 0.9,
+                "dy_mm": 0.9,
+                "wells_to_scan": ['A1', 'B2'],
+                "well_plate_type": '96',
+                "experiment_name": 'test_experiment',
+                "uploading": False,
+                "action_ID": "test_full_zarr"
+            }
         )
         
         assert result['success'] == True, "Scan should start successfully"
@@ -2311,17 +2329,19 @@ async def test_scan_start_quick_zarr_profile(test_microscope_service):
     with patch.object(microscope, 'quick_scan_brightfield_to_zarr', new=mock_scan):
         # Start scan with quick_zarr profile
         result = await service.scan_start(
-            saved_data_type="quick_zarr",
-            well_plate_type="96",
-            exposure_time=5.0,
-            intensity=70.0,
-            fps_target=10,
-            n_stripes=4,
-            stripe_width_mm=4.0,
-            dy_mm=0.9,
-            velocity_scan_mm_per_s=7.0,
-            experiment_name='test_quick',
-            action_ID="test_quick_zarr"
+            config={
+                "saved_data_type": "quick_zarr",
+                "well_plate_type": "96",
+                "exposure_time": 5.0,
+                "intensity": 70.0,
+                "fps_target": 10,
+                "n_stripes": 4,
+                "stripe_width_mm": 4.0,
+                "dy_mm": 0.9,
+                "velocity_scan_mm_per_s": 7.0,
+                "experiment_name": 'test_quick',
+                "action_ID": "test_quick_zarr"
+            }
         )
         
         assert result['success'] == True, "Scan should start successfully"
@@ -2363,10 +2383,13 @@ async def test_scan_cancel_functionality(test_microscope_service):
     with patch.object(microscope, 'scan_plate_save_raw_images', new=AsyncMock(side_effect=mock_long_scan)):
         # Start a scan
         result = await service.scan_start(
-            saved_data_type="raw_images",
-            well_plate_type="96",
-            Nx=2, Ny=2,
-            action_ID="test_cancel"
+            config={
+                "saved_data_type": "raw_images",
+                "well_plate_type": "96",
+                "Nx": 2,
+                "Ny": 2,
+                "action_ID": "test_cancel"
+            }
         )
         
         assert result['success'] == True, "Scan should start"
@@ -2436,10 +2459,13 @@ async def test_scan_error_handling(test_microscope_service):
     with patch.object(microscope, 'scan_plate_save_raw_images', new=mock_scan):
         # Start a scan that will fail
         result = await service.scan_start(
-            saved_data_type="raw_images",
-            well_plate_type="96",
-            Nx=2, Ny=2,
-            action_ID="test_error"
+            config={
+                "saved_data_type": "raw_images",
+                "well_plate_type": "96",
+                "Nx": 2,
+                "Ny": 2,
+                "action_ID": "test_error"
+            }
         )
         
         assert result['success'] == True, "Scan should start (error happens during execution)"
@@ -2477,10 +2503,13 @@ async def test_scan_state_transitions(test_microscope_service):
     with patch.object(microscope, 'scan_plate_save_raw_images', new=mock_scan):
         # Start scan -> should transition to running
         result = await service.scan_start(
-            saved_data_type="raw_images",
-            well_plate_type="96",
-            Nx=2, Ny=2,
-            action_ID="test_transitions"
+            config={
+                "saved_data_type": "raw_images",
+                "well_plate_type": "96",
+                "Nx": 2,
+                "Ny": 2,
+                "action_ID": "test_transitions"
+            }
         )
         
         assert result['state'] == 'running', "Should transition to running"
@@ -2522,10 +2551,13 @@ async def test_scan_status_persistence(test_microscope_service):
     with patch.object(microscope, 'scan_plate_save_raw_images', new=AsyncMock(side_effect=mock_medium_scan)):
         # Start scan
         await service.scan_start(
-            saved_data_type="raw_images",
-            well_plate_type="96",
-            Nx=2, Ny=2,
-            action_ID="test_persistence"
+            config={
+                "saved_data_type": "raw_images",
+                "well_plate_type": "96",
+                "Nx": 2,
+                "Ny": 2,
+                "action_ID": "test_persistence"
+            }
         )
         
         # Poll status multiple times while scan is running
@@ -2579,10 +2611,13 @@ async def test_scan_status_in_get_status(test_microscope_service):
     with patch.object(microscope, 'scan_plate_save_raw_images', new=AsyncMock(side_effect=mock_medium_scan)):
         # Start scan
         await service.scan_start(
-            saved_data_type="raw_images",
-            well_plate_type="96",
-            Nx=2, Ny=2,
-            action_ID="test_status_integration"
+            config={
+                "saved_data_type": "raw_images",
+                "well_plate_type": "96",
+                "Nx": 2,
+                "Ny": 2,
+                "action_ID": "test_status_integration"
+            }
         )
         
         # Check status during scan
