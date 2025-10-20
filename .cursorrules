@@ -98,7 +98,7 @@ python -m squid_control mirror
 
 # Run with custom service IDs
 python -m squid_control mirror \
-  --cloud-service-id "mirror-microscope-control-squid-2" \
+  --cloud-service-id "microscope-control-squid-2" \
   --local-service-id "microscope-control-squid-2"
 
 # Run with custom server URLs
@@ -113,7 +113,7 @@ python -m squid_control mirror \
 ```bash
 # Use the legacy runner script
 python squid_control/run_mirror_service.py \
-  --cloud-service-id "mirror-microscope-control-squid-2" \
+  --cloud-service-id "microscope-control-squid-2" \
   --local-service-id "microscope-control-squid-2"
 ```
 
@@ -133,7 +133,7 @@ python squid_control/run_mirror_service.py \
 - `REEF_LOCAL_TOKEN`: Local service authentication token
 
 **Command-Line Arguments**:
-- `--cloud-service-id`: ID for the cloud service (default: mirror-microscope-control-squid-1)
+- `--cloud-service-id`: ID for the cloud service (default: microscope-control-squid-1)
 - `--local-service-id`: ID for the local service (default: microscope-control-squid-1)
 - `--cloud-server-url`: Cloud server URL (default: https://hypha.aicell.io)
 - `--cloud-workspace`: Cloud workspace name (default: reef-imaging)

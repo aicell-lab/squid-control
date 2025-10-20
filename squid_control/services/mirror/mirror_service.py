@@ -47,7 +47,7 @@ class MirrorMicroscopeService:
         self.cloud_server_url = "https://hypha.aicell.io"
         self.cloud_workspace = "reef-imaging"
         self.cloud_token = os.environ.get("REEF_WORKSPACE_TOKEN")
-        self.cloud_service_id = "mirror-microscope-control-squid-1"
+        self.cloud_service_id = "microscope-control-squid-1"
         self.cloud_server = None
         self.cloud_service = None  # Add reference to registered cloud service
 

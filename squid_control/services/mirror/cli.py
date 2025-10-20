@@ -24,7 +24,7 @@ Examples:
   
   # Run with custom service IDs
   python -m squid_control.services.mirror \\
-    --cloud-service-id "mirror-microscope-control-squid-2" \\
+    --cloud-service-id "microscope-control-squid-2" \\
     --local-service-id "microscope-control-squid-2"
   
   # Run with custom local server URL
@@ -36,8 +36,8 @@ Examples:
 
     parser.add_argument(
         "--cloud-service-id",
-        default="mirror-microscope-control-squid-1",
-        help="ID for the cloud service (default: mirror-microscope-control-squid-1)"
+        default="microscope-control-squid-1",
+        help="ID for the cloud service (default: microscope-control-squid-1)"
     )
 
     parser.add_argument(

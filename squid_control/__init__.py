@@ -17,7 +17,7 @@ Usage:
     python -m squid_control microscope [--simulation] [--local] [--verbose]
     
     # Run mirror service
-    python -m squid_control mirror --cloud-service-id "mirror-microscope-control-squid-2" --local-service-id "microscope-control-squid-2"
+    python -m squid_control mirror --cloud-service-id "microscope-control-squid-2" --local-service-id "microscope-control-squid-2"
     
     # Import in Python code
     from squid_control.start_hypha_service import MicroscopeHyphaService
