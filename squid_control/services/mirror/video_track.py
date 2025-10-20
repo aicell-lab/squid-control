@@ -57,6 +57,8 @@ class MicroscopeVideoTrack(MediaStreamTrack):
             img[start_y:end_y, center_x] = color
 
     async def recv(self):
+        logger.info(f"MicroscopeVideoTrack recv() called - frame {self.count}, running={self.running}")
+        
         if not self.running:
             logger.warning("MicroscopeVideoTrack: recv() called but track is not running")
             raise Exception("Track stopped")
@@ -64,6 +66,7 @@ class MicroscopeVideoTrack(MediaStreamTrack):
         try:
             if self.start_time is None:
                 self.start_time = time.time()
+                logger.info(f"MicroscopeVideoTrack: Started at {self.start_time}")
 
             # Time the entire frame processing (including sleep)
             frame_start_time = time.time()
@@ -86,6 +89,7 @@ class MicroscopeVideoTrack(MediaStreamTrack):
                 raise Exception("Local service not available")
 
             # Time getting the video frame from local service
+            logger.info(f"MicroscopeVideoTrack: Calling local_service.get_video_frame() for frame {self.count}")
             get_frame_start = time.time()
             frame_data = await self.local_service.get_video_frame(
                 frame_width=self.frame_width,
@@ -93,6 +97,7 @@ class MicroscopeVideoTrack(MediaStreamTrack):
             )
             get_frame_end = time.time()
             get_frame_latency = (get_frame_end - get_frame_start) * 1000  # Convert to ms
+            logger.info(f"MicroscopeVideoTrack: get_video_frame() returned in {get_frame_latency:.2f}ms")
 
             # Extract stage position from frame metadata
             stage_position = None
@@ -191,10 +196,13 @@ class MicroscopeVideoTrack(MediaStreamTrack):
                     logger.info(f"MicroscopeVideoTrack: Sent frame {self.count}")
 
             self.count += 1
+            logger.info(f"MicroscopeVideoTrack: Successfully created VideoFrame {self.count - 1}, returning it")
             return new_video_frame
 
         except Exception as e:
-            logger.error(f"MicroscopeVideoTrack: Error in recv(): {e}", exc_info=True)
+            logger.error(f"MicroscopeVideoTrack: Error in recv() at frame {self.count}: {e}", exc_info=True)
+            logger.error(f"MicroscopeVideoTrack: Error type: {type(e).__name__}")
+            logger.error(f"MicroscopeVideoTrack: local_service is {'None' if self.local_service is None else 'available'}")
             self.running = False
             raise
 
