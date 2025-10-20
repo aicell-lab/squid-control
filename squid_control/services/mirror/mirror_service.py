@@ -416,35 +416,35 @@ class MirrorMicroscopeService:
                     logger.error("Cannot create video track: local_service is not available")
                     return
 
-                # Use asyncio.create_task for async operations
-                async def setup_video_track():
+                # Create and add video track SYNCHRONOUSLY (critical for WebRTC negotiation)
+                self.video_track = MicroscopeVideoTrack(self.local_service, self)
+                logger.info(f"Created MicroscopeVideoTrack: id={self.video_track.id}, kind={self.video_track.kind}, running={self.video_track.running}")
+                
+                track_sender = peer_connection.addTrack(self.video_track)
+                logger.info(f"Added MicroscopeVideoTrack to peer connection, track_sender={track_sender}")
+                logger.info(f"Peer connection state: {peer_connection.connectionState}")
+                logger.info(f"Peer connection signalingState: {peer_connection.signalingState}")
+                logger.info(f"Number of senders: {len(peer_connection.getSenders())}")
+                logger.info(f"Number of transceivers: {len(peer_connection.getTransceivers())}")
+
+                # Start illumination and video buffering ASYNCHRONOUSLY (don't block on_track handler)
+                async def start_video_services():
                     try:
                         await self.local_service.turn_on_illumination()
-                        logger.info("Illumination opened")
+                        logger.info("Illumination turned on")
                         
-                        # Start video buffering on local service before creating video track
+                        # Start video buffering on local service
                         logger.info("Starting video buffering on local service")
                         try:
                             await self.local_service.start_video_buffering()
                             logger.info("Video buffering started on local service")
                         except Exception as buffer_err:
                             logger.warning(f"Failed to start video buffering: {buffer_err}")
-                            # Continue anyway - get_video_frame should auto-start it
-                        
-                        self.video_track = MicroscopeVideoTrack(self.local_service, self)
-                        logger.info(f"Created MicroscopeVideoTrack: id={self.video_track.id}, kind={self.video_track.kind}, running={self.video_track.running}")
-                        
-                        track_sender = peer_connection.addTrack(self.video_track)
-                        logger.info(f"Added MicroscopeVideoTrack to peer connection, track_sender={track_sender}")
-                        logger.info(f"Peer connection state: {peer_connection.connectionState}")
-                        logger.info(f"Peer connection signalingState: {peer_connection.signalingState}")
-                        logger.info(f"Number of senders: {len(peer_connection.getSenders())}")
-                        logger.info(f"Number of transceivers: {len(peer_connection.getTransceivers())}")
                     except Exception as e:
-                        logger.error(f"Failed to create video track: {e}", exc_info=True)
+                        logger.error(f"Failed to start video services: {e}", exc_info=True)
                 
-                # Schedule the async setup
-                asyncio.create_task(setup_video_track())
+                # Schedule async operations (illumination, buffering)
+                asyncio.create_task(start_video_services())
 
                 @track.on("ended")
                 def on_ended():  # Also sync

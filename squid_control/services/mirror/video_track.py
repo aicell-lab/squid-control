@@ -38,6 +38,12 @@ class MicroscopeVideoTrack(MediaStreamTrack):
         self.fps = 5  # Target FPS for WebRTC stream
         self.frame_width = 750
         self.frame_height = 750
+        
+        # Use print for immediate debugging
+        print(f"[VIDEO_TRACK] __init__ called: id={self.id}, kind={self.kind}, readyState={self.readyState}")
+        print(f"[VIDEO_TRACK] local_service type: {type(self.local_service).__name__}")
+        print(f"[VIDEO_TRACK] has get_video_frame: {hasattr(self.local_service, 'get_video_frame')}")
+        
         logger.info(f"MicroscopeVideoTrack initialized: id={self.id}, kind={self.kind}, readyState={self.readyState}")
         logger.info(f"MicroscopeVideoTrack local_service type: {type(self.local_service).__name__}")
         logger.info(f"MicroscopeVideoTrack has local_service.get_video_frame: {hasattr(self.local_service, 'get_video_frame')}")
@@ -59,9 +65,12 @@ class MicroscopeVideoTrack(MediaStreamTrack):
             img[start_y:end_y, center_x] = color
 
     async def recv(self):
+        # Use print for immediate debugging since logger might not be configured
+        print(f"[VIDEO_TRACK] recv() called - frame {self.count}, running={self.running}")
         logger.info(f"MicroscopeVideoTrack recv() called - frame {self.count}, running={self.running}")
         
         if not self.running:
+            print(f"[VIDEO_TRACK] ERROR: recv() called but track is not running")
             logger.warning("MicroscopeVideoTrack: recv() called but track is not running")
             raise Exception("Track stopped")
 
