@@ -388,6 +388,14 @@ class MirrorMicroscopeService:
                     if self.video_track and self.video_track.running:
                         logger.info(f"Connection state is {peer_connection.connectionState}. Stopping video track.")
                         self.video_track.stop()
+                    
+                    # Stop video buffering on local service
+                    try:
+                        logger.info("Stopping video buffering on local service (connection state change)")
+                        await self.local_service.stop_video_buffering()
+                        logger.info("Video buffering stopped on local service")
+                    except Exception as buffer_err:
+                        logger.warning(f"Failed to stop video buffering: {buffer_err}")
                 elif peer_connection.connectionState in ["connected"]:
                     # Mark as connected
                     self.webrtc_connected = True
@@ -407,11 +415,21 @@ class MirrorMicroscopeService:
                 try:
                     await self.local_service.turn_on_illumination()
                     logger.info("Illumination opened")
+                    
+                    # Start video buffering on local service before creating video track
+                    logger.info("Starting video buffering on local service")
+                    try:
+                        await self.local_service.start_video_buffering()
+                        logger.info("Video buffering started on local service")
+                    except Exception as buffer_err:
+                        logger.warning(f"Failed to start video buffering: {buffer_err}")
+                        # Continue anyway - get_video_frame should auto-start it
+                    
                     self.video_track = MicroscopeVideoTrack(self.local_service, self)
                     peer_connection.addTrack(self.video_track)
                     logger.info("Added MicroscopeVideoTrack to peer connection")
                 except Exception as e:
-                    logger.error(f"Failed to create video track: {e}")
+                    logger.error(f"Failed to create video track: {e}", exc_info=True)
                     return
 
                 @track.on("ended")
@@ -427,6 +445,14 @@ class MirrorMicroscopeService:
                         self.video_track.stop()  # Now synchronous
                         self.video_track = None
                     self.metadata_data_channel = None
+                    
+                    # Stop video buffering on local service
+                    try:
+                        logger.info("Stopping video buffering on local service")
+                        await self.local_service.stop_video_buffering()
+                        logger.info("Video buffering stopped on local service")
+                    except Exception as buffer_err:
+                        logger.warning(f"Failed to stop video buffering: {buffer_err}")
 
         ice_servers = await self.fetch_ice_servers()
         if not ice_servers:
