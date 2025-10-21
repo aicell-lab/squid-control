@@ -1719,7 +1719,7 @@ class MicroscopeHyphaService:
             "move_to_position": self.MoveToPositionInput.model_json_schema(),
             "home_stage": self.HomeStageInput.model_json_schema(),
             "return_stage": self.ReturnStageInput.model_json_schema(),
-            "auto_focus": self.AutoFocusInput.model_json_schema(),
+            "contrast_autofocus": self.AutoFocusInput.model_json_schema(),
             "snap_image": self.SnapImageInput.model_json_schema(),
             "inspect_tool": self.InspectToolInput.model_json_schema(),
             "load_position": self.MoveToLoadingPositionInput.model_json_schema(),
