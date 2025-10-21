@@ -92,8 +92,23 @@ async def test_microscope_service():
 
             # Get the registered service to test against
             print("🔍 Getting service reference...")
-            service = await server.get_service(test_id)
-            print("✅ Service ready for testing")
+            # Add retry logic for service retrieval with small delay
+            max_retries = 3
+            service = None
+            for attempt in range(max_retries):
+                try:
+                    service = await server.get_service(test_id)
+                    print("✅ Service ready for testing")
+                    break
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        print(f"⚠️ Failed to get service (attempt {attempt + 1}/{max_retries}): {e}")
+                        await asyncio.sleep(0.5)  # Wait before retry
+                    else:
+                        raise  # Re-raise on final attempt
+            
+            if service is None:
+                raise RuntimeError(f"Failed to get service after {max_retries} attempts")
 
             try:
                 yield microscope, service
