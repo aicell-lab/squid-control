@@ -37,29 +37,6 @@ TEST_VIDEO_HEIGHT = 750
 TEST_DEFAULT_FPS = 5
 
 
-class SimpleTestDataStore:
-    """Simple test datastore that doesn't require external services."""
-
-    def __init__(self):
-        self.storage = {}
-        self.counter = 0
-
-    def put(self, file_type, data, filename, description=""):
-        self.counter += 1
-        file_id = f"test_file_{self.counter}"
-        self.storage[file_id] = {
-            'type': file_type,
-            'data': data,
-            'filename': filename,
-            'description': description
-        }
-        return file_id
-
-    def get_url(self, file_id):
-        if file_id in self.storage:
-            return f"https://test-storage.example.com/{file_id}"
-        return None
-
 
 @pytest_asyncio.fixture(scope="function")
 async def test_server_connection():
@@ -91,10 +68,6 @@ async def _create_test_microscope(test_id):
     microscope.service_id = test_id
     microscope.login_required = False  # Disable auth for tests
     microscope.authorized_emails = None
-
-    # Create a simple datastore for testing
-    microscope.datastore = SimpleTestDataStore()
-
 
     # Override setup method to avoid connecting to external services during tests
     async def mock_setup():

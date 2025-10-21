@@ -20,28 +20,6 @@ TEST_SERVER_URL = "https://hypha.aicell.io"
 TEST_WORKSPACE = "agent-lens"
 TEST_TIMEOUT = 120  # seconds
 
-class SimpleTestDataStore:
-    """Simple test datastore that doesn't require external services."""
-
-    def __init__(self):
-        self.storage = {}
-        self.counter = 0
-
-    def put(self, file_type, data, filename, description=""):
-        self.counter += 1
-        file_id = f"test_file_{self.counter}"
-        self.storage[file_id] = {
-            'type': file_type,
-            'data': data,
-            'filename': filename,
-            'description': description
-        }
-        return file_id
-
-    def get_url(self, file_id):
-        if file_id in self.storage:
-            return f"https://test-storage.example.com/{file_id}"
-        return None
 
 @pytest_asyncio.fixture(scope="function")
 async def test_squid_plus_microscope_service():
@@ -114,8 +92,21 @@ async def test_squid_plus_microscope_service():
             microscope.login_required = False  # Disable auth for tests
             microscope.authorized_emails = None
 
-            # Create a simple datastore for testing
-            microscope.datastore = SimpleTestDataStore()
+
+            # Initialize artifact manager and snapshot manager for testing
+            from squid_control.hypha_tools.artifact_manager.artifact_manager import SquidArtifactManager
+            from squid_control.hypha_tools.snapshot_utils import SnapshotManager
+            
+            microscope.artifact_manager = SquidArtifactManager()
+            artifact_server = await connect_to_server({
+                "server_url": "https://hypha.aicell.io",
+                "token": token,
+                "workspace": "agent-lens",
+                "ping_interval": 30
+            })
+            await microscope.artifact_manager.connect_server(artifact_server)
+            microscope.snapshot_manager = SnapshotManager(microscope.artifact_manager)
+            print("✅ Artifact manager and snapshot manager initialized")
 
             # Override setup method to avoid connecting to external services during tests
             async def mock_setup():

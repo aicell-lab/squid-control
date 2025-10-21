@@ -19,28 +19,6 @@ TEST_SERVER_URL = "https://hypha.aicell.io"
 TEST_WORKSPACE = "agent-lens"
 TEST_TIMEOUT = 120  # seconds
 
-class SimpleTestDataStore:
-    """Simple test datastore that doesn't require external services."""
-
-    def __init__(self):
-        self.storage = {}
-        self.counter = 0
-
-    def put(self, file_type, data, filename, description=""):
-        self.counter += 1
-        file_id = f"test_file_{self.counter}"
-        self.storage[file_id] = {
-            'type': file_type,
-            'data': data,
-            'filename': filename,
-            'description': description
-        }
-        return file_id
-
-    def get_url(self, file_id):
-        if file_id in self.storage:
-            return f"https://test-storage.example.com/{file_id}"
-        return None
 
 @pytest_asyncio.fixture(scope="function")
 async def test_microscope_service():
@@ -84,8 +62,6 @@ async def test_microscope_service():
             microscope.login_required = False  # Disable auth for tests
             microscope.authorized_emails = None
 
-            # Datastore is deprecated - snapshots now use artifact manager
-            microscope.datastore = None
 
             # Initialize artifact manager and snapshot manager for testing
             from squid_control.hypha_tools.artifact_manager.artifact_manager import SquidArtifactManager
@@ -789,7 +765,7 @@ async def test_service_lifecycle_management(test_microscope_service):
     # Test service initialization state
     assert microscope.server is not None
     assert microscope.service_id is not None
-    assert microscope.datastore is not None
+    assert microscope.snapshot_manager is not None
 
     # Test parameter initialization
     assert isinstance(microscope.parameters, dict)
@@ -980,8 +956,8 @@ async def test_service_url_management(test_microscope_service):
     assert microscope.service_id is not None
     assert isinstance(microscope.service_id, str)
 
-    # Test datastore configuration
-    assert microscope.datastore is not None
+    # Test snapshot manager configuration
+    assert microscope.snapshot_manager is not None
 
 # Test laser reference functionality
 async def test_laser_functionality(test_microscope_service):
@@ -2190,6 +2166,9 @@ async def test_scan_start_concurrent_prevention(test_microscope_service):
         
         assert result1['success'] == True, "First scan should start successfully"
         assert result1['state'] == 'running', "First scan should be running"
+        
+        # Give a small delay to ensure the scan state is properly set
+        await asyncio.sleep(0.1)
         
         # Verify state is running
         status = await service.scan_get_status()

@@ -241,7 +241,6 @@ class MicroscopeHyphaService:
         }
         self.authorized_emails = self.load_authorized_emails()
         logger.info(f"Authorized emails: {self.authorized_emails}")
-        self.datastore = None
         self.snapshot_manager = None  # Will be initialized after artifact_manager in setup()
         self.server_url =  "http://192.168.2.1:9527" if is_local else "https://hypha.aicell.io/"
         self.server = None
@@ -402,11 +401,6 @@ class MicroscopeHyphaService:
             result = await microscope_svc.ping()
             if result != "pong":
                 raise RuntimeError(f"Microscope service returned unexpected response: {result}")
-
-            datastore_id = f'data-store-{"simu" if self.is_simulation else "real"}-{self.service_id}'
-            datastore_svc = await self.server.get_service(datastore_id)
-            if datastore_svc is None:
-                raise RuntimeError("Datastore service not found")
 
             # Shorten chatbot service ID to avoid OpenAI API limits
             short_service_id = self.service_id[:20] if len(self.service_id) > 20 else self.service_id
@@ -1053,9 +1047,9 @@ class MicroscopeHyphaService:
             # Encode the image directly to PNG without converting to BGR
             _, png_image = cv2.imencode('.png', resized_img)
 
-            # Save using artifact manager (REQUIRED - datastore is deprecated)
+            # Save using artifact manager (REQUIRED)
             if not self.snapshot_manager:
-                raise Exception("Snapshot manager not available. Ensure AGENT_LENS_WORKSPACE_TOKEN is set. HyphaDataStore is deprecated and no longer supported for snapshots.")
+                raise Exception("Snapshot manager not available. Ensure AGENT_LENS_WORKSPACE_TOKEN is set.")
             
             # Get current position for metadata
             status = self.get_status()
@@ -2093,21 +2087,14 @@ class MicroscopeHyphaService:
 
         if self.is_simulation:
             await self.start_hypha_service(self.server, service_id=self.service_id)
-            datastore_id = f'data-store-simu-{self.service_id}'
             # Shorten chatbot service ID to avoid OpenAI API limits
             short_service_id = self.service_id[:20] if len(self.service_id) > 20 else self.service_id
             chatbot_id = f"sq-cb-simu-{short_service_id}"
         else:
             await self.start_hypha_service(self.server, service_id=self.service_id)
-            datastore_id = f'data-store-real-{self.service_id}'
             # Shorten chatbot service ID to avoid OpenAI API limits
             short_service_id = self.service_id[:20] if len(self.service_id) > 20 else self.service_id
             chatbot_id = f"sq-cb-real-{short_service_id}"
-
-        # DEPRECATED: HyphaDataStore is deprecated in favor of Artifact Manager
-        # Keeping for backward compatibility only - snapshots now use Artifact Manager
-        logger.warning("HyphaDataStore is deprecated and will be removed. Using Artifact Manager for new snapshots.")
-        self.datastore = None  # No longer needed - snapshots use artifact manager
 
         chatbot_server_url = "https://chat.bioimage.io"
         try:

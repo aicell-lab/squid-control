@@ -1075,30 +1075,6 @@ async def webrtc_test_services():
             microscope.login_required = False  # Disable auth for tests
             microscope.authorized_emails = None
 
-            # Create a simple datastore for testing
-            class SimpleTestDataStore:
-                def __init__(self):
-                    self.storage = {}
-                    self.counter = 0
-
-                def put(self, file_type, data, filename, description=""):
-                    self.counter += 1
-                    file_id = f"test_file_{self.counter}"
-                    self.storage[file_id] = {
-                        'type': file_type,
-                        'data': data,
-                        'filename': filename,
-                        'description': description
-                    }
-                    return file_id
-
-                def get_url(self, file_id):
-                    if file_id in self.storage:
-                        return f"https://test-storage.example.com/{file_id}"
-                    return None
-
-            microscope.datastore = SimpleTestDataStore()
-
             # Override setup method
             async def mock_setup():
                 pass
