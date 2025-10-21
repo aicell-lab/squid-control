@@ -22,7 +22,6 @@ from PIL import Image
 try:
     from .control.camera import TriggerModeSetting
     from .control.config import CONFIG, ChannelMapper
-    from .hypha_tools.artifact_manager.artifact_manager import SquidArtifactManager
     from .hypha_tools.snapshot_utils import SnapshotManager
     from .hypha_tools.chatbot.aask import aask
     from .squid_controller import SquidController
@@ -424,7 +423,22 @@ class MicroscopeHyphaService:
             except Exception as chatbot_error:
                 raise RuntimeError(f"Chatbot service health check failed: {str(chatbot_error)}")
 
-
+            # Check artifact manager connection if available
+            if self.artifact_manager is not None:
+                try:
+                    # Test artifact manager connection by listing galleries
+                    # Use a simple gallery listing to test the connection
+                    default_gallery_id = "agent-lens/microscope-snapshots"
+                    gallery_contents = await self.artifact_manager._svc.list(parent_id=default_gallery_id)
+                    if gallery_contents is None:
+                        logger.warning("Artifact manager health check: No gallery_contents found, but connection is working")
+                    else:
+                        logger.info(f"Artifact manager health check: Found {len(gallery_contents)} datasets")
+                except Exception as artifact_error:
+                    logger.warning(f"Artifact manager health check failed: {str(artifact_error)}")
+                    # Don't raise an error for artifact manager issues as it's not critical for basic operation
+            else:
+                logger.info("Artifact manager not initialized, skipping health check")
 
             logger.info("All services are healthy")
             return {"status": "ok", "message": "All services are healthy"}
@@ -2375,10 +2389,6 @@ class MicroscopeHyphaService:
                 await asyncio.sleep(1.0)  # Wait 1 second on unexpected error
 
         logger.info("Background frame acquisition stopped")
-
-
-
-
 
 
     def decode_video_frame(self, frame_data):
