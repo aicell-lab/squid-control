@@ -84,11 +84,25 @@ async def test_microscope_service():
             microscope.login_required = False  # Disable auth for tests
             microscope.authorized_emails = None
 
-            # Create a simple datastore for testing
-            microscope.datastore = SimpleTestDataStore()
+            # Datastore is deprecated - snapshots now use artifact manager
+            microscope.datastore = None
 
+            # Initialize artifact manager and snapshot manager for testing
+            from squid_control.hypha_tools.artifact_manager.artifact_manager import SquidArtifactManager
+            from squid_control.hypha_tools.snapshot_utils import SnapshotManager
+            
+            microscope.artifact_manager = SquidArtifactManager()
+            artifact_server = await connect_to_server({
+                "server_url": "https://hypha.aicell.io",
+                "token": token,
+                "workspace": "agent-lens",
+                "ping_interval": 30
+            })
+            await microscope.artifact_manager.connect_server(artifact_server)
+            microscope.snapshot_manager = SnapshotManager(microscope.artifact_manager)
+            print("✅ Artifact manager and snapshot manager initialized")
 
-            # Override setup method to avoid connecting to external services during tests
+            # Override setup method to avoid duplicate external connections
             async def mock_setup():
                 pass
             microscope.setup = mock_setup
@@ -156,6 +170,14 @@ async def test_microscope_service():
                         print("✅ SquidController closed")
                     except Exception as controller_error:
                         print(f"Error closing SquidController: {controller_error}")
+
+                # Clean up test datasets from artifact manager
+                if microscope and hasattr(microscope, 'snapshot_manager') and microscope.snapshot_manager:
+                    try:
+                        print("🧹 Cleaning up test datasets from artifact manager...")
+                        await microscope.snapshot_manager.cleanup_test_datasets()
+                    except Exception as cleanup_error:
+                        print(f"⚠️ Error cleaning up test datasets: {cleanup_error}")
 
                 # Give time for all cleanup operations to complete
                 await asyncio.sleep(0.1)

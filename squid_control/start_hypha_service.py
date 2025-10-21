@@ -23,8 +23,8 @@ try:
     from .control.camera import TriggerModeSetting
     from .control.config import CONFIG, ChannelMapper
     from .hypha_tools.artifact_manager.artifact_manager import SquidArtifactManager
+    from .hypha_tools.snapshot_utils import SnapshotManager
     from .hypha_tools.chatbot.aask import aask
-    from .hypha_tools.hypha_storage import HyphaDataStore
     from .squid_controller import SquidController
 except ImportError:
     # Fallback for direct script execution from project root
@@ -37,7 +37,6 @@ except ImportError:
 
     from .control.config import CONFIG, ChannelMapper
     from .hypha_tools.chatbot.aask import aask
-    from .hypha_tools.hypha_storage import HyphaDataStore
     from .squid_controller import SquidController
 
 import base64
@@ -243,6 +242,7 @@ class MicroscopeHyphaService:
         self.authorized_emails = self.load_authorized_emails()
         logger.info(f"Authorized emails: {self.authorized_emails}")
         self.datastore = None
+        self.snapshot_manager = None  # Will be initialized after artifact_manager in setup()
         self.server_url =  "http://192.168.2.1:9527" if is_local else "https://hypha.aicell.io/"
         self.server = None
         self.service_id = os.environ.get("MICROSCOPE_SERVICE_ID")
@@ -1026,9 +1026,10 @@ class MicroscopeHyphaService:
     @schema_function(skip_self=True)
     async def snap(self, exposure_time: int=Field(100, description="Camera exposure time in milliseconds (range: 1-900)"), channel: int=Field(0, description="Illumination channel: 0=Brightfield, 11=405nm, 12=488nm, 13=638nm, 14=561nm, 15=730nm"), intensity: int=Field(50, description="LED illumination intensity percentage (range: 0-100)"), context=None):
         """
-        Capture a single microscope image and save it to the datastore.
-        Returns: HTTP URL string pointing to the captured 2048x2048 PNG image in the datastore.
-        Notes: Stops video buffering during acquisition to prevent camera conflicts. Image is automatically cropped and resized.
+        Capture a single microscope image and save it to artifact manager with public access.
+        Returns: HTTP URL string pointing to the captured 2048x2048 PNG image with public read access.
+        Notes: Stops video buffering during acquisition to prevent camera conflicts. Image is automatically cropped and resized. 
+        Snapshots are stored in daily datasets (snapshots-{service_id}-{date}) in the artifact manager with position metadata.
         """
 
         # Check authentication
@@ -1052,12 +1053,32 @@ class MicroscopeHyphaService:
             # Encode the image directly to PNG without converting to BGR
             _, png_image = cv2.imencode('.png', resized_img)
 
-            # Store the PNG image
-            file_id = self.datastore.put('file', png_image.tobytes(), 'snapshot.png', "Captured microscope image in PNG format")
-            data_url = self.datastore.get_url(file_id)
-            logger.info(f'The image is snapped and saved as {data_url}')
+            # Save using artifact manager (REQUIRED - datastore is deprecated)
+            if not self.snapshot_manager:
+                raise Exception("Snapshot manager not available. Ensure AGENT_LENS_WORKSPACE_TOKEN is set. HyphaDataStore is deprecated and no longer supported for snapshots.")
+            
+            # Get current position for metadata
+            status = self.get_status()
+            metadata = {
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+                "channel": channel,
+                "intensity": intensity,
+                "exposure_time": exposure_time,
+                "position_x": status.get("current_x"),
+                "position_y": status.get("current_y"),
+                "position_z": status.get("current_z"),
+                "microscope_service_id": self.service_id
+            }
+            
+            # Save using artifact manager
+            data_url = await self.snapshot_manager.save_snapshot(
+                microscope_service_id=self.service_id,
+                image_bytes=png_image.tobytes(),
+                metadata=metadata
+            )
+            logger.info(f'The image is snapped and saved to artifact manager as {data_url}')
 
-            #update the current illumination channel and intensity
+            # Update the current illumination channel and intensity
             self.squidController.current_channel = channel
             param_name = self.channel_param_map.get(channel)
             if param_name:
@@ -1065,7 +1086,6 @@ class MicroscopeHyphaService:
             else:
                 logger.warning(f"Unknown channel {channel} in snap, parameters not updated for intensity/exposure attributes.")
 
-            self.get_status()
             return data_url
         except Exception as e:
             logger.error(f"Failed to snap image: {e}")
@@ -2030,34 +2050,46 @@ class MicroscopeHyphaService:
 
         self.server = server
 
-        # Setup zarr artifact manager for dataset upload functionality
+        # Setup artifact manager for dataset and snapshot upload functionality
         try:
             from .hypha_tools.artifact_manager.artifact_manager import (
                 SquidArtifactManager,
             )
-            self.zarr_artifact_manager = SquidArtifactManager()
+            self.artifact_manager = SquidArtifactManager()
 
-            # Connect to agent-lens workspace for zarr uploads
-            zarr_token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
-            if zarr_token:
-                zarr_server = await connect_to_server({
+            # Connect to agent-lens workspace for artifact uploads (zarr datasets + snapshots)
+            artifact_token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
+            if artifact_token:
+                artifact_server = await connect_to_server({
                     "server_url": "https://hypha.aicell.io",
-                    "token": zarr_token,
+                    "token": artifact_token,
                     "workspace": "agent-lens",
                     "ping_interval": 30
                 })
-                await self.zarr_artifact_manager.connect_server(zarr_server)
-                logger.info("Zarr artifact manager initialized successfully")
+                await self.artifact_manager.connect_server(artifact_server)
+                logger.info("Artifact manager initialized successfully")
 
-                # Pass the zarr artifact manager to the squid controller
-                self.squidController.zarr_artifact_manager = self.zarr_artifact_manager
-                logger.info("Zarr artifact manager passed to squid controller")
+                # Pass the artifact manager to the squid controller for zarr uploads
+                self.squidController.zarr_artifact_manager = self.artifact_manager
+                logger.info("Artifact manager passed to squid controller")
             else:
-                logger.warning("AGENT_LENS_WORKSPACE_TOKEN not found, zarr upload functionality disabled")
-                self.zarr_artifact_manager = None
+                logger.warning("AGENT_LENS_WORKSPACE_TOKEN not found, artifact upload functionality disabled")
+                self.artifact_manager = None
         except Exception as e:
-            logger.warning(f"Failed to initialize zarr artifact manager: {e}")
-            self.zarr_artifact_manager = None
+            logger.warning(f"Failed to initialize artifact manager: {e}")
+            self.artifact_manager = None
+
+        # Initialize snapshot manager if artifact manager is available
+        if self.artifact_manager:
+            try:
+                self.snapshot_manager = SnapshotManager(self.artifact_manager)
+                logger.info("Snapshot manager initialized successfully")
+            except Exception as e:
+                logger.warning(f"Failed to initialize snapshot manager: {e}")
+                self.snapshot_manager = None
+        else:
+            self.snapshot_manager = None
+            logger.warning("Snapshot manager not initialized (artifact manager unavailable)")
 
         if self.is_simulation:
             await self.start_hypha_service(self.server, service_id=self.service_id)
@@ -2072,15 +2104,10 @@ class MicroscopeHyphaService:
             short_service_id = self.service_id[:20] if len(self.service_id) > 20 else self.service_id
             chatbot_id = f"sq-cb-real-{short_service_id}"
 
-        self.datastore = HyphaDataStore()
-        try:
-            await self.datastore.setup(remote_server, service_id=datastore_id)
-        except TypeError as e:
-            if "Future" in str(e):
-                config = await asyncio.wrap_future(server.config)
-                await self.datastore.setup(remote_server, service_id=datastore_id, config=config)
-            else:
-                raise e
+        # DEPRECATED: HyphaDataStore is deprecated in favor of Artifact Manager
+        # Keeping for backward compatibility only - snapshots now use Artifact Manager
+        logger.warning("HyphaDataStore is deprecated and will be removed. Using Artifact Manager for new snapshots.")
+        self.datastore = None  # No longer needed - snapshots use artifact manager
 
         chatbot_server_url = "https://chat.bioimage.io"
         try:
@@ -2665,8 +2692,8 @@ class MicroscopeHyphaService:
                 raise Exception("Experiment manager not initialized. Start a scanning operation first to create data.")
 
             # Check if zarr artifact manager is available
-            if self.zarr_artifact_manager is None:
-                raise Exception("Zarr artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
+            if self.artifact_manager is None:
+                raise Exception("Artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
 
             # Get experiment information
             experiment_info = self.squidController.experiment_manager.get_experiment_info(experiment_name)
@@ -2825,7 +2852,7 @@ class MicroscopeHyphaService:
             if acquisition_settings:
                 acquisition_settings["wells"] = well_info_list
 
-            upload_result = await self.zarr_artifact_manager.upload_multiple_zip_files_to_dataset(
+            upload_result = await self.artifact_manager.upload_multiple_zip_files_to_dataset(
                 microscope_service_id=self.service_id,
                 experiment_id=experiment_name,
                 zarr_files_info=zarr_files_info,
@@ -2873,11 +2900,11 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            if self.zarr_artifact_manager is None:
-                raise Exception("Zarr artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
+            if self.artifact_manager is None:
+                raise Exception("Artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
 
             # List all collections in the agent-lens workspace (top-level)
-            all_collections = await self.zarr_artifact_manager.navigate_collections(parent_id=None)
+            all_collections = await self.artifact_manager.navigate_collections(parent_id=None)
             galleries = []
 
             # Check if microscope service ID ends with a number
@@ -2924,22 +2951,22 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            if self.zarr_artifact_manager is None:
-                raise Exception("Zarr artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
+            if self.artifact_manager is None:
+                raise Exception("Artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
 
             # Find the gallery if not given
             gallery = None
             if gallery_id:
                 # Try to read the gallery directly
-                gallery = await self.zarr_artifact_manager._svc.read(artifact_id=gallery_id)
+                gallery = await self.artifact_manager._svc.read(artifact_id=gallery_id)
             else:
                 # Use microscope_service_id and/or experiment_id to find the gallery
                 if microscope_service_id is None and experiment_id is None:
                     raise Exception("You must provide either gallery_id, microscope_service_id, or experiment_id.")
-                gallery = await self.zarr_artifact_manager.create_or_get_microscope_gallery(
+                gallery = await self.artifact_manager.create_or_get_microscope_gallery(
                     microscope_service_id or '', experiment_id=experiment_id)
             # List datasets in the gallery
-            datasets = await self.zarr_artifact_manager._svc.list(gallery["id"])
+            datasets = await self.artifact_manager._svc.list(gallery["id"])
             return {
                 "success": True,
                 "gallery_id": gallery["id"],
@@ -3713,8 +3740,8 @@ class MicroscopeHyphaService:
                 raise Exception("User not authorized to access this service")
 
             # Check if zarr artifact manager is available
-            if self.zarr_artifact_manager is None:
-                raise Exception("Zarr artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
+            if self.artifact_manager is None:
+                raise Exception("Artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
 
             logger.info(f"Starting offline processing for experiment ID: {experiment_id}")
             logger.info(f"Parameters: upload_immediately={upload_immediately}, cleanup_temp_files={cleanup_temp_files}, use_parallel_wells={use_parallel_wells}")
@@ -3731,7 +3758,7 @@ class MicroscopeHyphaService:
                     from .offline_processing import OfflineProcessor
                     processor = OfflineProcessor(
                         self.squidController, 
-                        self.zarr_artifact_manager, 
+                        self.artifact_manager, 
                         self.service_id
                     )
                     logger.info("OfflineProcessor created successfully in worker thread")
