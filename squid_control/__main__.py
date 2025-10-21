@@ -19,10 +19,10 @@ Examples:
   python -m squid_control microscope --simulation --verbose
   
   # Run mirror service
-  python -m squid_control mirror --cloud-service-id "mirror-microscope-control-squid-2" --local-service-id "microscope-control-squid-2"
+  python -m squid_control mirror --cloud-service-id "microscope-control-squid-2" --local-service-id "microscope-control-squid-2"
   
   # Run specific service directly
-  python -m squid_control.services.mirror --cloud-service-id "mirror-microscope-control-squid-2"
+  python -m squid_control.services.mirror --cloud-service-id "microscope-control-squid-2"
         """
     )
 
@@ -59,7 +59,7 @@ Examples:
     )
     mirror_parser.add_argument(
         "--cloud-service-id",
-        default="mirror-microscope-control-squid-1",
+        default="microscope-control-squid-1",
         help="ID for the cloud service"
     )
     mirror_parser.add_argument(

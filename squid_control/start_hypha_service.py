@@ -22,9 +22,8 @@ from PIL import Image
 try:
     from .control.camera import TriggerModeSetting
     from .control.config import CONFIG, ChannelMapper
-    from .hypha_tools.artifact_manager.artifact_manager import SquidArtifactManager
+    from .hypha_tools.snapshot_utils import SnapshotManager
     from .hypha_tools.chatbot.aask import aask
-    from .hypha_tools.hypha_storage import HyphaDataStore
     from .squid_controller import SquidController
 except ImportError:
     # Fallback for direct script execution from project root
@@ -37,7 +36,6 @@ except ImportError:
 
     from .control.config import CONFIG, ChannelMapper
     from .hypha_tools.chatbot.aask import aask
-    from .hypha_tools.hypha_storage import HyphaDataStore
     from .squid_controller import SquidController
 
 import base64
@@ -62,91 +60,9 @@ import uuid  # noqa: E402
 # Set up logging
 
 from squid_control.utils.logging_utils import setup_logging
+from squid_control.utils.video_utils import VideoBuffer, VideoFrameProcessor
 
 logger = setup_logging("squid_control_service.log")
-
-class VideoBuffer:
-    """
-    Video buffer to store and manage compressed microscope frames for smooth video streaming
-    """
-    def __init__(self, max_size=5):
-        self.max_size = max_size
-        self.buffer = deque(maxlen=max_size)
-        self.lock = threading.Lock()
-        self.last_frame_data = None  # Store compressed frame data
-        self.last_metadata = None  # Store metadata for last frame
-        self.frame_timestamp = 0
-
-    def put_frame(self, frame_data, metadata=None):
-        """Add a compressed frame and its metadata to the buffer
-
-        Args:
-            frame_data: dict with compressed frame info from _encode_frame_jpeg()
-            metadata: dict with frame metadata including stage position and timestamp
-        """
-        with self.lock:
-            self.buffer.append({
-                'frame_data': frame_data,
-                'metadata': metadata,
-                'timestamp': time.time()
-            })
-            self.last_frame_data = frame_data
-            self.last_metadata = metadata
-            self.frame_timestamp = time.time()
-
-    def get_frame_data(self):
-        """Get the most recent compressed frame data and metadata from buffer
-
-        Returns:
-            tuple: (frame_data, metadata) or (None, None) if no frame available
-        """
-        with self.lock:
-            if self.buffer:
-                buffer_entry = self.buffer[-1]
-                return buffer_entry['frame_data'], buffer_entry.get('metadata')
-            elif self.last_frame_data is not None:
-                return self.last_frame_data, self.last_metadata
-            else:
-                return None, None
-
-    def get_frame(self):
-        """Get the most recent decompressed frame from buffer (for backward compatibility)"""
-        frame_data, _ = self.get_frame_data()  # Ignore metadata for backward compatibility
-        if frame_data is None:
-            return None
-
-        # Decode JPEG back to numpy array
-        try:
-            if frame_data['format'] == 'jpeg':
-                # Decode JPEG data
-                nparr = np.frombuffer(frame_data['data'], np.uint8)
-                bgr_frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                if bgr_frame is not None:
-                    # Convert BGR back to RGB
-                    return cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
-            elif frame_data['format'] == 'raw':
-                # Raw numpy data
-                return np.frombuffer(frame_data['data'], dtype=np.uint8).reshape((-1, 750, 3))
-        except Exception as e:
-            logger.error(f"Error decoding frame: {e}")
-
-        return None
-
-    def get_frame_age(self):
-        """Get the age of the most recent frame in seconds"""
-        with self.lock:
-            if self.frame_timestamp > 0:
-                return time.time() - self.frame_timestamp
-            else:
-                return float('inf')
-
-    def clear(self):
-        """Clear the buffer"""
-        with self.lock:
-            self.buffer.clear()
-            self.last_frame_data = None
-            self.last_metadata = None
-            self.frame_timestamp = 0
 
 class MicroscopeVideoTrack(MediaStreamTrack):
     """
@@ -204,7 +120,7 @@ class MicroscopeVideoTrack(MediaStreamTrack):
                 frame_metadata = {}
 
             # Decompress JPEG data to numpy array for WebRTC
-            processed_frame = self.microscope_instance._decode_frame_jpeg(frame_data)
+            processed_frame = self.microscope_instance.decode_video_frame(frame_data)
 
             current_time = time.time()
             # Use a 90kHz timebase, common for video, to provide accurate frame timing.
@@ -324,7 +240,7 @@ class MicroscopeHyphaService:
         }
         self.authorized_emails = self.load_authorized_emails()
         logger.info(f"Authorized emails: {self.authorized_emails}")
-        self.datastore = None
+        self.snapshot_manager = None  # Will be initialized after artifact_manager in setup()
         self.server_url =  "http://192.168.2.1:9527" if is_local else "https://hypha.aicell.io/"
         self.server = None
         self.service_id = os.environ.get("MICROSCOPE_SERVICE_ID")
@@ -362,6 +278,14 @@ class MicroscopeHyphaService:
 
         # Scanning control attributes
         self.scanning_in_progress = False  # Flag to prevent video buffering during scans
+
+        # Unified scan state tracking (single scan at a time)
+        self.scan_state = {
+            'state': 'idle',  # idle, running, completed, failed
+            'error_message': None,
+            'scan_task': None,  # asyncio.Task for the running scan
+            'saved_data_type': None,  # raw_images, full_zarr, quick_zarr
+        }
 
         # Initialize coverage tracking if in test mode
         if os.environ.get('SQUID_TEST_MODE'):
@@ -427,7 +351,6 @@ class MicroscopeHyphaService:
         
         # If no authorized emails are set, allow all authenticated users
         if self.authorized_emails is None:
-            logger.info("No authorized emails configured - allowing authenticated user")
             return True
         
         # Check if user email is in authorized list
@@ -437,10 +360,8 @@ class MicroscopeHyphaService:
             return False
         
         if user_email in self.authorized_emails:
-            logger.info(f"User {user_email} is authorized")
             return True
         else:
-            logger.warning(f"User {user_email} is not authorized")
             return False
 
     def _is_squid_plus_microscope(self):
@@ -480,11 +401,6 @@ class MicroscopeHyphaService:
             if result != "pong":
                 raise RuntimeError(f"Microscope service returned unexpected response: {result}")
 
-            datastore_id = f'data-store-{"simu" if self.is_simulation else "real"}-{self.service_id}'
-            datastore_svc = await self.server.get_service(datastore_id)
-            if datastore_svc is None:
-                raise RuntimeError("Datastore service not found")
-
             # Shorten chatbot service ID to avoid OpenAI API limits
             short_service_id = self.service_id[:20] if len(self.service_id) > 20 else self.service_id
             chatbot_id = f"sq-cb-{'simu' if self.is_simulation else 'real'}-{short_service_id}"
@@ -507,7 +423,22 @@ class MicroscopeHyphaService:
             except Exception as chatbot_error:
                 raise RuntimeError(f"Chatbot service health check failed: {str(chatbot_error)}")
 
-
+            # Check artifact manager connection if available
+            if self.artifact_manager is not None:
+                try:
+                    # Test artifact manager connection by listing galleries
+                    # Use a simple gallery listing to test the connection
+                    default_gallery_id = "agent-lens/microscope-snapshots"
+                    gallery_contents = await self.artifact_manager._svc.list(parent_id=default_gallery_id)
+                    if gallery_contents is None:
+                        logger.warning("Artifact manager health check: No gallery_contents found, but connection is working")
+                    else:
+                        logger.info(f"Artifact manager health check: Found {len(gallery_contents)} datasets")
+                except Exception as artifact_error:
+                    logger.warning(f"Artifact manager health check failed: {str(artifact_error)}")
+                    # Don't raise an error for artifact manager issues as it's not critical for basic operation
+            else:
+                logger.info("Artifact manager not initialized, skipping health check")
 
             logger.info("All services are healthy")
             return {"status": "ok", "message": "All services are healthy"}
@@ -519,14 +450,18 @@ class MicroscopeHyphaService:
 
     @schema_function(skip_self=True)
     def ping(self, context=None):
-        """Ping the service"""
+        """
+        Check if the microscope service is responsive.
+        Returns: String 'pong' confirming service availability.
+        """
         return "pong"
 
     @schema_function(skip_self=True)
-    def move_by_distance(self, x: float=Field(1.0, description="disntance through X axis, unit: milimeter"), y: float=Field(1.0, description="disntance through Y axis, unit: milimeter"), z: float=Field(1.0, description="disntance through Z axis, unit: milimeter"), context=None):
+    def move_by_distance(self, x: float=Field(1.0, description="Distance to move along X axis in millimeters (positive=right, negative=left)"), y: float=Field(1.0, description="Distance to move along Y axis in millimeters (positive=downside, negative=upside)"), z: float=Field(1.0, description="Distance to move along Z axis in millimeters (positive=up toward sample, negative=down)"), context=None):
         """
-        Move the stage by a distances in x, y, z axis
-        Returns: Result information
+        Move the microscope stage by specified distances relative to current position.
+        Returns: Dictionary with success status, movement message, initial position, and final position in millimeters.
+        Notes: Movement is validated against software safety limits and will fail if target position is out of range.
         """
         try:
             # Check authentication
@@ -550,10 +485,11 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    def move_to_position(self, x:float=Field(1.0,description="Unit: milimeter"), y:float=Field(1.0,description="Unit: milimeter"), z:float=Field(1.0,description="Unit: milimeter"), context=None):
+    def move_to_position(self, x:float=Field(1.0, description="Absolute X coordinate in millimeters (0 disables X movement)"), y:float=Field(1.0, description="Absolute Y coordinate in millimeters (0 disables Y movement)"), z:float=Field(1.0, description="Absolute Z coordinate in millimeters (0 disables Z movement)"), context=None):
         """
-        Move the stage to a position in x, y, z axis
-        Returns: The result of the movement
+        Move the microscope stage to absolute coordinates in the stage reference frame.
+        Returns: Dictionary with success status, movement message, initial position, and final position in millimeters.
+        Notes: Each axis is moved sequentially (X, then Y, then Z). Movement validates against safety limits per axis.
         """
         try:
             # Check authentication
@@ -593,8 +529,8 @@ class MicroscopeHyphaService:
     @schema_function(skip_self=True)
     def get_status(self, context=None):
         """
-        Get the current status of the microscope
-        Returns: Status of the microscope
+        Retrieve comprehensive microscope status including position, illumination, and scan state.
+        Returns: Dictionary with stage position (x, y, z, theta in mm), illumination state, current channel, video buffering status, well location, and scan status.
         """
         try:
             # Check authentication
@@ -604,12 +540,10 @@ class MicroscopeHyphaService:
             current_x, current_y, current_z, current_theta = self.squidController.navigationController.update_pos(microcontroller=self.squidController.microcontroller)
             is_illumination_on = self.squidController.liveController.illumination_on
             #scan_channel = self.squidController.multipointController.selected_configurations
-            is_busy = self.squidController.is_busy
             # Get current well location information
             well_info = self.squidController.get_well_from_position('96')  # Default to 96-well plate
 
             self.parameters = {
-                'is_busy': is_busy,
                 'current_x': current_x,
                 'current_y': current_y,
                 'current_z': current_z,
@@ -629,6 +563,12 @@ class MicroscopeHyphaService:
                 'video_fps': self.buffer_fps,
                 'video_buffering_active': self.frame_acquisition_running,
                 'current_well_location': well_info,  # Add well location information
+                # Unified scan status
+                'scan_status': {
+                    'state': self.scan_state['state'],
+                    'saved_data_type': self.scan_state['saved_data_type'],
+                    'error_message': self.scan_state['error_message']
+                }
             }
             return self.parameters
         except Exception as e:
@@ -636,42 +576,69 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    def update_parameters_from_client(self, new_parameters: dict=Field(description="the dictionary parameters user want to update"), context=None):
+    def update_parameters_from_client(self, 
+                                    new_parameters: dict = Field(..., description="Dictionary of parameters to update with key-value pairs (e.g., {'BF_intensity_exposure': [28, 20], 'dx': 0.5})"), 
+                                    context=None):
         """
-        Update the parameters from the client side
-        Returns: Updated parameters in the microscope
+        Update microscope acquisition parameters for channels, step sizes, and illumination settings.
+        Returns: Dictionary with success status, count of updated parameters, updated parameter values, and any failed parameter updates.
+        Notes: Only updates parameters that exist in the current parameter set. Changes take effect immediately for subsequent acquisitions.
         """
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
+            if not isinstance(new_parameters, dict):
+                raise ValueError("new_parameters must be a dictionary")
+
+            if not new_parameters:
+                raise ValueError("new_parameters cannot be empty")
+
             if self.parameters is None:
                 self.parameters = {}
+
+            updated_params = {}
+            failed_params = {}
 
             # Update only the specified keys
             for key, value in new_parameters.items():
                 if key in self.parameters:
                     self.parameters[key] = value
-                    logger.info(f"Updated {key} to {value}")
+                    updated_params[key] = value
+                    logger.info(f"Updated parameter '{key}' to '{value}'")
 
                     # Update the corresponding instance variable if it exists
                     if hasattr(self, key):
                         setattr(self, key, value)
                     else:
-                        logger.error(f"Attribute {key} does not exist on self, skipping update.")
+                        logger.warning(f"Instance attribute '{key}' does not exist, parameter updated in config only")
                 else:
-                    logger.error(f"Key {key} not found in parameters, skipping update.")
+                    failed_params[key] = f"Parameter '{key}' not found in available parameters"
+                    logger.warning(f"Parameter '{key}' not found in available parameters")
 
-            return {"success": True, "message": "Parameters updated successfully.", "updated_parameters": new_parameters}
+            result = {
+                "success": True,
+                "message": f"Updated {len(updated_params)} parameters successfully",
+                "updated_parameters": updated_params
+            }
+            
+            if failed_params:
+                result["failed_parameters"] = failed_params
+                result["message"] += f", {len(failed_params)} parameters failed to update"
+
+            return result
+            
         except Exception as e:
             logger.error(f"Failed to update parameters: {e}")
             raise e
 
     @schema_function(skip_self=True)
-    def set_simulated_sample_data_alias(self, sample_data_alias: str=Field("agent-lens/20250824-example-data-20250824-221822", description="The alias of the sample data"), context=None):
+    def set_simulated_sample_data_alias(self, sample_data_alias: str=Field("agent-lens/20250824-example-data-20250824-221822", description="Zarr dataset alias in Hypha artifact manager (format: 'workspace/dataset-id')"), context=None):
         """
-        Set the alias of simulated sample
+        Configure which virtual Zarr sample dataset to use for simulation mode imaging.
+        Returns: String confirmation message with the set sample alias.
+        Notes: Only functional in simulation mode. Changes which Zarr-based virtual sample appears under the microscope.
         """
         self.squidController.set_simulated_sample_data_alias(sample_data_alias)
         return f"The alias of simulated sample is set to {sample_data_alias}"
@@ -679,11 +646,12 @@ class MicroscopeHyphaService:
     @schema_function(skip_self=True)
     def get_simulated_sample_data_alias(self, context=None):
         """
-        Get the alias of simulated sample
+        Query the currently active virtual sample dataset alias for simulation mode.
+        Returns: String with Zarr dataset alias (format: 'workspace/dataset-id').
+        Notes: Only relevant in simulation mode.
         """
         return self.squidController.get_simulated_sample_data_alias()
 
-    @schema_function(skip_self=True)
     async def one_new_frame(self, context=None):
         """
         Get an image from the microscope
@@ -727,8 +695,7 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to get new frame: {e}")
             raise e
 
-    @schema_function(skip_self=True)
-    async def get_video_frame(self, frame_width: int=Field(750, description="Width of the video frame"), frame_height: int=Field(750, description="Height of the video frame"), context=None):
+    async def get_video_frame(self, frame_width: int=750, frame_height: int=750, context=None):
         """
         Get compressed frame data with metadata from the microscope using video buffering
         Returns: Compressed frame data (JPEG bytes) with associated metadata including stage position and timestamp
@@ -741,8 +708,8 @@ class MicroscopeHyphaService:
             # If scanning is in progress, return a scanning placeholder immediately
             if self.scanning_in_progress:
                 logger.debug("Scanning in progress, returning scanning placeholder frame")
-                placeholder = self._create_placeholder_frame(frame_width, frame_height, "Scanning in Progress...")
-                placeholder_compressed = self._encode_frame_jpeg(placeholder, quality=85)
+                placeholder = VideoFrameProcessor._create_placeholder_frame(frame_width, frame_height, "Scanning in Progress...")
+                placeholder_compressed = VideoFrameProcessor.encode_frame_jpeg(placeholder, quality=85)
 
                 # Create metadata for scanning placeholder frame
                 scanning_metadata = {
@@ -787,12 +754,12 @@ class MicroscopeHyphaService:
 
                 if frame_width != buffered_width or frame_height != buffered_height:
                     # Need to resize - decompress, resize, and recompress
-                    decompressed_frame = self._decode_frame_jpeg(frame_data)
+                    decompressed_frame = VideoFrameProcessor.decode_frame_jpeg(frame_data)
                     if decompressed_frame is not None:
                         # Resize the frame to requested dimensions
                         resized_frame = cv2.resize(decompressed_frame, (frame_width, frame_height), interpolation=cv2.INTER_AREA)
                         # Recompress at requested size
-                        resized_compressed = self._encode_frame_jpeg(resized_frame, quality=85)
+                        resized_compressed = VideoFrameProcessor.encode_frame_jpeg(resized_frame, quality=85)
                         return {
                             'format': resized_compressed['format'],
                             'data': resized_compressed['data'],
@@ -804,8 +771,8 @@ class MicroscopeHyphaService:
                         }
                     else:
                         # Fallback to placeholder if decompression fails
-                        placeholder = self._create_placeholder_frame(frame_width, frame_height, "Frame decompression failed")
-                        placeholder_compressed = self._encode_frame_jpeg(placeholder, quality=85)
+                        placeholder = VideoFrameProcessor._create_placeholder_frame(frame_width, frame_height, "Frame decompression failed")
+                        placeholder_compressed = VideoFrameProcessor.encode_frame_jpeg(placeholder, quality=85)
                         return {
                             'format': placeholder_compressed['format'],
                             'data': placeholder_compressed['data'],
@@ -829,8 +796,8 @@ class MicroscopeHyphaService:
             else:
                 # No buffered frame available, create and compress placeholder
                 logger.warning("No buffered frame available")
-                placeholder = self._create_placeholder_frame(frame_width, frame_height, "No buffered frame available")
-                placeholder_compressed = self._encode_frame_jpeg(placeholder, quality=85)
+                placeholder = VideoFrameProcessor._create_placeholder_frame(frame_width, frame_height, "No buffered frame available")
+                placeholder_compressed = VideoFrameProcessor.encode_frame_jpeg(placeholder, quality=85)
 
                 # Create metadata for placeholder frame
                 placeholder_metadata = {
@@ -857,8 +824,7 @@ class MicroscopeHyphaService:
             # Create error placeholder and compress it
             raise e
 
-    @schema_function(skip_self=True)
-    def configure_video_buffer(self, buffer_fps: int = Field(5, description="Target FPS for buffer acquisition"), buffer_size: int = Field(5, description="Maximum number of frames to keep in buffer"), context=None):
+    def configure_video_buffer(self, buffer_fps: int = 5, buffer_size: int = 5, context=None):
         """Configure video buffering parameters for optimal streaming performance."""
         try:
             self.buffer_fps_target = max(1, min(30, buffer_fps))  # Clamp between 1-30 FPS
@@ -879,93 +845,10 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to configure video buffer: {e}")
             raise e
 
-    @schema_function(skip_self=True)
-    def get_video_buffer_status(self, context=None):
-        """Get the current status of the video buffer."""
-        try:
-            buffer_fill = len(self.video_buffer.frame_buffer)
-            buffer_capacity = self.video_buffer.max_size
 
-            return {
-                "success": True,
-                "buffer_running": self.frame_acquisition_running,
-                "buffer_fill": buffer_fill,
-                "buffer_capacity": buffer_capacity,
-                "buffer_fill_percent": (buffer_fill / buffer_capacity * 100) if buffer_capacity > 0 else 0,
-                "buffer_fps": self.buffer_fps,
-                "frame_dimensions": {
-                    "width": self.buffer_frame_width,
-                    "height": self.buffer_frame_height
-                },
-                "video_idle_timeout": self.video_idle_timeout,
-                "last_video_request": self.last_video_request_time,
-                "webrtc_connected": self.webrtc_connected
-            }
-        except Exception as e:
-            logger.error(f"Failed to get video buffer status: {e}")
-            raise e
 
-    @schema_function(skip_self=True)
-    async def start_video_buffering(self, context=None):
-        """Manually start video buffering for smooth streaming."""
-        try:
-            if self.buffer_acquisition_running:
-                return {
-                    "success": True,
-                    "message": "Video buffering is already running",
-                    "was_already_running": True
-                }
 
-            await self.start_frame_buffer_acquisition()
-            logger.info("Video buffering started manually")
-
-            return {
-                "success": True,
-                "message": "Video buffering started successfully",
-                "buffer_fps": self.buffer_fps_target,
-                "buffer_size": self.frame_buffer.maxlen
-            }
-        except Exception as e:
-            logger.error(f"Failed to start video buffering: {e}")
-            raise e
-
-    @schema_function(skip_self=True)
-    async def stop_video_buffering(self, context=None):
-        """Stop the background frame acquisition task"""
-        if not self.frame_acquisition_running:
-            logger.info("Video buffering not running")
-            return
-
-        self.frame_acquisition_running = False
-
-        # Stop idle monitoring task
-        if self.video_idle_check_task and not self.video_idle_check_task.done():
-            self.video_idle_check_task.cancel()
-            try:
-                await self.video_idle_check_task
-            except asyncio.CancelledError:
-                pass
-            self.video_idle_check_task = None
-
-        # Stop frame acquisition task
-        if self.frame_acquisition_task:
-            try:
-                await asyncio.wait_for(self.frame_acquisition_task, timeout=2.0)
-            except asyncio.TimeoutError:
-                logger.warning("Frame acquisition task did not stop gracefully, cancelling")
-                self.frame_acquisition_task.cancel()
-                try:
-                    await self.frame_acquisition_task
-                except asyncio.CancelledError:
-                    pass
-
-        self.video_buffer.clear()
-        self.last_video_request_time = None
-        self.buffering_start_time = None
-        logger.info("Video buffering stopped")
-
-    @schema_function(skip_self=True)
-    def configure_video_idle_timeout(self, idle_timeout: float = Field(5.0, description="Idle timeout in seconds (0 to disable automatic stop)"), context=None):
+    def configure_video_idle_timeout(self, idle_timeout: float = 5.0, context=None):
         """Configure how long to wait before automatically stopping video buffering when inactive."""
         try:
             self.video_idle_timeout = max(0, idle_timeout)  # Ensure non-negative
@@ -981,8 +864,7 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to configure video idle timeout: {e}")
             raise e
 
-    @schema_function(skip_self=True)
-    async def set_video_fps(self, fps: int = Field(5, description="Target frames per second for video acquisition (1-30 FPS)"), context=None):
+    async def set_video_fps(self, fps: int = 5, context=None):
         """
         Set the video acquisition frame rate for smooth streaming.
         This controls how fast the microscope acquires frames for video streaming.
@@ -1066,22 +948,20 @@ class MicroscopeHyphaService:
         except Exception as e:
             logger.error(f"Error during test cleanup: {e}")
 
-    @schema_function(skip_self=True)
-    async def start_video_buffering_api(self, context=None):
+    async def start_video_buffering(self, context=None):
         """Start video buffering for smooth video streaming"""
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            await self.start_video_buffering()
+            await self._start_video_buffering_internal()
             return {"success": True, "message": "Video buffering started successfully"}
         except Exception as e:
             logger.error(f"Failed to start video buffering: {e}")
             raise e
 
-    @schema_function(skip_self=True)
-    async def stop_video_buffering_api(self, context=None):
+    async def stop_video_buffering(self, context=None):
         """Manually stop video buffering to save resources."""
         try:
             # Check authentication
@@ -1095,7 +975,7 @@ class MicroscopeHyphaService:
                     "was_already_stopped": True
                 }
 
-            await self.stop_video_buffering()
+            await self._stop_video_buffering_internal()
             logger.info("Video buffering stopped manually")
 
             return {
@@ -1106,7 +986,6 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to stop video buffering: {e}")
             raise e
 
-    @schema_function(skip_self=True)
     def get_video_buffering_status(self, context=None):
         """Get the current video buffering status"""
         try:
@@ -1137,8 +1016,7 @@ class MicroscopeHyphaService:
                 "error": str(e)
             }
 
-    @schema_function(skip_self=True)
-    def adjust_video_frame(self, min_val: int = Field(0, description="Minimum intensity value for contrast stretching"), max_val: Optional[int] = Field(None, description="Maximum intensity value for contrast stretching"), context=None):
+    def adjust_video_frame(self, min_val: int = 0, max_val: Optional[int] = None, context=None):
         """Adjust the contrast of the video stream by setting min and max intensity values."""
         try:
             # Check authentication
@@ -1154,10 +1032,12 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def snap(self, exposure_time: int=Field(100, description="Exposure time, in milliseconds"), channel: int=Field(0, description="Light source (0 for Bright Field, Fluorescence channels: 11 for 405 nm, 12 for 488 nm, 13 for 638nm, 14 for 561 nm, 15 for 730 nm)"), intensity: int=Field(50, description="Intensity of the illumination source"), context=None):
+    async def snap(self, exposure_time: int=Field(100, description="Camera exposure time in milliseconds (range: 1-900)"), channel: int=Field(0, description="Illumination channel: 0=Brightfield, 11=405nm, 12=488nm, 13=638nm, 14=561nm, 15=730nm"), intensity: int=Field(50, description="LED illumination intensity percentage (range: 0-100)"), context=None):
         """
-        Get an image from microscope
-        Returns: the URL of the image
+        Capture a single microscope image and save it to artifact manager with public access.
+        Returns: HTTP URL string pointing to the captured 2048x2048 PNG image with public read access.
+        Notes: Stops video buffering during acquisition to prevent camera conflicts. Image is automatically cropped and resized. 
+        Snapshots are stored in daily datasets (snapshots-{service_id}-{date}) in the artifact manager with position metadata.
         """
 
         # Check authentication
@@ -1181,12 +1061,32 @@ class MicroscopeHyphaService:
             # Encode the image directly to PNG without converting to BGR
             _, png_image = cv2.imencode('.png', resized_img)
 
-            # Store the PNG image
-            file_id = self.datastore.put('file', png_image.tobytes(), 'snapshot.png', "Captured microscope image in PNG format")
-            data_url = self.datastore.get_url(file_id)
-            logger.info(f'The image is snapped and saved as {data_url}')
+            # Save using artifact manager (REQUIRED)
+            if not self.snapshot_manager:
+                raise Exception("Snapshot manager not available. Ensure AGENT_LENS_WORKSPACE_TOKEN is set.")
+            
+            # Get current position for metadata
+            status = self.get_status()
+            metadata = {
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+                "channel": channel,
+                "intensity": intensity,
+                "exposure_time": exposure_time,
+                "position_x": status.get("current_x"),
+                "position_y": status.get("current_y"),
+                "position_z": status.get("current_z"),
+                "microscope_service_id": self.service_id
+            }
+            
+            # Save using artifact manager
+            data_url = await self.snapshot_manager.save_snapshot(
+                microscope_service_id=self.service_id,
+                image_bytes=png_image.tobytes(),
+                metadata=metadata
+            )
+            logger.info(f'The image is snapped and saved to artifact manager as {data_url}')
 
-            #update the current illumination channel and intensity
+            # Update the current illumination channel and intensity
             self.squidController.current_channel = channel
             param_name = self.channel_param_map.get(channel)
             if param_name:
@@ -1194,17 +1094,16 @@ class MicroscopeHyphaService:
             else:
                 logger.warning(f"Unknown channel {channel} in snap, parameters not updated for intensity/exposure attributes.")
 
-            self.get_status()
             return data_url
         except Exception as e:
             logger.error(f"Failed to snap image: {e}")
             raise e
 
     @schema_function(skip_self=True)
-    def open_illumination(self, context=None):
+    def turn_on_illumination(self, context=None):
         """
-        Turn on the illumination
-        Returns: The message of the action
+        Turn on the microscope illumination using the currently set channel and intensity.
+        Returns: String confirmation message that brightfield illumination is on.
         """
         try:
             # Check authentication
@@ -1219,10 +1118,10 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    def close_illumination(self, context=None):
+    def turn_off_illumination(self, context=None):
         """
-        Turn off the illumination
-        Returns: The message of the action
+        Turn off all microscope illumination sources.
+        Returns: String confirmation message that illumination is off.
         """
         try:
             # Check authentication
@@ -1236,12 +1135,14 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to close illumination: {e}")
             raise e
 
-    @schema_function(skip_self=True)
-    async def scan_well_plate(self, well_plate_type: str=Field("96", description="Type of the well plate (e.g., '6', '12', '24', '96', '384')"), illumination_settings: List[dict]=Field(default_factory=lambda: [{'channel': 'BF LED matrix full', 'intensity': 28.0, 'exposure_time': 20.0}, {'channel': 'Fluorescence 488 nm Ex', 'intensity': 27.0, 'exposure_time': 60.0}, {'channel': 'Fluorescence 561 nm Ex', 'intensity': 98.0, 'exposure_time': 100.0}], description="Illumination settings with channel name, intensity (0-100), and exposure time (ms) for each channel"), do_contrast_autofocus: bool=Field(False, description="Whether to do contrast based autofocus"), do_reflection_af: bool=Field(True, description="Whether to do reflection based autofocus"), scanning_zone: List[tuple]=Field(default_factory=lambda: [(0,0),(0,0)], description="The scanning zone of the well plate, for 96 well plate, it should be[(0,0),(7,11)] "), Nx: int=Field(3, description="Number of columns to scan"), Ny: int=Field(3, description="Number of rows to scan"), dx: float=Field(0.8, description="Distance between X positions in mm"), dy: float=Field(0.8, description="Distance between Y positions in mm"), action_ID: str=Field('testPlateScan', description="The ID of the action"), context=None):
+    async def scan_plate_save_raw_images(self, well_plate_type: str = "96", illumination_settings: List[dict] = None, do_contrast_autofocus: bool = False, do_reflection_af: bool = True, scanning_zone: List[tuple] = None, Nx: int = 3, Ny: int = 3, dx: float = 0.8, dy: float = 0.8, action_ID: str = 'testPlateScan', context=None):
         """
+        DEPRECATED: Use scan_start() with saved_data_type='raw_images' instead.
+        
         Scan the well plate according to the pre-defined position list with custom illumination settings
         Returns: The message of the action
         """
+        logger.warning("DEPRECATED: scan_plate_save_raw_images is deprecated and will be removed in a future release. Use scan_start() with saved_data_type='raw_images' instead.")
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -1250,13 +1151,13 @@ class MicroscopeHyphaService:
             if illumination_settings is None:
                 logger.warning("No illumination settings provided, using default settings")
                 illumination_settings = [
-                    {'channel': 'BF LED matrix full', 'intensity': 18, 'exposure_time': 10},
-                    {'channel': 'Fluorescence 405 nm Ex', 'intensity': 45, 'exposure_time': 30},
-                    {'channel': 'Fluorescence 488 nm Ex', 'intensity': 30, 'exposure_time': 100},
-                    {'channel': 'Fluorescence 561 nm Ex', 'intensity': 100, 'exposure_time': 200},
-                    {'channel': 'Fluorescence 638 nm Ex', 'intensity': 100, 'exposure_time': 200},
-                    {'channel': 'Fluorescence 730 nm Ex', 'intensity': 100, 'exposure_time': 200},
+                    {'channel': 'BF LED matrix full', 'intensity': 28.0, 'exposure_time': 20.0},
+                    {'channel': 'Fluorescence 488 nm Ex', 'intensity': 27.0, 'exposure_time': 60.0},
+                    {'channel': 'Fluorescence 561 nm Ex', 'intensity': 98.0, 'exposure_time': 100.0},
                 ]
+            
+            if scanning_zone is None:
+                scanning_zone = [(0, 0), (0, 0)]
 
             # Check if video buffering is active and stop it during scanning
             video_buffering_was_active = self.frame_acquisition_running
@@ -1300,9 +1201,9 @@ class MicroscopeHyphaService:
             logger.info("Well plate scanning completed, video buffering auto-start is now re-enabled")
 
     @schema_function(skip_self=True)
-    def scan_well_plate_simulated(self, context=None):
+    def scan_plate_save_raw_images_simulated(self, context=None):
         """
-        Scan the well plate according to the pre-defined position list
+        Scan the well plate according to the pre-defined position list and save raw images
         Returns: The message of the action
         """
         try:
@@ -1318,10 +1219,11 @@ class MicroscopeHyphaService:
 
 
     @schema_function(skip_self=True)
-    def set_illumination(self, channel: int=Field(0, description="Light source (e.g., 0 for Bright Field, Fluorescence channels: 11 for 405 nm, 12 for 488 nm, 13 for 638nm, 14 for 561 nm, 15 for 730 nm)"), intensity: int=Field(50, description="Intensity of the illumination source"), context=None):
+    def set_illumination(self, channel: int=Field(0, description="Illumination channel: 0=Brightfield, 11=405nm, 12=488nm, 13=638nm, 14=561nm, 15=730nm"), intensity: int=Field(50, description="LED illumination intensity percentage (range: 0-100)"), context=None):
         """
-        Set the intensity of light source
-        Returns:A string message
+        Configure illumination channel and intensity for the microscope.
+        Returns: String confirmation message with the channel number and set intensity.
+        Notes: If illumination is already on, it will be toggled off then back on with new settings.
         """
         try:
             # Check authentication
@@ -1357,10 +1259,11 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    def set_camera_exposure(self,channel: int=Field(..., description="Light source (e.g., 0 for Bright Field, Fluorescence channels: 11 for 405 nm, 12 for 488 nm, 13 for 638nm, 14 for 561 nm, 15 for 730 nm)"), exposure_time: int=Field(..., description="Exposure time in milliseconds"), context=None):
+    def set_camera_exposure(self, channel: int=Field(..., description="Illumination channel to associate with this exposure: 0=Brightfield, 11=405nm, 12=488nm, 13=638nm, 14=561nm, 15=730nm"), exposure_time: int=Field(..., description="Camera exposure time in milliseconds (range: 1-900)"), context=None):
         """
-        Set the exposure time of the camera
-        Returns: A string message
+        Configure camera exposure time for a specific illumination channel.
+        Returns: String confirmation message with the set exposure time.
+        Notes: Updates internal parameter storage for the specified channel. Changes apply to future acquisitions.
         """
         try:
             # Check authentication
@@ -1389,8 +1292,9 @@ class MicroscopeHyphaService:
     @schema_function(skip_self=True)
     def stop_scan(self, context=None):
         """
-        Stop the scanning of the well plate.
-        Returns: A string message
+        Abort the currently running well plate scan operation.
+        Returns: String confirmation message that scanning has stopped.
+        Notes: Deprecated - use scan_cancel() for unified scan operations instead.
         """
         try:
             # Check authentication
@@ -1408,8 +1312,9 @@ class MicroscopeHyphaService:
     @schema_function(skip_self=True)
     async def home_stage(self, context=None):
         """
-        Move the stage to home/zero position
-        Returns: A string message
+        Execute homing sequence to move stage to hardware home/zero position on all axes.
+        Returns: String confirmation message that stage has moved to home position in Z, Y, and X axes.
+        Notes: Runs in background thread to prevent event loop blocking. Stage moves sequentially in Z, Y, X order for safety.
         """
         try:
             # Check authentication
@@ -1431,8 +1336,9 @@ class MicroscopeHyphaService:
     @schema_function(skip_self=True)
     async def return_stage(self, context=None):
         """
-        Move the stage to the initial position for imaging.
-        Returns: A string message
+        Move the stage to the configured initial imaging position.
+        Returns: String confirmation message that stage has moved to the initial position.
+        Notes: Runs in background thread to prevent event loop blocking. Initial position is defined in configuration.
         """
 
         try:
@@ -1455,8 +1361,9 @@ class MicroscopeHyphaService:
     @schema_function(skip_self=True)
     async def move_to_loading_position(self, context=None):
         """
-        Move the stage to the loading position.
-        Returns: A  string message
+        Move the stage to the slide loading position for safe sample insertion/removal.
+        Returns: String confirmation message that stage has moved to loading position.
+        Notes: Runs in background thread to prevent event loop blocking. Loading position provides clearance for manual sample handling.
         """
 
         try:
@@ -1477,10 +1384,11 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def auto_focus(self, context=None):
+    async def contrast_autofocus(self, context=None):
         """
-        Do contrast-based autofocus
-        Returns: A string message
+        Perform contrast-based autofocus by analyzing image sharpness across Z positions.
+        Returns: String confirmation message that camera is auto-focused.
+        Notes: Scans through Z range, calculates focus metrics, and moves to optimal position. Best for samples with visible features.
         """
 
         try:
@@ -1488,7 +1396,7 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            await self.squidController.do_autofocus()
+            await self.squidController.contrast_autofocus()
             logger.info('The camera is auto-focused')
             return 'The camera is auto-focused'
         except Exception as e:
@@ -1496,10 +1404,11 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def do_laser_autofocus(self, context=None):
+    async def reflection_autofocus(self, context=None):
         """
-        Do reflection-based autofocus
-        Returns: A string message
+        Perform reflection-based (laser) autofocus using IR laser reflection from sample surface.
+        Returns: String confirmation message that camera is auto-focused.
+        Notes: Fast and accurate focus method using laser displacement sensor. Requires prior reference setting. Best for flat samples.
         """
 
         try:
@@ -1507,7 +1416,7 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            await self.squidController.do_laser_autofocus()
+            await self.squidController.reflection_autofocus()
             logger.info('The camera is auto-focused')
             return 'The camera is auto-focused'
         except Exception as e:
@@ -1515,10 +1424,11 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def set_laser_reference(self, context=None):
+    async def autofocus_set_reflection_reference(self, context=None):
         """
-        Set the reference of the laser
-        Returns: A string message
+        Calibrate the reflection autofocus system by setting current Z position as focus reference.
+        Returns: String confirmation message that laser reference is set.
+        Notes: Must be called at a focused position before using reflection_autofocus(). Reference is maintained until next calibration.
         """
 
         try:
@@ -1542,10 +1452,11 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def navigate_to_well(self, row: str=Field('A', description="Row number of the well position (e.g., 'A')"), col: int=Field(1, description="Column number of the well position"), wellplate_type: str=Field('96', description="Type of the well plate (e.g., '6', '12', '24', '96', '384')"), context=None):
+    async def navigate_to_well(self, row: str=Field('A', description="Well row letter (e.g., 'A', 'B', 'C', ... 'H' for 96-well)"), col: int=Field(1, description="Well column number (e.g., 1-12 for 96-well)"), well_plate_type: str=Field('96', description="Well plate format: '6', '12', '24', '96', or '384'"), context=None):
         """
-        Navigate to the specified well position in the well plate.
-        Returns: A string message
+        Navigate the stage to the center of a specific well in the well plate.
+        Returns: String confirmation message with the well position (e.g., 'The stage moved to well position (A,1)').
+        Notes: Runs in background thread. Well coordinates are automatically calculated based on standard plate dimensions.
         """
 
         try:
@@ -1553,8 +1464,8 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            if wellplate_type is None:
-                wellplate_type = '96'
+            if well_plate_type is None:
+                well_plate_type = '96'
             # Run the blocking move_to_well operation in a separate thread executor
             # This prevents the asyncio event loop from being blocked during stage movement
             await asyncio.get_event_loop().run_in_executor(
@@ -1562,7 +1473,7 @@ class MicroscopeHyphaService:
                 self.squidController.move_to_well,
                 row,
                 col,
-                wellplate_type
+                well_plate_type
             )
             logger.info(f'The stage moved to well position ({row},{col})')
             return f'The stage moved to well position ({row},{col})'
@@ -1641,7 +1552,7 @@ class MicroscopeHyphaService:
         """Navigate to a well position in the well plate."""
         row: str = Field(..., description="Row number of the well position (e.g., 'A')")
         col: int = Field(..., description="Column number of the well position")
-        wellplate_type: str = Field('96', description="Type of the well plate (e.g., '6', '12', '24', '96', '384')")
+        well_plate_type: str = Field('96', description="Type of the well plate (e.g., '6', '12', '24', '96', '384')")
 
     class MoveToLoadingPositionInput(BaseModel):
         """Move the stage to the loading position."""
@@ -1678,7 +1589,7 @@ class MicroscopeHyphaService:
 
     class GetCurrentWellLocationInput(BaseModel):
         """Get the current well location based on the stage position."""
-        wellplate_type: str = Field('96', description="Type of the well plate (e.g., '6', '12', '24', '96', '384')")
+        well_plate_type: str = Field('96', description="Type of the well plate (e.g., '6', '12', '24', '96', '384')")
 
     class GetMicroscopeConfigurationInput(BaseModel):
         """Get microscope configuration information in JSON format."""
@@ -1694,7 +1605,7 @@ class MicroscopeHyphaService:
     
     class SetFilterWheelPositionInput(BaseModel):
         """Set filter wheel to a specific position."""
-        position: int = Field(..., description="Filter position (1-8)", ge=1, le=8)
+        position: int = Field(..., description="Filter position (range: 1-8)", ge=1, le=8)
     
     class SwitchObjectiveInput(BaseModel):
         """Switch to a specific objective."""
@@ -1745,8 +1656,8 @@ class MicroscopeHyphaService:
         result = self.move_to_position(x, y, z, context)
         return result['message']
 
-    async def auto_focus_schema(self, config: AutoFocusInput, context=None):
-        await self.auto_focus(context)
+    async def contrast_autofocus_schema(self, config: AutoFocusInput, context=None):
+        await self.contrast_autofocus(context)
         return "Auto-focus completed."
 
     async def snap_image_schema(self, config: SnapImageInput, context=None):
@@ -1754,7 +1665,7 @@ class MicroscopeHyphaService:
         return f"![Image]({image_url})"
 
     async def navigate_to_well_schema(self, config: NavigateToWellInput, context=None):
-        await self.navigate_to_well(config.row, config.col, config.wellplate_type, context)
+        await self.navigate_to_well(config.row, config.col, config.well_plate_type, context)
         return f'The stage moved to well position ({config.row},{config.col})'
 
     async def inspect_tool_schema(self, config: InspectToolInput, context=None):
@@ -1769,6 +1680,11 @@ class MicroscopeHyphaService:
         response = await self.return_stage(context)
         return {"result": response}
 
+    async def move_to_loading_position_schema(self, config: MoveToLoadingPositionInput, context=None):
+        """Move the stage to the loading position with schema validation."""
+        response = await self.MoveToLoadingPositionInput(context)
+        return {"result": response}
+
     def set_illumination_schema(self, config: SetIlluminationInput, context=None):
         response = self.set_illumination(config.channel, config.intensity, context)
         return {"result": response}
@@ -1777,12 +1693,12 @@ class MicroscopeHyphaService:
         response = self.set_camera_exposure(config.channel, config.exposure_time, context)
         return {"result": response}
 
-    async def do_laser_autofocus_schema(self, context=None):
-        response = await self.do_laser_autofocus(context)
+    async def reflection_autofocus_schema(self, context=None):
+        response = await self.reflection_autofocus(context)
         return {"result": response}
 
-    async def set_laser_reference_schema(self, context=None):
-        response = await self.set_laser_reference(context)
+    async def autofocus_set_reflection_reference_schema(self, context=None):
+        response = await self.autofocus_set_reflection_reference(context)
         return {"result": response}
 
     def get_status_schema(self, context=None):
@@ -1790,7 +1706,7 @@ class MicroscopeHyphaService:
         return {"result": response}
 
     def get_current_well_location_schema(self, config: GetCurrentWellLocationInput, context=None):
-        response = self.get_current_well_location(config.wellplate_type, context)
+        response = self.get_current_well_location(config.well_plate_type, context)
         return {"result": response}
 
     def get_microscope_configuration_schema(self, config: GetMicroscopeConfigurationInput, context=None):
@@ -1803,15 +1719,15 @@ class MicroscopeHyphaService:
             "move_to_position": self.MoveToPositionInput.model_json_schema(),
             "home_stage": self.HomeStageInput.model_json_schema(),
             "return_stage": self.ReturnStageInput.model_json_schema(),
-            "auto_focus": self.AutoFocusInput.model_json_schema(),
+            "contrast_autofocus": self.AutoFocusInput.model_json_schema(),
             "snap_image": self.SnapImageInput.model_json_schema(),
             "inspect_tool": self.InspectToolInput.model_json_schema(),
             "load_position": self.MoveToLoadingPositionInput.model_json_schema(),
             "navigate_to_well": self.NavigateToWellInput.model_json_schema(),
             "set_illumination": self.SetIlluminationInput.model_json_schema(),
             "set_camera_exposure": self.SetCameraExposureInput.model_json_schema(),
-            "do_laser_autofocus": self.DoLaserAutofocusInput.model_json_schema(),
-            "set_laser_reference": self.SetLaserReferenceInput.model_json_schema(),
+            "reflection_autofocus": self.DoLaserAutofocusInput.model_json_schema(),
+            "autofocus_set_reflection_reference": self.SetLaserReferenceInput.model_json_schema(),
             "get_status": self.GetStatusInput.model_json_schema(),
             "get_current_well_location": self.GetCurrentWellLocationInput.model_json_schema(),
             "get_microscope_configuration": self.GetMicroscopeConfigurationInput.model_json_schema(),
@@ -1851,28 +1767,37 @@ class MicroscopeHyphaService:
         else:
             logger.info("Running in production mode: service will be protected and require context")
         
+        # Generate description based on simulation mode and microscope type
+        if self.is_simulation:
+            description = "A microscope control service for the Squid automated microscope operating in simulation mode. This service provides complete control over stage positioning, multi-channel illumination (brightfield and fluorescence), camera operations, autofocus systems, and well plate navigation. In simulation mode, the service uses virtual Zarr-based sample data to provide realistic microscope behavior without physical hardware, enabling development, testing, and demonstration of advanced microscopy workflows including automated scanning, image stitching, and multi-channel fluorescence imaging."
+        else:
+            if self.is_squid_plus:
+                description = "A microscope control service for the Squid+ automated microscope with advanced hardware integration. This service provides real-time control over precision stage positioning, multi-channel illumination (brightfield and fluorescence), high-resolution camera operations, dual autofocus systems (reflection and contrast-based), and automated well plate navigation. The Squid+ system includes motorized filter wheels, objective switchers, and enhanced optics for advanced microscopy applications including automated scanning, image stitching, and multi-channel fluorescence imaging with professional-grade hardware control."
+            else:
+                description = "A microscope control service for the Squid automated microscope with real hardware integration. This service provides real-time control over precision stage positioning, multi-channel illumination (brightfield and fluorescence), high-resolution camera operations, dual autofocus systems (reflection and contrast-based), and automated well plate navigation. The system enables advanced microscopy workflows including automated scanning, image stitching, and multi-channel fluorescence imaging with professional-grade hardware control and real-time feedback."
+
         service_config = {
             "name": "Microscope Control Service",
             "id": service_id,
+            "description": description,
             "config": {
                 "visibility": visibility,
                 "require_context": require_context,  # Always require context
                 "run_in_executor": run_in_executor
             },
-            "type": "echo",
+            "type": "service",
             "ping": self.ping,
             "is_service_healthy": self.is_service_healthy,
             "move_by_distance": self.move_by_distance,
             "snap": self.snap,
             "one_new_frame": self.one_new_frame,
             "get_video_frame": self.get_video_frame,
-            "off_illumination": self.close_illumination,
-            "on_illumination": self.open_illumination,
+            "turn_off_illumination": self.turn_off_illumination,
+            "turn_on_illumination": self.turn_on_illumination,
             "set_illumination": self.set_illumination,
             "set_camera_exposure": self.set_camera_exposure,
-            "scan_well_plate": self.scan_well_plate,
-            "scan_well_plate_simulated": self.scan_well_plate_simulated,
-            "stop_scan": self.stop_scan,
+            "scan_plate_save_raw_images": self.scan_plate_save_raw_images,
+            "scan_plate_save_raw_images_simulated": self.scan_plate_save_raw_images_simulated,
             "home_stage": self.home_stage,
             "return_stage": self.return_stage,
             "navigate_to_well": self.navigate_to_well,
@@ -1880,24 +1805,27 @@ class MicroscopeHyphaService:
             "move_to_loading_position": self.move_to_loading_position,
             "set_simulated_sample_data_alias": self.set_simulated_sample_data_alias,
             "get_simulated_sample_data_alias": self.get_simulated_sample_data_alias,
-            "auto_focus": self.auto_focus,
-            "do_laser_autofocus": self.do_laser_autofocus,
-            "set_laser_reference": self.set_laser_reference,
+            "contrast_autofocus": self.contrast_autofocus,
+            "reflection_autofocus": self.reflection_autofocus,
+            "autofocus_set_reflection_reference": self.autofocus_set_reflection_reference,
             "get_status": self.get_status,
             "update_parameters_from_client": self.update_parameters_from_client,
             "get_chatbot_url": self.get_chatbot_url,
             "adjust_video_frame": self.adjust_video_frame,
-            "start_video_buffering": self.start_video_buffering_api,
-            "stop_video_buffering": self.stop_video_buffering_api,
+            "start_video_buffering": self.start_video_buffering,
+            "stop_video_buffering": self.stop_video_buffering,
             "get_video_buffering_status": self.get_video_buffering_status,
             "set_video_fps": self.set_video_fps,
             "get_current_well_location": self.get_current_well_location,
             "get_microscope_configuration": self.get_microscope_configuration,
             "set_stage_velocity": self.set_stage_velocity,
+            # Unified Scan API
+            "scan_start": self.scan_start,
+            "scan_get_status": self.scan_get_status,
+            "scan_cancel": self.scan_cancel,
             # Stitching functions
-            "normal_scan_with_stitching": self.normal_scan_with_stitching,
-            "quick_scan_with_stitching": self.quick_scan_with_stitching,
-            "stop_scan_and_stitching": self.stop_scan_and_stitching,
+            "scan_region_to_zarr": self.scan_region_to_zarr,
+            "quick_scan_brightfield_to_zarr": self.quick_scan_brightfield_to_zarr,
             "get_stitched_region": self.get_stitched_region,
             # Experiment management functions (replaces zarr fileset management)
             "create_experiment": self.create_experiment,
@@ -1911,7 +1839,7 @@ class MicroscopeHyphaService:
             "list_microscope_galleries": self.list_microscope_galleries,
             "list_gallery_datasets": self.list_gallery_datasets,
             # Offline processing functions
-            "offline_stitch_and_upload_timelapse": self.offline_stitch_and_upload_timelapse,
+            "process_timelapse_offline": self.process_timelapse_offline,
         }
         
         # Conditionally register Squid+ specific endpoints
@@ -1958,17 +1886,17 @@ class MicroscopeHyphaService:
             "tools": {
                 "move_by_distance": self.move_by_distance_schema,
                 "move_to_position": self.move_to_position_schema,
-                "auto_focus": self.auto_focus_schema,
+                "contrast_autofocus": self.contrast_autofocus_schema,
                 "snap_image": self.snap_image_schema,
                 "home_stage": self.home_stage_schema,
                 "return_stage": self.return_stage_schema,
-                "load_position": self.move_to_loading_position,
+                "load_position": self.move_to_loading_position_schema,
                 "navigate_to_well": self.navigate_to_well_schema,
                 "inspect_tool": self.inspect_tool_schema,
                 "set_illumination": self.set_illumination_schema,
                 "set_camera_exposure": self.set_camera_exposure_schema,
-                "do_laser_autofocus": self.do_laser_autofocus_schema,
-                "set_laser_reference": self.set_laser_reference_schema,
+                "reflection_autofocus": self.reflection_autofocus_schema,
+                "autofocus_set_reflection_reference": self.autofocus_set_reflection_reference_schema,
                 "get_status": self.get_status_schema,
                 "get_current_well_location": self.get_current_well_location_schema,
                 "get_microscope_configuration": self.get_microscope_configuration_schema,
@@ -2130,57 +2058,57 @@ class MicroscopeHyphaService:
 
         self.server = server
 
-        # Setup zarr artifact manager for dataset upload functionality
+        # Setup artifact manager for dataset and snapshot upload functionality
         try:
             from .hypha_tools.artifact_manager.artifact_manager import (
                 SquidArtifactManager,
             )
-            self.zarr_artifact_manager = SquidArtifactManager()
+            self.artifact_manager = SquidArtifactManager()
 
-            # Connect to agent-lens workspace for zarr uploads
-            zarr_token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
-            if zarr_token:
-                zarr_server = await connect_to_server({
+            # Connect to agent-lens workspace for artifact uploads (zarr datasets + snapshots)
+            artifact_token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
+            if artifact_token:
+                artifact_server = await connect_to_server({
                     "server_url": "https://hypha.aicell.io",
-                    "token": zarr_token,
+                    "token": artifact_token,
                     "workspace": "agent-lens",
                     "ping_interval": 30
                 })
-                await self.zarr_artifact_manager.connect_server(zarr_server)
-                logger.info("Zarr artifact manager initialized successfully")
+                await self.artifact_manager.connect_server(artifact_server)
+                logger.info("Artifact manager initialized successfully")
 
-                # Pass the zarr artifact manager to the squid controller
-                self.squidController.zarr_artifact_manager = self.zarr_artifact_manager
-                logger.info("Zarr artifact manager passed to squid controller")
+                # Pass the artifact manager to the squid controller for zarr uploads
+                self.squidController.zarr_artifact_manager = self.artifact_manager
+                logger.info("Artifact manager passed to squid controller")
             else:
-                logger.warning("AGENT_LENS_WORKSPACE_TOKEN not found, zarr upload functionality disabled")
-                self.zarr_artifact_manager = None
+                logger.warning("AGENT_LENS_WORKSPACE_TOKEN not found, artifact upload functionality disabled")
+                self.artifact_manager = None
         except Exception as e:
-            logger.warning(f"Failed to initialize zarr artifact manager: {e}")
-            self.zarr_artifact_manager = None
+            logger.warning(f"Failed to initialize artifact manager: {e}")
+            self.artifact_manager = None
+
+        # Initialize snapshot manager if artifact manager is available
+        if self.artifact_manager:
+            try:
+                self.snapshot_manager = SnapshotManager(self.artifact_manager)
+                logger.info("Snapshot manager initialized successfully")
+            except Exception as e:
+                logger.warning(f"Failed to initialize snapshot manager: {e}")
+                self.snapshot_manager = None
+        else:
+            self.snapshot_manager = None
+            logger.warning("Snapshot manager not initialized (artifact manager unavailable)")
 
         if self.is_simulation:
             await self.start_hypha_service(self.server, service_id=self.service_id)
-            datastore_id = f'data-store-simu-{self.service_id}'
             # Shorten chatbot service ID to avoid OpenAI API limits
             short_service_id = self.service_id[:20] if len(self.service_id) > 20 else self.service_id
             chatbot_id = f"sq-cb-simu-{short_service_id}"
         else:
             await self.start_hypha_service(self.server, service_id=self.service_id)
-            datastore_id = f'data-store-real-{self.service_id}'
             # Shorten chatbot service ID to avoid OpenAI API limits
             short_service_id = self.service_id[:20] if len(self.service_id) > 20 else self.service_id
             chatbot_id = f"sq-cb-real-{short_service_id}"
-
-        self.datastore = HyphaDataStore()
-        try:
-            await self.datastore.setup(remote_server, service_id=datastore_id)
-        except TypeError as e:
-            if "Future" in str(e):
-                config = await asyncio.wrap_future(server.config)
-                await self.datastore.setup(remote_server, service_id=datastore_id, config=config)
-            else:
-                raise e
 
         chatbot_server_url = "https://chat.bioimage.io"
         try:
@@ -2211,7 +2139,7 @@ class MicroscopeHyphaService:
         logger.info("ZarrImageManager initialized successfully for health check")
         return camera.zarr_image_manager
 
-    async def start_video_buffering(self):
+    async def _start_video_buffering_internal(self):
         """Start the background frame acquisition task for video buffering"""
         if self.frame_acquisition_running:
             logger.info("Video buffering already running")
@@ -2222,7 +2150,7 @@ class MicroscopeHyphaService:
         self.frame_acquisition_task = asyncio.create_task(self._background_frame_acquisition())
         logger.info("Video buffering started")
 
-    async def stop_video_buffering(self):
+    async def _stop_video_buffering_internal(self):
         """Stop the background frame acquisition task"""
         if not self.frame_acquisition_running:
             logger.info("Video buffering not running")
@@ -2323,13 +2251,13 @@ class MicroscopeHyphaService:
                         consecutive_failures += 1
                         logger.warning(f"Camera frame acquisition returned None - camera may be overloaded (failure #{consecutive_failures})")
                         # Create placeholder frame on None return
-                        placeholder_frame = self._create_placeholder_frame(
+                        placeholder_frame = VideoFrameProcessor._create_placeholder_frame(
                             self.buffer_frame_width, self.buffer_frame_height, "Camera Overloaded"
                         )
-                        compressed_placeholder = self._encode_frame_jpeg(placeholder_frame, quality=85)
+                        compressed_placeholder = VideoFrameProcessor.encode_frame_jpeg(placeholder_frame, quality=85)
 
                         # Calculate gray level statistics for placeholder frame
-                        placeholder_gray_stats = self._calculate_gray_level_statistics(placeholder_frame)
+                        placeholder_gray_stats = VideoFrameProcessor._calculate_gray_level_statistics(placeholder_frame)
 
                         # Create placeholder metadata
                         placeholder_metadata = {
@@ -2355,8 +2283,9 @@ class MicroscopeHyphaService:
                         # LATENCY MEASUREMENT: Start timing image processing
                         T_process_start = time.time()
 
-                        processed_frame, gray_level_stats = self._process_raw_frame(
-                            raw_frame, frame_width=self.buffer_frame_width, frame_height=self.buffer_frame_height
+                        processed_frame, gray_level_stats = VideoFrameProcessor.process_raw_frame(
+                            raw_frame, frame_width=self.buffer_frame_width, frame_height=self.buffer_frame_height,
+                            video_contrast_min=self.video_contrast_min, video_contrast_max=self.video_contrast_max
                         )
 
                         # LATENCY MEASUREMENT: End timing image processing
@@ -2366,7 +2295,7 @@ class MicroscopeHyphaService:
                         T_compress_start = time.time()
 
                         # Compress frame for efficient storage and transmission
-                        compressed_frame = self._encode_frame_jpeg(processed_frame, quality=85)
+                        compressed_frame = VideoFrameProcessor.encode_frame_jpeg(processed_frame, quality=85)
 
                         # LATENCY MEASUREMENT: End timing JPEG compression
                         T_compress_complete = time.time()
@@ -2427,13 +2356,13 @@ class MicroscopeHyphaService:
                     consecutive_failures += 1
                     logger.error(f"Error in background frame acquisition: {e}")
                     # Create placeholder frame on error
-                    placeholder_frame = self._create_placeholder_frame(
+                    placeholder_frame = VideoFrameProcessor._create_placeholder_frame(
                         self.buffer_frame_width, self.buffer_frame_height, f"Acquisition Error: {str(e)}"
                     )
-                    compressed_placeholder = self._encode_frame_jpeg(placeholder_frame, quality=85)
+                    compressed_placeholder = VideoFrameProcessor.encode_frame_jpeg(placeholder_frame, quality=85)
 
                     # Calculate gray level statistics for placeholder frame
-                    placeholder_gray_stats = self._calculate_gray_level_statistics(placeholder_frame)
+                    placeholder_gray_stats = VideoFrameProcessor._calculate_gray_level_statistics(placeholder_frame)
 
                     # Create placeholder metadata for error case
                     error_metadata = {
@@ -2461,226 +2390,19 @@ class MicroscopeHyphaService:
 
         logger.info("Background frame acquisition stopped")
 
-    def _process_raw_frame(self, raw_frame, frame_width=750, frame_height=750):
-        """Process raw frame for video streaming - OPTIMIZED"""
-        try:
-            # OPTIMIZATION 1: Crop FIRST, then resize to reduce data for all subsequent operations
-            crop_height = CONFIG.ACQUISITION.CROP_HEIGHT
-            crop_width = CONFIG.ACQUISITION.CROP_WIDTH
-            height, width = raw_frame.shape[:2]  # Support both grayscale and color images
-            start_x = width // 2 - crop_width // 2
-            start_y = height // 2 - crop_height // 2
 
-            # Ensure crop coordinates are within bounds
-            start_x = max(0, start_x)
-            start_y = max(0, start_y)
-            end_x = min(width, start_x + crop_width)
-            end_y = min(height, start_y + crop_height)
-
-            cropped_frame = raw_frame[start_y:end_y, start_x:end_x]
-
-            # Now resize the cropped frame to target dimensions
-            if cropped_frame.shape[:2] != (frame_height, frame_width):
-                # Use INTER_AREA for downsampling (faster than INTER_LINEAR)
-                processed_frame = cv2.resize(cropped_frame, (frame_width, frame_height), interpolation=cv2.INTER_AREA)
-            else:
-                processed_frame = cropped_frame.copy()
-
-            # Calculate gray level statistics on original frame BEFORE min/max adjustments
-            gray_level_stats = self._calculate_gray_level_statistics(processed_frame)
-
-            # OPTIMIZATION 2: Robust contrast adjustment (fixed)
-            min_val = self.video_contrast_min
-            max_val = self.video_contrast_max
-
-            if max_val is None:
-                if processed_frame.dtype == np.uint16:
-                    max_val = 65535
-                else:
-                    max_val = 255
-
-            # OPTIMIZATION 3: Improved contrast scaling with proper range handling
-            if max_val > min_val:
-                # Clip values to the specified range
-                processed_frame = np.clip(processed_frame, min_val, max_val)
-
-                # Scale to 0-255 range using float for precision, then convert to uint8
-                if max_val > min_val:
-                    # Use float32 for accurate scaling, then convert to uint8
-                    processed_frame = ((processed_frame.astype(np.float32) - min_val) / (max_val - min_val) * 255).astype(np.uint8)
-                else:
-                    # Edge case: min_val == max_val
-                    processed_frame = np.full_like(processed_frame, 127, dtype=np.uint8)
-            else:
-                # Edge case: max_val <= min_val, return mid-gray
-                height, width = processed_frame.shape[:2]
-                processed_frame = np.full((height, width), 127, dtype=np.uint8)
-
-            # Ensure we have uint8 output
-            if processed_frame.dtype != np.uint8:
-                processed_frame = processed_frame.astype(np.uint8)
-
-            # OPTIMIZATION 4: Fast color space conversion
-            if len(processed_frame.shape) == 2:
-                # Direct array manipulation is faster than cv2.cvtColor for grayscale->RGB
-                processed_frame = np.stack([processed_frame] * 3, axis=2)
-            elif processed_frame.shape[2] == 1:
-                processed_frame = np.repeat(processed_frame, 3, axis=2)
-
-            return processed_frame, gray_level_stats
-
-        except Exception as e:
-            logger.error(f"Error processing frame: {e}")
-            placeholder_frame = self._create_placeholder_frame(frame_width, frame_height, f"Processing Error: {str(e)}")
-            placeholder_stats = self._calculate_gray_level_statistics(placeholder_frame)
-            return placeholder_frame, placeholder_stats
-
-    def _create_placeholder_frame(self, width, height, message="No Frame Available"):
-        """Create a placeholder frame with error message"""
-        placeholder_img = np.zeros((height, width, 3), dtype=np.uint8)
-        cv2.putText(placeholder_img, message, (10, height//2),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (128, 128, 128), 2)
-        return placeholder_img
-
-    def _decode_frame_jpeg(self, frame_data):
+    def decode_video_frame(self, frame_data):
         """
-        Decode compressed frame data back to numpy array
+        Decode compressed video frame data back to numpy array.
+        This is a public method for testing and external use.
         
         Args:
-            frame_data: dict from _encode_frame_jpeg() or get_video_frame()
+            frame_data: dict with compressed frame info from get_video_frame()
         
         Returns:
             numpy array: RGB image data
         """
-        try:
-            if frame_data['format'] == 'jpeg':
-                # Decode JPEG data
-                nparr = np.frombuffer(frame_data['data'], np.uint8)
-                bgr_frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-                if bgr_frame is not None:
-                    # Convert BGR back to RGB
-                    return cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
-            elif frame_data['format'] == 'raw':
-                # Raw numpy data
-                height = frame_data.get('height', 750)
-                width = frame_data.get('width', 750)
-                return np.frombuffer(frame_data['data'], dtype=np.uint8).reshape((height, width, 3))
-        except Exception as e:
-            logger.error(f"Error decoding frame: {e}")
-
-        # Return placeholder on error
-        width = frame_data.get('width', self.buffer_frame_width)
-        height = frame_data.get('height', self.buffer_frame_height)
-        return self._create_placeholder_frame(width, height, "Decode Error")
-
-    def _calculate_gray_level_statistics(self, rgb_frame):
-        """Calculate comprehensive gray level statistics for microscope analysis"""
-        try:
-            import numpy as np
-
-            # Convert RGB to grayscale for analysis (standard luminance formula)
-            if len(rgb_frame.shape) == 3:
-                # RGB to grayscale: Y = 0.299*R + 0.587*G + 0.114*B
-                gray_frame = np.dot(rgb_frame[...,:3], [0.299, 0.587, 0.114])
-            else:
-                gray_frame = rgb_frame
-
-            # Ensure we have a valid grayscale image
-            if gray_frame.size == 0:
-                return None
-
-            # Convert to 0-100% range for analysis
-            gray_normalized = (gray_frame / 255.0) * 100.0
-
-            # Calculate comprehensive statistics
-            stats = {
-                'mean_percent': float(np.mean(gray_normalized)),
-                'std_percent': float(np.std(gray_normalized)),
-                'min_percent': float(np.min(gray_normalized)),
-                'max_percent': float(np.max(gray_normalized)),
-                'median_percent': float(np.median(gray_normalized)),
-                'percentiles': {
-                    'p5': float(np.percentile(gray_normalized, 5)),
-                    'p25': float(np.percentile(gray_normalized, 25)),
-                    'p75': float(np.percentile(gray_normalized, 75)),
-                    'p95': float(np.percentile(gray_normalized, 95))
-                },
-                'histogram': {
-                    'bins': 20,  # 20 bins for 0-100% range (5% per bin)
-                    'counts': [],
-                    'bin_edges': []
-                }
-            }
-
-            # Calculate histogram (20 bins from 0-100%)
-            hist_counts, bin_edges = np.histogram(gray_normalized, bins=20, range=(0, 100))
-            stats['histogram']['counts'] = hist_counts.tolist()
-            stats['histogram']['bin_edges'] = bin_edges.tolist()
-
-            # Additional microscope-specific metrics
-            stats['dynamic_range_percent'] = stats['max_percent'] - stats['min_percent']
-            stats['contrast_ratio'] = stats['std_percent'] / stats['mean_percent'] if stats['mean_percent'] > 0 else 0
-
-            # Exposure quality indicators
-            stats['exposure_quality'] = {
-                'underexposed_pixels_percent': float(np.sum(gray_normalized < 5) / gray_normalized.size * 100),
-                'overexposed_pixels_percent': float(np.sum(gray_normalized > 95) / gray_normalized.size * 100),
-                'well_exposed_pixels_percent': float(np.sum((gray_normalized >= 5) & (gray_normalized <= 95)) / gray_normalized.size * 100)
-            }
-
-            return stats
-
-        except Exception as e:
-            logger.warning(f"Error calculating gray level statistics: {e}")
-            return None
-
-    def _encode_frame_jpeg(self, frame, quality=85):
-        """
-        Encode frame to JPEG format for efficient network transmission
-        
-        Args:
-            frame: RGB numpy array
-            quality: JPEG quality (1-100, higher = better quality, larger size)
-        
-        Returns:
-            dict: {
-                'format': 'jpeg',
-                'data': bytes,
-                'size_bytes': int,
-                'compression_ratio': float
-            }
-        """
-        try:
-            # Convert RGB to BGR for OpenCV JPEG encoding
-            if len(frame.shape) == 3 and frame.shape[2] == 3:
-                bgr_frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-            else:
-                bgr_frame = frame
-
-            # Encode to JPEG with specified quality
-            encode_params = [cv2.IMWRITE_JPEG_QUALITY, quality]
-            success, encoded_img = cv2.imencode('.jpg', bgr_frame, encode_params)
-
-            if not success:
-                raise ValueError("Failed to encode frame to JPEG")
-
-            # Calculate compression statistics
-            original_size = frame.nbytes
-            compressed_size = len(encoded_img)
-            compression_ratio = original_size / compressed_size if compressed_size > 0 else 1.0
-
-            return {
-                'format': 'jpeg',
-                'data': encoded_img.tobytes(),
-                'size_bytes': compressed_size,
-                'compression_ratio': compression_ratio,
-                'original_size': original_size
-            }
-
-        except Exception as e:
-            logger.error(f"Error encoding frame to JPEG: {e}")
-            # Return uncompressed as fallback
-            raise e
+        return VideoFrameProcessor.decode_frame_jpeg(frame_data)
 
     async def _monitor_video_idle(self):
         """Monitor video request activity and stop buffering after idle timeout"""
@@ -2718,17 +2440,17 @@ class MicroscopeHyphaService:
         logger.info("Video idle monitoring stopped")
 
     @schema_function(skip_self=True)
-    def get_current_well_location(self, wellplate_type: str=Field('96', description="Type of the well plate (e.g., '6', '12', '24', '96', '384')"), context=None):
+    def get_current_well_location(self, well_plate_type: str=Field('96', description="Well plate format: '6', '12', '24', '96', or '384'"), context=None):
         """
-        Get the current well location based on the stage position.
-        Returns: Dictionary with well location information including row, column, well_id, and position status
+        Determine which well the stage is currently positioned over based on coordinates.
+        Returns: Dictionary with well row, column, well_id (e.g., 'A1'), and position_status ('in_well', 'between_wells', or 'outside_plate').
         """
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            well_info = self.squidController.get_well_from_position(wellplate_type)
+            well_info = self.squidController.get_well_from_position(well_plate_type)
             logger.info(f'Current well location: {well_info["well_id"]} ({well_info["position_status"]})')
             return well_info
         except Exception as e:
@@ -2783,11 +2505,10 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    def get_microscope_configuration(self, config_section: str = Field("all", description="Configuration section to retrieve ('all', 'camera', 'stage', 'illumination', 'acquisition', 'limits', 'hardware', 'wellplate', 'optics', 'autofocus', 'microscope_type')"), include_defaults: bool = Field(True, description="Whether to include default values from config.py"), context=None):
+    def get_microscope_configuration(self, config_section: str = Field("all", description="Configuration section: 'all', 'camera', 'stage', 'illumination', 'acquisition', 'limits', 'hardware', 'wellplate', 'optics', 'autofocus', or 'microscope_type'"), include_defaults: bool = Field(True, description="Include default values from config.py (True) or only user-configured values (False)"), context=None):
         """
-        Get microscope configuration information in JSON format.
-        Input: config_section: str = Field("all", description="Configuration section to retrieve ('all', 'camera', 'stage', 'illumination', 'acquisition', 'limits', 'hardware', 'wellplate', 'optics', 'autofocus', 'microscope_type')"), include_defaults: bool = Field(True, description="Whether to include default values from config.py")
-        Returns: Configuration data as a JSON object including microscope type ('Squid' or 'Squid+') and feature settings
+        Retrieve microscope hardware and software configuration parameters.
+        Returns: Dictionary with requested configuration section data including microscope type ('Squid' or 'Squid+'), hardware capabilities, and operational parameters.
         """
         try:
             # Check authentication
@@ -2817,7 +2538,7 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def get_canvas_chunk(self, x_mm: float = Field(..., description="X coordinate of the stage location in millimeters"), y_mm: float = Field(..., description="Y coordinate of the stage location in millimeters"), scale_level: int = Field(1, description="Scale level for the chunk (0-2, where 0 is highest resolution)"), context=None):
+    async def get_canvas_chunk(self, x_mm: float = Field(..., description="X coordinate of the stage location in millimeters"), y_mm: float = Field(..., description="Y coordinate of the stage location in millimeters"), scale_level: int = Field(1, description="Scale level for the chunk (range: 0-2, where 0 is highest resolution)"), context=None):
         """Get a canvas chunk based on microscope stage location (available only in simulation mode when not running locally)"""
 
         # Check if this function is available in current mode
@@ -2926,20 +2647,11 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    def set_stage_velocity(self, velocity_x_mm_per_s: Optional[float] = Field(None, description="Maximum velocity for X axis in mm/s (default: uses configuration value)"), velocity_y_mm_per_s: Optional[float] = Field(None, description="Maximum velocity for Y axis in mm/s (default: uses configuration value)"), context=None):
+    def set_stage_velocity(self, velocity_x_mm_per_s: Optional[float] = Field(None, description="Maximum X axis velocity in mm/s (None uses config default)"), velocity_y_mm_per_s: Optional[float] = Field(None, description="Maximum Y axis velocity in mm/s (None uses config default)"), context=None):
         """
-        Set the maximum velocity for X and Y stage axes.
-        
-        This function allows you to control how fast the microscope stage moves.
-        Lower velocities provide more precision but slower movement.
-        Higher velocities enable faster navigation but may reduce precision.
-        
-        Args:
-            velocity_x_mm_per_s: Maximum velocity for X axis in mm/s. If not specified, uses default from configuration.
-            velocity_y_mm_per_s: Maximum velocity for Y axis in mm/s. If not specified, uses default from configuration.
-            
-        Returns:
-            dict: Status and current velocity settings
+        Configure maximum stage movement velocities for X and Y axes.
+        Returns: Dictionary with success status and current velocity settings for both axes in mm/s.
+        Notes: Lower velocities increase precision but slow movement. Higher velocities enable faster navigation. Changes apply immediately.
         """
         try:
             # Check authentication
@@ -2957,23 +2669,14 @@ class MicroscopeHyphaService:
 
     @schema_function(skip_self=True)
     async def upload_zarr_dataset(self,
-                                experiment_name: str = Field(..., description="Name of the experiment to upload (this becomes the dataset name)"),
-                                description: str = Field("", description="Description of the dataset"),
-                                include_acquisition_settings: bool = Field(True, description="Whether to include current acquisition settings as metadata"),
+                                experiment_name: str = Field(..., description="Name of existing experiment to upload (becomes dataset name with timestamp)"),
+                                description: str = Field("", description="Optional human-readable description for the dataset"),
+                                include_acquisition_settings: bool = Field(True, description="Include microscope settings (channels, pixel size, wells) as dataset metadata (True recommended)"),
                                 context=None):
         """
-        Upload an experiment's well canvases as individual zip files to a single dataset in the artifact manager.
-        
-        This function uploads each well canvas from the experiment as a separate zip file
-        within a single dataset. The dataset name will be '{experiment_name}-{date and time}'.
-        
-        Args:
-            experiment_name: Name of the experiment to upload (becomes the dataset name)
-            description: Description of the dataset
-            include_acquisition_settings: Whether to include current acquisition settings as metadata
-            
-        Returns:
-            dict: Upload result information with details about uploaded well canvases
+        Upload all well canvases from an experiment as a single dataset to the artifact manager gallery.
+        Returns: Dictionary with success status, experiment name, dataset name (with timestamp), uploaded wells list, total well count, total size (MB), and acquisition settings.
+        Notes: Each well canvas uploads as separate zip file within one dataset. Dataset named '{experiment_name}-{date-time}'. Requires AGENT_LENS_WORKSPACE_TOKEN environment variable.
         """
 
         try:
@@ -2986,8 +2689,8 @@ class MicroscopeHyphaService:
                 raise Exception("Experiment manager not initialized. Start a scanning operation first to create data.")
 
             # Check if zarr artifact manager is available
-            if self.zarr_artifact_manager is None:
-                raise Exception("Zarr artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
+            if self.artifact_manager is None:
+                raise Exception("Artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
 
             # Get experiment information
             experiment_info = self.squidController.experiment_manager.get_experiment_info(experiment_name)
@@ -3020,7 +2723,7 @@ class MicroscopeHyphaService:
                     if well_name.startswith("well_"):
                         well_info = well_name[5:]  # "A1_96"
                         if "_" in well_info:
-                            well_part, wellplate_type = well_info.rsplit("_", 1)
+                            well_part, well_plate_type = well_info.rsplit("_", 1)
                             if len(well_part) >= 2:
                                 well_row = well_part[0]
                                 well_column = int(well_part[1:])
@@ -3029,7 +2732,7 @@ class MicroscopeHyphaService:
                                 temp_canvas = WellZarrCanvas(
                                     well_row=well_row,
                                     well_column=well_column,
-                                    wellplate_type=wellplate_type,
+                                    well_plate_type=well_plate_type,
                                     padding_mm=1.0,
                                     base_path=str(well_path.parent),
                                     pixel_size_xy_um=self.squidController.pixel_size_xy,
@@ -3048,7 +2751,7 @@ class MicroscopeHyphaService:
                                     "num_scales": export_info.get("num_scales"),
                                     "microscope_service_id": self.service_id,
                                     "experiment_name": experiment_name,
-                                    "wellplate_type": wellplate_type
+                                    "well_plate_type": well_plate_type
                                 }
                 except Exception as e:
                     logger.warning(f"Could not get detailed acquisition settings: {e}")
@@ -3085,7 +2788,7 @@ class MicroscopeHyphaService:
                     if well_name.startswith("well_"):
                         well_info_part = well_name[5:]  # "A1_96"
                         if "_" in well_info_part:
-                            well_part, wellplate_type = well_info_part.rsplit("_", 1)
+                            well_part, well_plate_type = well_info_part.rsplit("_", 1)
                             if len(well_part) >= 2:
                                 well_row = well_part[0]
                                 well_column = int(well_part[1:])
@@ -3094,7 +2797,7 @@ class MicroscopeHyphaService:
                                 temp_canvas = WellZarrCanvas(
                                     well_row=well_row,
                                     well_column=well_column,
-                                    wellplate_type=wellplate_type,
+                                    well_plate_type=well_plate_type,
                                     padding_mm=1.0,
                                     base_path=str(well_path.parent),
                                     pixel_size_xy_um=self.squidController.pixel_size_xy,
@@ -3118,7 +2821,7 @@ class MicroscopeHyphaService:
                                     "well_name": well_name,
                                     "well_row": well_row,
                                     "well_column": well_column,
-                                    "wellplate_type": wellplate_type,
+                                    "well_plate_type": well_plate_type,
                                     "size_mb": well_size_mb
                                 })
 
@@ -3146,7 +2849,7 @@ class MicroscopeHyphaService:
             if acquisition_settings:
                 acquisition_settings["wells"] = well_info_list
 
-            upload_result = await self.zarr_artifact_manager.upload_multiple_zip_files_to_dataset(
+            upload_result = await self.artifact_manager.upload_multiple_zip_files_to_dataset(
                 microscope_service_id=self.service_id,
                 experiment_id=experiment_name,
                 zarr_files_info=zarr_files_info,
@@ -3183,22 +2886,22 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def list_microscope_galleries(self, microscope_service_id: str = Field(..., description="Microscope service ID to list galleries for"), context=None):
+    async def list_microscope_galleries(self, microscope_service_id: str = Field(..., description="Microscope service ID to search for (e.g., 'microscope-control-squid-1')"), context=None):
         """
-        List all galleries (collections) available for a given microscope's service ID.
-        This includes both standard microscope galleries and experiment-based galleries.
-        Returns a list of gallery info dicts.
+        Retrieve all galleries (collections) associated with a specific microscope service.
+        Returns: Dictionary with success status, microscope service ID, list of gallery objects (each with alias, manifest, artifact ID), and total count.
+        Notes: Includes both standard galleries ('microscope-gallery-{id}') and experiment-based galleries (numbered prefix matching). Requires AGENT_LENS_WORKSPACE_TOKEN.
         """
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            if self.zarr_artifact_manager is None:
-                raise Exception("Zarr artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
+            if self.artifact_manager is None:
+                raise Exception("Artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
 
             # List all collections in the agent-lens workspace (top-level)
-            all_collections = await self.zarr_artifact_manager.navigate_collections(parent_id=None)
+            all_collections = await self.artifact_manager.navigate_collections(parent_id=None)
             galleries = []
 
             # Check if microscope service ID ends with a number
@@ -3234,33 +2937,33 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def list_gallery_datasets(self, gallery_id: str = Field(None, description="Gallery (collection) artifact ID, e.g. agent-lens/1-..."), microscope_service_id: str = Field(None, description="Microscope service ID (optional, used to find gallery if gallery_id not given)"), experiment_id: str = Field(None, description="Experiment ID (optional, used to find gallery if gallery_id not given)"), context=None):
+    async def list_gallery_datasets(self, gallery_id: Optional[str] = Field(None, description="Gallery artifact ID (e.g., 'agent-lens/1-...'). If None, searches using microscope_service_id or experiment_id"), microscope_service_id: Optional[str] = Field(None, description="Microscope service ID to locate gallery (alternative to gallery_id)"), experiment_id: Optional[str] = Field(None, description="Experiment ID to locate gallery (alternative to gallery_id)"), context=None):
         """
-        List all datasets in a gallery (collection).
-        You can specify the gallery by its artifact ID, or provide microscope_service_id and/or experiment_id to find the gallery.
-        Returns a list of datasets in the gallery.
+        List all datasets contained within a specific gallery (collection).
+        Returns: Dictionary with success status, gallery ID, gallery alias, gallery name, list of dataset objects, and total count.
+        Notes: Specify gallery by direct artifact ID OR by microscope_service_id/experiment_id for automatic lookup. Requires AGENT_LENS_WORKSPACE_TOKEN.
         """
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            if self.zarr_artifact_manager is None:
-                raise Exception("Zarr artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
+            if self.artifact_manager is None:
+                raise Exception("Artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
 
             # Find the gallery if not given
             gallery = None
             if gallery_id:
                 # Try to read the gallery directly
-                gallery = await self.zarr_artifact_manager._svc.read(artifact_id=gallery_id)
+                gallery = await self.artifact_manager._svc.read(artifact_id=gallery_id)
             else:
                 # Use microscope_service_id and/or experiment_id to find the gallery
                 if microscope_service_id is None and experiment_id is None:
                     raise Exception("You must provide either gallery_id, microscope_service_id, or experiment_id.")
-                gallery = await self.zarr_artifact_manager.create_or_get_microscope_gallery(
+                gallery = await self.artifact_manager.create_or_get_microscope_gallery(
                     microscope_service_id or '', experiment_id=experiment_id)
             # List datasets in the gallery
-            datasets = await self.zarr_artifact_manager._svc.list(gallery["id"])
+            datasets = await self.artifact_manager._svc.list(gallery["id"])
             return {
                 "success": True,
                 "gallery_id": gallery["id"],
@@ -3322,26 +3025,11 @@ class MicroscopeHyphaService:
         """Get available objectives with schema validation."""
         return self.get_available_objectives(context)
 
-    @schema_function(skip_self=True)
-    async def normal_scan_with_stitching(self, start_x_mm: float = Field(20, description="Starting X position in millimeters"),
-                                       start_y_mm: float = Field(20, description="Starting Y position in millimeters"),
-                                       Nx: int = Field(5, description="Number of positions in X direction"),
-                                       Ny: int = Field(5, description="Number of positions in Y direction"),
-                                       dx_mm: float = Field(0.9, description="Interval between positions in X (millimeters)"),
-                                       dy_mm: float = Field(0.9, description="Interval between positions in Y (millimeters)"),
-                                       illumination_settings: Optional[List[dict]] = Field(None, description="List of channel settings"),
-                                       do_contrast_autofocus: bool = Field(False, description="Whether to perform contrast-based autofocus"),
-                                       do_reflection_af: bool = Field(False, description="Whether to perform reflection-based autofocus"),
-                                       action_ID: str = Field('normal_scan_stitching', description="Identifier for this scan"),
-                                       timepoint: int = Field(0, description="Timepoint index for this scan (default 0)"),
-                                       experiment_name: Optional[str] = Field(None, description="Name of the experiment to use. If None, uses active experiment or 'default' as fallback"),
-                                       wells_to_scan: List[str] = Field(default_factory=lambda: ['A1'], description="List of wells to scan (e.g., ['A1', 'B2', 'C3'])"),
-                                       wellplate_type: str = Field('96', description="Well plate type ('6', '12', '24', '96', '384')"),
-                                       well_padding_mm: float = Field(1.0, description="Padding around well in mm"),
-                                       uploading: bool = Field(False, description="Enable upload after scanning is complete"),
-                                       context=None):
+    async def scan_region_to_zarr(self, start_x_mm: float = 20, start_y_mm: float = 20, Nx: int = 5, Ny: int = 5, dx_mm: float = 0.9, dy_mm: float = 0.9, illumination_settings: Optional[List[dict]] = None, do_contrast_autofocus: bool = False, do_reflection_af: bool = False, action_ID: str = 'normal_scan_stitching', timepoint: int = 0, experiment_name: Optional[str] = None, wells_to_scan: List[str] = None, well_plate_type: str = '96', well_padding_mm: float = 1.0, uploading: bool = False, context=None):
         """
-        Perform a normal scan with live stitching to OME-Zarr canvas using well-based approach.
+        DEPRECATED: Use scan_start() with saved_data_type='full_zarr' instead.
+        
+        Perform a region scan with live stitching to OME-Zarr canvas using well-based approach.
         The images are saved to well-specific zarr canvases within an experiment folder.
         
         Args:
@@ -3358,13 +3046,14 @@ class MicroscopeHyphaService:
             timepoint: Timepoint index for this scan (default 0)
             experiment_name: Name of the experiment to use. If None, uses active experiment or 'default' as fallback
             wells_to_scan: List of wells to scan (e.g., ['A1', 'B2', 'C3'])
-            wellplate_type: Well plate type ('6', '12', '24', '96', '384')
+            well_plate_type: Well plate type ('6', '12', '24', '96', '384')
             well_padding_mm: Padding around well in mm
             uploading: Enable upload after scanning is complete
             
         Returns:
             dict: Status of the scan
         """
+        logger.warning("DEPRECATED: scan_region_to_zarr is deprecated and will be removed in a future release. Use scan_start() with saved_data_type='full_zarr' instead.")
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -3373,8 +3062,12 @@ class MicroscopeHyphaService:
             # Set default illumination settings if not provided
             if illumination_settings is None:
                 illumination_settings = [{'channel': 'BF LED matrix full', 'intensity': 50, 'exposure_time': 100}]
+            
+            # Set default wells to scan if not provided
+            if wells_to_scan is None:
+                wells_to_scan = ['A1']
 
-            logger.info(f"Starting normal scan with stitching: {Nx}x{Ny} positions from ({start_x_mm}, {start_y_mm})")
+            logger.info(f"Starting region scan to Zarr: {Nx}x{Ny} positions from ({start_x_mm}, {start_y_mm})")
 
             # Check if video buffering is active and stop it during scanning
             video_buffering_was_active = self.frame_acquisition_running
@@ -3388,8 +3081,8 @@ class MicroscopeHyphaService:
             # Set scanning flag to prevent automatic video buffering restart during scan
             self.scanning_in_progress = True
 
-            # Perform the normal scan
-            await self.squidController.normal_scan_with_stitching(
+            # Perform the region scan to Zarr
+            await self.squidController.scan_region_to_zarr(
                 start_x_mm=start_x_mm,
                 start_y_mm=start_y_mm,
                 Nx=Nx,
@@ -3403,7 +3096,7 @@ class MicroscopeHyphaService:
                 timepoint=timepoint,
                 experiment_name=experiment_name,
                 wells_to_scan=wells_to_scan,
-                wellplate_type=wellplate_type,
+                well_plate_type=well_plate_type,
                 well_padding_mm=well_padding_mm
             )
 
@@ -3481,30 +3174,17 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to reset stitching canvas: {e}")
             raise e
 
-    @schema_function(skip_self=True)
-    async def quick_scan_with_stitching(self, wellplate_type: str = Field('96', description="Well plate type ('6', '12', '24', '96', '384')"),
-                                      exposure_time: float = Field(5, description="Camera exposure time in milliseconds (max 30ms)"),
-                                      intensity: float = Field(70, description="Brightfield LED intensity (0-100)"),
-                                      fps_target: int = Field(10, description="Target frame rate for acquisition (default 10fps)"),
-                                      action_ID: str = Field('quick_scan_stitching', description="Identifier for this scan"),
-                                      n_stripes: int = Field(4, description="Number of stripes per well (default 4)"),
-                                      stripe_width_mm: float = Field(4.0, description="Length of each stripe inside a well in mm (default 4.0)"),
-                                      dy_mm: float = Field(0.9, description="Y increment between stripes in mm (default 0.9)"),
-                                      velocity_scan_mm_per_s: float = Field(7.0, description="Stage velocity during stripe scanning in mm/s (default 7.0)"),
-                                      do_contrast_autofocus: bool = Field(False, description="Whether to perform contrast-based autofocus"),
-                                      do_reflection_af: bool = Field(False, description="Whether to perform reflection-based autofocus"),
-                                      experiment_name: Optional[str] = Field(None, description="Name of the experiment to use. If None, uses active experiment or 'default' as fallback"),
-                                      well_padding_mm: float = Field(1.0, description="Padding around each well in mm"),
-                                      uploading: bool = Field(False, description="Enable upload after scanning is complete"),
-                                      context=None):
+    async def quick_scan_brightfield_to_zarr(self, well_plate_type: str = '96', exposure_time: float = 5, intensity: float = 70, fps_target: int = 10, action_ID: str = 'quick_scan_stitching', n_stripes: int = 4, stripe_width_mm: float = 4.0, dy_mm: float = 0.9, velocity_scan_mm_per_s: float = 7.0, do_contrast_autofocus: bool = False, do_reflection_af: bool = False, experiment_name: Optional[str] = None, well_padding_mm: float = 1.0, uploading: bool = False, context=None):
         """
-        Perform a quick scan with live stitching to OME-Zarr canvas - brightfield only.
+        DEPRECATED: Use scan_start() with saved_data_type='quick_zarr' instead.
+        
+        Perform a quick brightfield scan with live stitching to OME-Zarr canvas.
         Uses 4-stripe x 4 mm scanning pattern with serpentine motion per well.
         Only supports brightfield channel with exposure time ≤ 30ms.
         Always uses well-based approach with individual canvases per well.
         
         Args:
-            wellplate_type: Well plate format ('6', '12', '24', '96', '384')
+            well_plate_type: Well plate format ('6', '12', '24', '96', '384')
             exposure_time: Camera exposure time in milliseconds (must be ≤ 30ms)
             intensity: Brightfield LED intensity (0-100)
             fps_target: Target frame rate for acquisition (default 10fps)
@@ -3522,6 +3202,7 @@ class MicroscopeHyphaService:
         Returns:
             dict: Status of the scan with performance metrics
         """
+        logger.warning("DEPRECATED: quick_scan_brightfield_to_zarr is deprecated and will be removed in a future release. Use scan_start() with saved_data_type='quick_zarr' instead.")
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -3531,7 +3212,7 @@ class MicroscopeHyphaService:
             if exposure_time > 30:
                 raise ValueError(f"Quick scan exposure time must not exceed 30ms (got {exposure_time}ms)")
 
-            logger.info(f"Starting quick scan with stitching: {wellplate_type} well plate, {n_stripes} stripes × {stripe_width_mm}mm, dy={dy_mm}mm, scan_velocity={velocity_scan_mm_per_s}mm/s, fps={fps_target}")
+            logger.info(f"Starting quick scan with stitching: {well_plate_type} well plate, {n_stripes} stripes × {stripe_width_mm}mm, dy={dy_mm}mm, scan_velocity={velocity_scan_mm_per_s}mm/s, fps={fps_target}")
 
             # Check if video buffering is active and stop it during scanning
             video_buffering_was_active = self.frame_acquisition_running
@@ -3548,9 +3229,9 @@ class MicroscopeHyphaService:
             # Record start time for performance metrics
             start_time = time.time()
 
-            # Perform the quick scan
-            await self.squidController.quick_scan_with_stitching(
-                wellplate_type=wellplate_type,
+            # Perform the quick brightfield scan to Zarr
+            await self.squidController.quick_scan_brightfield_to_zarr(
+                well_plate_type=well_plate_type,
                 exposure_time=exposure_time,
                 intensity=intensity,
                 fps_target=fps_target,
@@ -3577,8 +3258,8 @@ class MicroscopeHyphaService:
                 '384': {'rows': 16, 'cols': 24}
             }
 
-            # Convert wellplate_type to string to avoid ObjectProxy issues
-            wellplate_type_str = str(wellplate_type)
+            # Convert well_plate_type to string to avoid ObjectProxy issues
+            wellplate_type_str = str(well_plate_type)
             config = wellplate_configs.get(wellplate_type_str, wellplate_configs['96'])
             total_wells = config['rows'] * config['cols']
             total_stripes = total_wells * n_stripes
@@ -3602,7 +3283,7 @@ class MicroscopeHyphaService:
                 "success": True,
                 "message": "Quick scan with stitching completed successfully",
                 "scan_parameters": {
-                    "wellplate_type": wellplate_type_str,
+                    "well_plate_type": wellplate_type_str,
                     "wells_scanned": total_wells,
                     "stripes_per_well": n_stripes,
                     "stripe_width_mm": stripe_width_mm,
@@ -3642,81 +3323,29 @@ class MicroscopeHyphaService:
             logger.info("Quick scanning completed, video buffering auto-start is now re-enabled")
 
     @schema_function(skip_self=True)
-    def stop_scan_and_stitching(self, context=None):
-        """
-        Stop any ongoing scanning and stitching processes.
-        This will interrupt normal_scan_with_stitching and quick_scan_with_stitching if they are running.
-        
-        Returns:
-            dict: Status of the stop request
-        """
-        try:
-            # Check authentication
-            if context and not self.check_permission(context.get("user", {})):
-                raise Exception("User not authorized to access this service")
-
-            logger.info("Stop scan and stitching requested")
-
-            # Call the controller's stop method
-            result = self.squidController.stop_scan_and_stitching()
-
-            # Also reset the scanning flag at service level
-            if hasattr(self, 'scanning_in_progress'):
-                self.scanning_in_progress = False
-                logger.info("Service scanning flag reset")
-
-            return {
-                "success": True,
-                "message": "Scan stop requested - ongoing scans will be interrupted",
-                "controller_response": result
-            }
-
-        except Exception as e:
-            logger.error(f"Failed to stop scan and stitching: {e}")
-            raise e
-
-    @schema_function(skip_self=True)
-    def get_stitched_region(self, center_x_mm: float = Field(..., description="Center X position in absolute stage coordinates (mm)"),
-                           center_y_mm: float = Field(..., description="Center Y position in absolute stage coordinates (mm)"),
-                           width_mm: float = Field(5.0, description="Width of region in mm"),
-                           height_mm: float = Field(5.0, description="Height of region in mm"),
-                           wellplate_type: str = Field('96', description="Well plate type ('6', '12', '24', '96', '384')"),
-                           scale_level: int = Field(0, description="Scale level (0=full resolution, 1=1/4, 2=1/16, etc)"),
-                           channel_name: str = Field('BF LED matrix full', description="Channel names to retrieve and merge (comma-separated string or single channel name, e.g., 'BF LED matrix full' or 'BF LED matrix full,Fluorescence 488 nm Ex')"),
-                           timepoint: int = Field(0, description="Timepoint index to retrieve (default 0)"),
-                           well_padding_mm: float = Field(1.0, description="Padding around wells in mm"),
-                           output_format: str = Field('base64', description="Output format: 'base64' or 'array'"),
-                           experiment_name: str = Field(None, description="Name of the experiment to retrieve data from (default: None uses current experiment)"),
+    def get_stitched_region(self, center_x_mm: float = Field(..., description="Region center X in stage coordinates (mm)"),
+                           center_y_mm: float = Field(..., description="Region center Y in stage coordinates (mm)"),
+                           width_mm: float = Field(5.0, description="Region width in millimeters"),
+                           height_mm: float = Field(5.0, description="Region height in millimeters"),
+                           well_plate_type: str = Field('96', description="Well plate format: '6', '12', '24', '96', or '384'"),
+                           scale_level: int = Field(0, description="Pyramid scale level: 0=full, 1=1/4x, 2=1/16x, 3=1/64x, 4=1/256x, 5=1/1024x resolution"),
+                           channel_name: str = Field('BF LED matrix full', description="Channel name(s): single or comma-separated (e.g., 'BF LED matrix full' or 'BF LED matrix full,Fluorescence 488 nm Ex')"),
+                           timepoint: int = Field(0, description="Time-lapse timepoint index (0 for single timepoint)"),
+                           well_padding_mm: float = Field(1.0, description="Well boundary padding in millimeters"),
+                           output_format: str = Field('base64', description="Output format: 'base64' (PNG image) or 'array' (numpy list)"),
+                           experiment_name: Optional[str] = Field(None, description="Experiment name (None uses active experiment)"),
                            context=None):
         """
-        Get a stitched region that may span multiple wells by determining which wells 
-        are needed and combining their data. Supports merging multiple channels with proper colors.
-        
-        This function automatically determines which wells intersect with the requested region
-        and stitches together the data from multiple wells if necessary. When multiple channels
-        are specified, they are merged into a single RGB image using the channel color scheme.
-        
-        Args:
-            center_x_mm: Center X position in absolute stage coordinates (mm)
-            center_y_mm: Center Y position in absolute stage coordinates (mm)
-            width_mm: Width of region in mm
-            height_mm: Height of region in mm
-            wellplate_type: Well plate type ('6', '12', '24', '96', '384')
-            scale_level: Scale level (0=full resolution, 1=1/4, 2=1/16, etc)
-            channel_name: Channel names to retrieve and merge (comma-separated string or single channel name)
-            timepoint: Timepoint index to retrieve (default 0)
-            well_padding_mm: Padding around wells in mm
-            output_format: Output format ('base64' for compressed image, 'array' for numpy array)
-            
-        Returns:
-            dict: Retrieved stitched image data with metadata and region information
+        Extract and merge stitched image data from one or more wells at specified coordinates.
+        Returns: Dictionary with success status, base64 PNG or array data, shape, dtype, is_rgb flag, channels_used list, and region metadata.
+        Notes: Automatically spans multiple wells if region crosses boundaries. Multiple channels merge into RGB with channel-specific colors (BF=white, 405nm=blue, 488nm=green, 561nm=yellow, 638nm=red, 730nm=magenta).
         """
         try:
             # Log function entry with all parameters
             logger.info(f"get_stitched_region called with parameters:")
             logger.info(f"  center_x_mm={center_x_mm}, center_y_mm={center_y_mm}")
             logger.info(f"  width_mm={width_mm}, height_mm={height_mm}")
-            logger.info(f"  wellplate_type='{wellplate_type}', scale_level={scale_level}")
+            logger.info(f"  well_plate_type='{well_plate_type}', scale_level={scale_level}")
             logger.info(f"  channel_name='{channel_name}', timepoint={timepoint}")
             logger.info(f"  well_padding_mm={well_padding_mm}, output_format='{output_format}'")
             
@@ -3748,7 +3377,7 @@ class MicroscopeHyphaService:
                         "center_y_mm": center_y_mm,
                         "width_mm": width_mm,
                         "height_mm": height_mm,
-                        "wellplate_type": wellplate_type,
+                        "well_plate_type": well_plate_type,
                         "scale_level": scale_level,
                         "channels": channel_list,
                         "timepoint": timepoint,
@@ -3766,7 +3395,7 @@ class MicroscopeHyphaService:
                     center_y_mm=center_y_mm,
                     width_mm=width_mm,
                     height_mm=height_mm,
-                    wellplate_type=wellplate_type,
+                    well_plate_type=well_plate_type,
                     scale_level=scale_level,
                     channel_name=ch_name,
                     timepoint=timepoint,
@@ -3791,7 +3420,7 @@ class MicroscopeHyphaService:
                         "center_y_mm": center_y_mm,
                         "width_mm": width_mm,
                         "height_mm": height_mm,
-                        "wellplate_type": wellplate_type,
+                        "well_plate_type": well_plate_type,
                         "scale_level": scale_level,
                         "channels": channel_list,
                         "timepoint": timepoint,
@@ -3822,7 +3451,7 @@ class MicroscopeHyphaService:
                         "center_y_mm": center_y_mm,
                         "width_mm": width_mm,
                         "height_mm": height_mm,
-                        "wellplate_type": wellplate_type,
+                        "well_plate_type": well_plate_type,
                         "scale_level": scale_level,
                         "channels": channel_list,
                         "timepoint": timepoint,
@@ -3883,7 +3512,7 @@ class MicroscopeHyphaService:
                         "center_y_mm": center_y_mm,
                         "width_mm": width_mm,
                         "height_mm": height_mm,
-                        "wellplate_type": wellplate_type,
+                        "well_plate_type": well_plate_type,
                         "scale_level": scale_level,
                         "channels": channel_list,
                         "timepoint": timepoint,
@@ -3905,7 +3534,7 @@ class MicroscopeHyphaService:
                         "center_y_mm": center_y_mm,
                         "width_mm": width_mm,
                         "height_mm": height_mm,
-                        "wellplate_type": wellplate_type,
+                        "well_plate_type": well_plate_type,
                         "scale_level": scale_level,
                         "channels": channel_list,
                         "timepoint": timepoint,
@@ -3979,15 +3608,11 @@ class MicroscopeHyphaService:
             return None
 
     @schema_function(skip_self=True)
-    async def create_experiment(self, experiment_name: str = Field(..., description="Name for the new experiment"), context=None):
+    async def create_experiment(self, experiment_name: str = Field(..., description="Unique name for the new experiment folder"), context=None):
         """
-        Create a new experiment with the given name.
-        
-        Args:
-            experiment_name: Name for the new experiment
-            
-        Returns:
-            dict: Information about the created experiment
+        Create a new experiment container for organizing multi-well scanning data.
+        Returns: Dictionary with success status, experiment name, path, and creation timestamp.
+        Notes: Experiment becomes active automatically. All subsequent scans are saved to this experiment until changed.
         """
         try:
             # Check authentication
@@ -4004,10 +3629,8 @@ class MicroscopeHyphaService:
     @schema_function(skip_self=True)
     async def list_experiments(self, context=None):
         """
-        List all available experiments.
-        
-        Returns:
-            dict: List of experiments and their status
+        Retrieve all experiments in the workspace with their metadata.
+        Returns: Dictionary with list of experiments (name, path, size, well count), active experiment name, and total count.
         """
         try:
             # Check authentication
@@ -4022,15 +3645,11 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def set_active_experiment(self, experiment_name: str = Field(..., description="Name of the experiment to activate"), context=None):
+    async def set_active_experiment(self, experiment_name: str = Field(..., description="Name of existing experiment to make active"), context=None):
         """
-        Set the active experiment for operations.
-        
-        Args:
-            experiment_name: Name of the experiment to activate
-            
-        Returns:
-            dict: Information about the activated experiment
+        Designate an existing experiment as the active target for all subsequent scan operations.
+        Returns: Dictionary with success status, experiment name, and path.
+        Notes: All new scan data will be saved to this experiment until a different one is activated.
         """
         try:
             # Check authentication
@@ -4045,15 +3664,11 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def remove_experiment(self, experiment_name: str = Field(..., description="Name of the experiment to remove"), context=None):
+    async def remove_experiment(self, experiment_name: str = Field(..., description="Name of experiment to permanently delete"), context=None):
         """
-        Remove an experiment.
-        
-        Args:
-            experiment_name: Name of the experiment to remove
-            
-        Returns:
-            dict: Information about the removed experiment
+        Permanently delete an experiment and all its associated data from disk.
+        Returns: Dictionary with success status, deleted experiment name, and freed disk space.
+        Notes: This operation is irreversible. All well canvases and metadata will be permanently removed.
         """
         try:
             # Check authentication
@@ -4068,15 +3683,11 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def reset_experiment(self, experiment_name: str = Field(..., description="Name of the experiment to reset"), context=None):
+    async def reset_experiment(self, experiment_name: str = Field(..., description="Name of experiment to clear all data from"), context=None):
         """
-        Reset an experiment.
-        
-        Args:
-            experiment_name: Name of the experiment to reset
-            
-        Returns:
-            dict: Information about the reset experiment
+        Clear all scan data from an experiment while preserving the experiment container.
+        Returns: Dictionary with success status, experiment name, and confirmation that data was cleared.
+        Notes: Deletes all well canvases and resets to empty state. Experiment structure and metadata remain intact.
         """
         try:
             # Check authentication
@@ -4091,15 +3702,10 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def get_experiment_info(self, experiment_name: str = Field(..., description="Name of the experiment to retrieve information about"), context=None):
+    async def get_experiment_info(self, experiment_name: str = Field(..., description="Name of experiment to query"), context=None):
         """
-        Get information about an experiment.
-        
-        Args:
-            experiment_name: Name of the experiment to retrieve information about
-            
-        Returns:
-            dict: Information about the experiment
+        Retrieve detailed metadata and statistics for a specific experiment.
+        Returns: Dictionary with experiment name, path, total size, well canvas list (name, size, path), and well count.
         """
         try:
             # Check authentication
@@ -4114,35 +3720,16 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def offline_stitch_and_upload_timelapse(self,
-        experiment_id: str = Field(..., description="Experiment ID to process (prefix match for folder names)"),
-        upload_immediately: bool = Field(True, description="Upload each experiment run after stitching"),
-        cleanup_temp_files: bool = Field(True, description="Delete temporary zarr files after upload"),
-        use_parallel_wells: bool = Field(True, description="Process 3 wells in parallel (faster) or sequentially"),
+    async def process_timelapse_offline(self,
+        experiment_id: str = Field(..., description="Experiment ID prefix to search for matching folders (e.g., 'test-drug' matches 'test-drug-20250822T...')"),
+        upload_immediately: bool = Field(True, description="Upload each run to gallery immediately after stitching completes (True recommended)"),
+        cleanup_temp_files: bool = Field(True, description="Delete temporary zarr files after successful upload to save disk space (True recommended)"),
+        use_parallel_wells: bool = Field(True, description="Process 3 wells concurrently for faster completion (True=parallel, False=sequential)"),
         context=None):
         """
-        Process time-lapse experiment data offline: stitch images and upload to gallery.
-        
-        Finds all experiment run folders starting with experiment_id (e.g., 'test-drug-20250822T...'),
-        processes each run separately, and uploads each run as a dataset to a gallery
-        named 'experiment-{experiment_id}'.
-        
-        Each experiment run folder contains a single '0' subfolder with all the data that
-        is stitched together into well canvases and uploaded as one dataset.
-        
-        By default, processes 3 wells in parallel for faster processing. Upload only happens
-        after ALL wells in a folder are processed.
-        
-        **NEW: Runs in a separate thread to prevent blocking the main event loop and network disconnections.**
-        
-        Args:
-            experiment_id: Experiment ID to search for (e.g., 'test-drug')
-            upload_immediately: Whether to upload each run after stitching
-            cleanup_temp_files: Whether to delete temporary files after upload
-            use_parallel_wells: Whether to process 3 wells in parallel (faster) or sequentially
-        
-        Returns:
-            dict: Processing results with gallery and dataset information
+        Process time-lapse experiment raw images offline by stitching into OME-Zarr and uploading to gallery.
+        Returns: Dictionary with success status, total datasets processed, gallery information, processing mode (parallel/sequential), and per-run details.
+        Notes: Runs in background thread to prevent network disconnections. Searches for all folders matching experiment_id prefix. Each run uploads as separate dataset to 'experiment-{experiment_id}' gallery. Processes 3 wells in parallel by default for speed.
         """
         try:
             # Check authentication
@@ -4150,8 +3737,8 @@ class MicroscopeHyphaService:
                 raise Exception("User not authorized to access this service")
 
             # Check if zarr artifact manager is available
-            if self.zarr_artifact_manager is None:
-                raise Exception("Zarr artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
+            if self.artifact_manager is None:
+                raise Exception("Artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
 
             logger.info(f"Starting offline processing for experiment ID: {experiment_id}")
             logger.info(f"Parameters: upload_immediately={upload_immediately}, cleanup_temp_files={cleanup_temp_files}, use_parallel_wells={use_parallel_wells}")
@@ -4168,7 +3755,7 @@ class MicroscopeHyphaService:
                     from .offline_processing import OfflineProcessor
                     processor = OfflineProcessor(
                         self.squidController, 
-                        self.zarr_artifact_manager, 
+                        self.artifact_manager, 
                         self.service_id
                     )
                     logger.info("OfflineProcessor created successfully in worker thread")
@@ -4214,22 +3801,358 @@ class MicroscopeHyphaService:
             logger.error(f"Error in offline stitching and upload service method: {e}")
             raise e
 
+    # ===== Unified Scan API Methods =====
+
+    async def _run_scan_with_state_tracking(self, scan_method, *args, **kwargs):
+        """
+        Internal wrapper that updates scan state during execution.
+        
+        This method wraps existing scan methods to provide unified state tracking
+        for the scan_start/scan_get_status/scan_cancel API.
+        
+        Args:
+            scan_method: The async scan method to execute
+            *args, **kwargs: Arguments to pass to the scan method
+            
+        Returns:
+            The result from the scan method, or None if failed
+        """
+        try:
+            self.scan_state['state'] = 'running'
+            self.scan_state['error_message'] = None
+            
+            logger.info(f"Starting scan with method: {scan_method.__name__}")
+            
+            # Run the actual scan method
+            result = await scan_method(*args, **kwargs)
+            
+            self.scan_state['state'] = 'completed'
+            logger.info(f"Scan completed successfully: {scan_method.__name__}")
+            return result
+            
+        except asyncio.CancelledError:
+            self.scan_state['state'] = 'failed'
+            self.scan_state['error_message'] = 'Scan was cancelled by user'
+            logger.info("Scan was cancelled by user")
+            raise
+            
+        except Exception as e:
+            self.scan_state['state'] = 'failed'
+            self.scan_state['error_message'] = str(e)
+            logger.error(f"Scan failed: {e}", exc_info=True)
+            
+        finally:
+            self.scan_state['scan_task'] = None
+
+    @schema_function(skip_self=True)
+    async def scan_start(self, 
+                        config: dict = Field(..., description="Scan configuration dictionary containing all scan parameters"),
+                        context=None):
+        """
+        Launch a background scanning operation with one of three profiles: raw_images, full_zarr, or quick_zarr.
+        Returns: Dictionary with success status, profile type, action_ID, and scan state ('running').
+        Notes: Scan executes asynchronously. Use scan_get_status() to monitor progress and scan_cancel() to abort.
+        
+        Config dictionary must contain 'saved_data_type' (str): 'raw_images', 'full_zarr', or 'quick_zarr'
+        
+        Common parameters:
+        - action_ID (str): Unique identifier for this scan operation
+        - well_plate_type (str): Well plate format: '6', '12', '24', '96', or '384'
+        - do_contrast_autofocus (bool): Enable contrast-based autofocus
+        - do_reflection_af (bool): Enable reflection-based laser autofocus
+        
+        For 'raw_images':
+        - illumination_settings (List[dict]): Illumination settings
+        - scanning_zone (List[tuple]): Scanning zone coordinates
+        - Nx, Ny (int): Grid dimensions
+        - dx, dy (float): Position intervals in mm
+        
+        For 'full_zarr':
+        - start_x_mm, start_y_mm (float): Starting position in mm
+        - Nx, Ny (int): Grid dimensions
+        - dx_mm, dy_mm (float): Position intervals in mm
+        - illumination_settings (List[dict]): Illumination settings
+        - wells_to_scan (List[str]): List of wells to scan
+        - well_padding_mm (float): Padding around well in mm
+        - experiment_name (str): Experiment name
+        - uploading (bool): Enable upload after scanning
+        - timepoint (int): Timepoint index for time-lapse
+        
+        For 'quick_zarr':
+        - well_padding_mm (float): Padding around well in mm
+        - dy_mm (float): Y interval in mm
+        - exposure_time (float): Camera exposure time in ms
+        - intensity (float): Brightfield LED intensity
+        - fps_target (int): Target frame rate
+        - n_stripes (int): Number of stripes per well
+        - stripe_width_mm (float): Length of each stripe in mm
+        - velocity_scan_mm_per_s (float): Stage velocity during scanning
+        - experiment_name (str): Experiment name
+        - uploading (bool): Enable upload after scanning
+        """
+        try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+
+            # Check if scan already running
+            if self.scan_state['state'] == 'running':
+                raise Exception("A scan is already in progress. Use scan_cancel() to stop it first.")
+
+            # Extract saved_data_type from config
+            saved_data_type = config.get('saved_data_type')
+            if not saved_data_type:
+                raise ValueError("Config must contain 'saved_data_type' parameter")
+
+            # Validate saved_data_type
+            valid_types = ['raw_images', 'full_zarr', 'quick_zarr']
+            if saved_data_type not in valid_types:
+                raise ValueError(f"Invalid saved_data_type '{saved_data_type}'. Must be one of: {valid_types}")
+
+            # Store the scan type
+            self.scan_state['saved_data_type'] = saved_data_type
+            
+            # Extract common parameters with defaults
+            action_ID = config.get('action_ID', 'unified_scan')
+            do_contrast_autofocus = config.get('do_contrast_autofocus', False)
+            do_reflection_af = config.get('do_reflection_af', True)
+            well_plate_type = config.get('well_plate_type', '96')
+            
+            logger.info(f"Starting unified scan with profile: {saved_data_type}")
+
+            # Route to appropriate scan method based on profile
+            if saved_data_type == 'raw_images':
+                # Extract raw_images specific parameters
+                illumination_settings = config.get('illumination_settings')
+                scanning_zone = config.get('scanning_zone', [(0,0),(7,11)])
+                Nx = config.get('Nx', 3)
+                Ny = config.get('Ny', 3)
+                dx = config.get('dx', 0.8)
+                dy = config.get('dy', 0.8)
+                
+                scan_coro = self._run_scan_with_state_tracking(
+                    self.scan_plate_save_raw_images,
+                    well_plate_type=well_plate_type,
+                    illumination_settings=illumination_settings,
+                    do_contrast_autofocus=do_contrast_autofocus,
+                    do_reflection_af=do_reflection_af,
+                    scanning_zone=scanning_zone,
+                    Nx=Nx,
+                    Ny=Ny,
+                    dx=dx,
+                    dy=dy,
+                    action_ID=action_ID,
+                    context=context
+                )
+                
+            elif saved_data_type == 'full_zarr':
+                # Extract full_zarr specific parameters
+                start_x_mm = config.get('start_x_mm', 20)
+                start_y_mm = config.get('start_y_mm', 20)
+                Nx = config.get('Nx', 3)
+                Ny = config.get('Ny', 3)
+                dx_mm = config.get('dx_mm', 0.9)
+                dy_mm = config.get('dy_mm', 0.9)
+                illumination_settings = config.get('illumination_settings')
+                wells_to_scan = config.get('wells_to_scan', ['A1'])
+                well_padding_mm = config.get('well_padding_mm', 1.0)
+                experiment_name = config.get('experiment_name')
+                uploading = config.get('uploading', False)
+                timepoint = config.get('timepoint', 0)
+                
+                scan_coro = self._run_scan_with_state_tracking(
+                    self.scan_region_to_zarr,
+                    start_x_mm=start_x_mm,
+                    start_y_mm=start_y_mm,
+                    Nx=Nx,
+                    Ny=Ny,
+                    dx_mm=dx_mm,
+                    dy_mm=dy_mm,
+                    illumination_settings=illumination_settings,
+                    do_contrast_autofocus=do_contrast_autofocus,
+                    do_reflection_af=do_reflection_af,
+                    action_ID=action_ID,
+                    timepoint=timepoint,
+                    experiment_name=experiment_name,
+                    wells_to_scan=wells_to_scan,
+                    well_plate_type=well_plate_type,
+                    well_padding_mm=well_padding_mm,
+                    uploading=uploading,
+                    context=context
+                )
+                
+            elif saved_data_type == 'quick_zarr':
+                # Extract quick_zarr specific parameters
+                well_padding_mm = config.get('well_padding_mm', 1.0)
+                dy_mm = config.get('dy_mm', 0.85)
+                exposure_time = config.get('exposure_time', 5)
+                intensity = config.get('intensity', 70)
+                fps_target = config.get('fps_target', 10)
+                n_stripes = config.get('n_stripes', 4)
+                stripe_width_mm = config.get('stripe_width_mm', 4.0)
+                velocity_scan_mm_per_s = config.get('velocity_scan_mm_per_s', 7.0)
+                experiment_name = config.get('experiment_name')
+                uploading = config.get('uploading', False)
+                
+                scan_coro = self._run_scan_with_state_tracking(
+                    self.quick_scan_brightfield_to_zarr,
+                    well_plate_type=well_plate_type,
+                    exposure_time=exposure_time,
+                    intensity=intensity,
+                    fps_target=fps_target,
+                    action_ID=action_ID,
+                    n_stripes=n_stripes,
+                    stripe_width_mm=stripe_width_mm,
+                    dy_mm=dy_mm,
+                    velocity_scan_mm_per_s=velocity_scan_mm_per_s,
+                    do_contrast_autofocus=do_contrast_autofocus,
+                    do_reflection_af=do_reflection_af,
+                    experiment_name=experiment_name,
+                    well_padding_mm=well_padding_mm,
+                    uploading=uploading,
+                    context=context
+                )
+
+            # Launch scan in background
+            self.scan_state['scan_task'] = asyncio.create_task(scan_coro)
+            
+            logger.info(f"Scan started in background with profile: {saved_data_type}")
+
+            return {
+                "success": True,
+                "message": f"Scan started with profile '{saved_data_type}'",
+                "saved_data_type": saved_data_type,
+                "action_ID": action_ID,
+                "state": "running"
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to start scan: {e}")
+            raise e
+
+    @schema_function(skip_self=True)
+    def scan_get_status(self, context=None):
+        """
+        Query the current state of the background scanning operation.
+        Returns: Dictionary with success flag, scan state ('idle', 'running', 'completed', 'failed'), error_message (if failed), and saved_data_type.
+        Notes: State persists across client disconnections. Poll this endpoint to monitor long-running scans.
+        """
+        try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+
+            return {
+                "success": True,
+                "state": self.scan_state['state'],
+                "error_message": self.scan_state['error_message'],
+                "saved_data_type": self.scan_state['saved_data_type']
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get scan status: {e}")
+            raise e
+
+    @schema_function(skip_self=True)
+    async def scan_cancel(self, context=None):
+        """
+        Abort the currently running scan operation and return microscope to idle state.
+        Returns: Dictionary with success status, confirmation message, and final scan state.
+        Notes: Works with any scan profile (raw_images, full_zarr, quick_zarr). Scan stops gracefully where possible. Partial data may be retained.
+        """
+        try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+
+            # Check if scan is running
+            if self.scan_state['state'] != 'running':
+                return {
+                    "success": True,
+                    "message": f"No scan to cancel. Current state: {self.scan_state['state']}",
+                    "state": self.scan_state['state']
+                }
+
+            logger.info("Scan cancellation requested")
+
+            # Set stop flags at controller level
+            if hasattr(self.squidController, 'scan_stop_requested'):
+                self.squidController.scan_stop_requested = True
+                logger.info("Set squidController.scan_stop_requested = True")
+
+            # Call controller's stop method
+            self.squidController.stop_scan_and_stitching()
+
+            # Cancel the scan task
+            if self.scan_state['scan_task'] and not self.scan_state['scan_task'].done():
+                self.scan_state['scan_task'].cancel()
+                logger.info("Cancelled scan task")
+                
+                # Wait a moment for cancellation to propagate
+                try:
+                    await asyncio.wait_for(self.scan_state['scan_task'], timeout=1.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+
+            # Update state
+            self.scan_state['state'] = 'failed'
+            self.scan_state['error_message'] = 'Scan cancelled by user'
+            self.scan_state['scan_task'] = None
+
+            logger.info("Scan cancelled successfully")
+
+            return {
+                "success": True,
+                "message": "Scan cancelled successfully",
+                "state": self.scan_state['state']
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to cancel scan: {e}")
+            raise e
+
+    async def stop_scan_and_stitching(self, context=None):
+        """
+        [DEPRECATED] Stop scan and stitching operations.
+        
+        This endpoint is deprecated. Use scan_cancel() instead for unified scan operations.
+        This method is kept for backward compatibility and routes to scan_cancel().
+        
+        Returns:
+            dict: Status with success flag and message
+        """
+        logger.warning("stop_scan_and_stitching is deprecated. Use scan_cancel() instead.")
+        
+        try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+
+            # Route to the unified scan_cancel method
+            result = await self.scan_cancel(context)
+            
+            # Update the message to indicate this was called via deprecated endpoint
+            if result.get("success"):
+                result["message"] = f"[DEPRECATED] {result['message']} (Use scan_cancel() instead)"
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Failed to stop scan and stitching: {e}")
+            raise e
+
     # ===== Squid+ Specific API Methods =====
     
-    @schema_function
+    @schema_function(skip_self=True)
     async def set_filter_wheel_position(
         self,
-        position: int = Field(..., description="Filter position (1-8)"),
+        position: int = Field(..., description="Target filter wheel position (range: 1-8)"),
         context=None
     ):
         """
-        Set the filter wheel to a specific position (Squid+ only)
-        
-        Args:
-            position: Filter position number (1-8)
-            
-        Returns:
-            dict: Status with success flag and current position
+        Move the motorized filter wheel to a specific position (Squid+ only).
+        Returns: Dictionary with success status, position number, and confirmation message.
+        Notes: Only available on Squid+ microscopes with filter wheel hardware. Validates position is within 1-8 range.
         """
         try:
             if context and not self.check_permission(context.get("user", {})):
@@ -4264,13 +4187,12 @@ class MicroscopeHyphaService:
             logger.error(f"Error setting filter wheel position: {e}")
             raise e
     
-    @schema_function
+    @schema_function(skip_self=True)
     async def get_filter_wheel_position(self, context=None):
         """
-        Get the current filter wheel position (Squid+ only)
-        
-        Returns:
-            dict: Current filter position
+        Query the current filter wheel position (Squid+ only).
+        Returns: Dictionary with success status and current position number (1-8).
+        Notes: Only available on Squid+ microscopes with filter wheel hardware.
         """
         try:
             if context and not self.check_permission(context.get("user", {})):
@@ -4289,13 +4211,12 @@ class MicroscopeHyphaService:
             logger.error(f"Error getting filter wheel position: {e}")
             raise e
     
-    @schema_function
+    @schema_function(skip_self=True)
     async def next_filter_position(self, context=None):
         """
-        Move to the next filter position (Squid+ only)
-        
-        Returns:
-            dict: Status with new position
+        Advance the filter wheel to the next sequential position (Squid+ only).
+        Returns: Dictionary with success status, new position number, and confirmation message.
+        Notes: Only available on Squid+ microscopes. Wraps around from position 8 to position 1.
         """
         try:
             if context and not self.check_permission(context.get("user", {})):
@@ -4320,13 +4241,12 @@ class MicroscopeHyphaService:
             logger.error(f"Error moving to next filter position: {e}")
             raise e
     
-    @schema_function
+    @schema_function(skip_self=True)
     async def previous_filter_position(self, context=None):
         """
-        Move to the previous filter position (Squid+ only)
-        
-        Returns:
-            dict: Status with new position
+        Move the filter wheel to the previous sequential position (Squid+ only).
+        Returns: Dictionary with success status, new position number, and confirmation message.
+        Notes: Only available on Squid+ microscopes. Wraps around from position 1 to position 8.
         """
         try:
             if context and not self.check_permission(context.get("user", {})):
@@ -4351,22 +4271,17 @@ class MicroscopeHyphaService:
             logger.error(f"Error moving to previous filter position: {e}")
             raise e
     
-    @schema_function
+    @schema_function(skip_self=True)
     async def switch_objective(
         self,
-        objective_name: str = Field(..., description="Objective name (e.g., '4x', '20x')"),
-        move_z: bool = Field(True, description="Whether to adjust Z stage for objective change"),
+        objective_name: str = Field(..., description="Target objective identifier (e.g., '4x', '10x', '20x', '40x')"),
+        move_z: bool = Field(True, description="Automatically adjust Z stage to compensate for objective height difference (True recommended)"),
         context=None
     ):
         """
-        Switch to a specific objective using the objective switcher (Squid+ only)
-        
-        Args:
-            objective_name: Objective name (e.g., '4x', '20x')
-            move_z: Whether to adjust Z stage for objective height difference
-            
-        Returns:
-            dict: Status with current objective name and position
+        Switch the motorized objective turret to a different magnification (Squid+ only).
+        Returns: Dictionary with success status, objective name, position number, pixel size (µm), and confirmation message.
+        Notes: Only available on Squid+ microscopes with objective switcher. Automatically updates pixel size and imaging parameters. Set move_z=True to maintain focus position.
         """
         try:
             if context and not self.check_permission(context.get("user", {})):
@@ -4450,13 +4365,12 @@ class MicroscopeHyphaService:
             logger.error(f"Error switching objective: {e}")
             raise e
     
-    @schema_function
+    @schema_function(skip_self=True)
     async def get_current_objective(self, context=None):
         """
-        Get the current objective name and position (Squid+ only)
-        
-        Returns:
-            dict: Current objective name, position, and available objectives
+        Query the currently active objective and list all available objectives (Squid+ only).
+        Returns: Dictionary with success status, current objective name, position number, list of available objectives, and confirmation message.
+        Notes: Only available on Squid+ microscopes with objective switcher.
         """
         try:
             if context and not self.check_permission(context.get("user", {})):
@@ -4521,13 +4435,12 @@ class MicroscopeHyphaService:
             logger.error(f"Error setting objective switcher speed: {e}")
             raise e
     
-    @schema_function
+    @schema_function(skip_self=True)
     async def get_available_objectives(self, context=None):
         """
-        Get available objectives and their positions (Squid+ only)
-        
-        Returns:
-            dict: Available objectives with their positions and names
+        List all objectives installed on the motorized turret (Squid+ only).
+        Returns: Dictionary with success status, list of objectives (each with position and name), objective names list, position numbers, and confirmation message.
+        Notes: Only available on Squid+ microscopes with objective switcher.
         """
         try:
             if context and not self.check_permission(context.get("user", {})):

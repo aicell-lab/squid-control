@@ -36,7 +36,7 @@ python -m squid_control mirror
 
 # Run with custom service IDs
 python -m squid_control mirror \
-  --cloud-service-id "mirror-microscope-control-squid-2" \
+  --cloud-service-id "microscope-control-squid-2" \
   --local-service-id "microscope-control-squid-2"
 
 # Run with custom server URLs
@@ -54,7 +54,7 @@ python -m squid_control mirror \
 ```bash
 # Use the legacy runner script
 python squid_control/run_mirror_service.py \
-  --cloud-service-id "mirror-microscope-control-squid-2" \
+  --cloud-service-id "microscope-control-squid-2" \
   --local-service-id "microscope-control-squid-2"
 ```
 

@@ -525,11 +525,11 @@ class SquidController:
 
         # Set up scan coordinates
         self.scanCoordinates.well_selector.set_selected_wells(scanning_zone[0], scanning_zone[1])
-        self.scanCoordinates.get_selected_wells_to_coordinates(wellplate_type=well_plate_type, is_simulation=self.is_simulation)
+        self.scanCoordinates.get_selected_wells_to_coordinates(well_plate_type=well_plate_type, is_simulation=self.is_simulation)
 
         # Configure multipoint controller
         self.multipointController.set_base_path(CONFIG.DEFAULT_SAVING_PATH)
-        self.multipointController.do_autofocus = do_contrast_autofocus
+        self.multipointController.contrast_autofocus = do_contrast_autofocus
         self.multipointController.do_reflection_af = do_reflection_af
         self.multipointController.set_NX(Nx)
         self.multipointController.set_NY(Ny)
@@ -549,8 +549,8 @@ class SquidController:
         self.is_busy = False
         print('Plate scan stopped')
 
-    def stop_scan_well_plate_new(self):
-        """Stop the new well plate scan - alias for stop_plate_scan"""
+    def stop_scan_plate_save_raw_images_new(self):
+        """Stop the plate scan that saves raw images - alias for stop_plate_scan"""
         self.stop_plate_scan()
 
     async def send_trigger_simulation(self, channel=0, intensity=100, exposure_time=100):
@@ -570,17 +570,17 @@ class SquidController:
     def get_simulated_sample_data_alias(self):
         return self.sample_data_alias
 
-    async def do_autofocus(self):
+    async def contrast_autofocus(self):
 
         if self.is_simulation:
-            await self.do_autofocus_simulation()
+            await self.contrast_autofocus_simulation()
         else:
             self.autofocusController.set_deltaZ(1.524)
             self.autofocusController.set_N(15)
             self.autofocusController.autofocus()
             self.autofocusController.wait_till_autofocus_has_completed()
 
-    async def do_autofocus_simulation(self):
+    async def contrast_autofocus_simulation(self):
 
         random_z = SIMULATED_CAMERA.ORIN_Z + np.random.normal(0,0.001)
         self.navigationController.move_z_to(random_z)
@@ -589,25 +589,25 @@ class SquidController:
     def init_laser_autofocus(self):
         self.laserAutofocusController.initialize_auto()
 
-    async def do_laser_autofocus(self):
+    async def reflection_autofocus(self):
         if self.is_simulation:
-            await self.do_autofocus_simulation()
+            await self.contrast_autofocus_simulation()
         else:
             self.laserAutofocusController.move_to_target(0)
 
     def measure_displacement(self):
         self.laserAutofocusController.measure_displacement()
 
-    def move_to_well(self,row,column, wellplate_type='96'):
-        if wellplate_type == '6':
+    def move_to_well(self,row,column, well_plate_type='96'):
+        if well_plate_type == '6':
             wellplate_format = WELLPLATE_FORMAT_6
-        elif wellplate_type == '12':
+        elif well_plate_type == '12':
             wellplate_format = WELLPLATE_FORMAT_12
-        elif wellplate_type == '24':
+        elif well_plate_type == '24':
             wellplate_format = WELLPLATE_FORMAT_24
-        elif wellplate_type == '96':
+        elif well_plate_type == '96':
             wellplate_format = WELLPLATE_FORMAT_96
-        elif wellplate_type == '384':
+        elif well_plate_type == '384':
             wellplate_format = WELLPLATE_FORMAT_384
         else:
             # Default to 96-well plate if unsupported type is provided
@@ -632,24 +632,24 @@ class SquidController:
             while self.microcontroller.is_busy():
                 time.sleep(0.005)
 
-    async def move_to_well_async(self, row, column, wellplate_type='96'):
+    async def move_to_well_async(self, row, column, well_plate_type='96'):
         """
         Async version of move_to_well that doesn't block the event loop.
         
         Args:
             row: Row letter (e.g., 'A', 'B', 'C')
             column: Column number (e.g., 1, 2, 3)
-            wellplate_type: Type of well plate ('6', '12', '24', '96', '384')
+            well_plate_type: Type of well plate ('6', '12', '24', '96', '384')
         """
-        if wellplate_type == '6':
+        if well_plate_type == '6':
             wellplate_format = WELLPLATE_FORMAT_6
-        elif wellplate_type == '12':
+        elif well_plate_type == '12':
             wellplate_format = WELLPLATE_FORMAT_12
-        elif wellplate_type == '24':
+        elif well_plate_type == '24':
             wellplate_format = WELLPLATE_FORMAT_24
-        elif wellplate_type == '96':
+        elif well_plate_type == '96':
             wellplate_format = WELLPLATE_FORMAT_96
-        elif wellplate_type == '384':
+        elif well_plate_type == '384':
             wellplate_format = WELLPLATE_FORMAT_384
         else:
             # Default to 96-well plate if unsupported type is provided
@@ -675,7 +675,7 @@ class SquidController:
             while self.microcontroller.is_busy():
                 await asyncio.sleep(0.005)
 
-    async def move_to_well_center_for_autofocus(self, row, column, wellplate_type='96', velocity_mm_per_s=30.0):
+    async def move_to_well_center_for_autofocus(self, row, column, well_plate_type='96', velocity_mm_per_s=30.0):
         """
         Optimized method to move to well center for autofocus operations.
         Sets velocity, moves to well center, and waits for completion.
@@ -683,7 +683,7 @@ class SquidController:
         Args:
             row: Row letter (e.g., 'A', 'B', 'C')
             column: Column number (e.g., 1, 2, 3)
-            wellplate_type: Type of well plate ('6', '12', '24', '96', '384')
+            well_plate_type: Type of well plate ('6', '12', '24', '96', '384')
             velocity_mm_per_s: Velocity for movement (default 30.0 mm/s)
         """
         # Set high speed velocity for moving to well center
@@ -692,17 +692,17 @@ class SquidController:
             logger.warning(f"Failed to set high-speed velocity for autofocus: {velocity_result['message']}")
 
         # Move to well center using async method
-        await self.move_to_well_async(row, column, wellplate_type)
+        await self.move_to_well_async(row, column, well_plate_type)
 
         logger.info(f'Moved to well {row}{column} center for autofocus')
 
-    def get_well_from_position(self, wellplate_type='96', x_pos_mm=None, y_pos_mm=None, well_padding_mm=1.0):
+    def get_well_from_position(self, well_plate_type='96', x_pos_mm=None, y_pos_mm=None, well_padding_mm=1.0):
         """
         Calculate which well position corresponds to the given X,Y coordinates, considering canvas padding.
         This is used for stitching where we want to accept positions within the padded canvas area.
         
         Args:
-            wellplate_type (str): Type of well plate ('6', '12', '24', '96', '384')
+            well_plate_type (str): Type of well plate ('6', '12', '24', '96', '384')
             x_pos_mm (float, optional): X position in mm. If None, uses current position.
             y_pos_mm (float, optional): Y position in mm. If None, uses current position.
             well_padding_mm (float): Padding around well boundaries in mm
@@ -711,23 +711,23 @@ class SquidController:
             dict: Same format as get_well_from_position but with padded boundaries
         """
         # Get well plate format configuration
-        if wellplate_type == '6':
+        if well_plate_type == '6':
             wellplate_format = WELLPLATE_FORMAT_6
             max_rows = 2  # A-B
             max_cols = 3  # 1-3
-        elif wellplate_type == '12':
+        elif well_plate_type == '12':
             wellplate_format = WELLPLATE_FORMAT_12
             max_rows = 3  # A-C
             max_cols = 4  # 1-4
-        elif wellplate_type == '24':
+        elif well_plate_type == '24':
             wellplate_format = WELLPLATE_FORMAT_24
             max_rows = 4  # A-D
             max_cols = 6  # 1-6
-        elif wellplate_type == '96':
+        elif well_plate_type == '96':
             wellplate_format = WELLPLATE_FORMAT_96
             max_rows = 8  # A-H
             max_cols = 12  # 1-12
-        elif wellplate_type == '384':
+        elif well_plate_type == '384':
             wellplate_format = WELLPLATE_FORMAT_384
             max_rows = 16  # A-P
             max_cols = 24  # 1-24
@@ -736,7 +736,7 @@ class SquidController:
             wellplate_format = WELLPLATE_FORMAT_96
             max_rows = 8
             max_cols = 12
-            wellplate_type = '96'
+            well_plate_type = '96'
 
         # Get current position if not provided
         if x_pos_mm is None or y_pos_mm is None:
@@ -775,7 +775,7 @@ class SquidController:
             'position_status': 'outside_plate',
             'x_mm': x_pos_mm,
             'y_mm': y_pos_mm,
-            'plate_type': wellplate_type
+            'plate_type': well_plate_type
         }
 
         # Check if the calculated well indices are valid
@@ -1207,13 +1207,13 @@ class SquidController:
                 "velocity_y_mm_per_s": velocity_y_mm_per_s
             }
 
-    async def normal_scan_with_stitching(self, start_x_mm, start_y_mm, Nx, Ny, dx_mm, dy_mm,
+    async def scan_region_to_zarr(self, start_x_mm, start_y_mm, Nx, Ny, dx_mm, dy_mm,
                                         illumination_settings=None, do_contrast_autofocus=False,
                                         do_reflection_af=False, action_ID='normal_scan_stitching',
                                         timepoint=0, experiment_name=None, wells_to_scan=None,
-                                        wellplate_type='96', well_padding_mm=1.0):
+                                        well_plate_type='96', well_padding_mm=1.0):
         """
-        Normal scan with live stitching to well-specific OME-Zarr canvases.
+        Region scan with live stitching to well-specific OME-Zarr canvases.
         Scans specified wells one by one, creating individual zarr canvases for each well.
         
         Args:
@@ -1230,7 +1230,7 @@ class SquidController:
             timepoint (int): Timepoint index for the scan (default 0)
             experiment_name (str, optional): Name of the experiment to use. If None, uses active experiment or creates "default"
             wells_to_scan (list): List of well strings (e.g., ['A1', 'B2']) or (row, column) tuples. If None, scans single well at current position
-            wellplate_type (str): Well plate type ('6', '12', '24', '96', '384')
+            well_plate_type (str): Well plate type ('6', '12', '24', '96', '384')
             well_padding_mm (float): Padding around well in mm
         """
         if illumination_settings is None:
@@ -1245,7 +1245,7 @@ class SquidController:
         if wells_to_scan is None:
             # Get current position and determine which well we're in
             current_x, current_y, current_z, _ = self.navigationController.update_pos(self.microcontroller)
-            well_info = self.get_well_from_position(wellplate_type, current_x, current_y)
+            well_info = self.get_well_from_position(well_plate_type, current_x, current_y)
 
             if well_info['position_status'] != 'in_well':
                 raise RuntimeError(f"Current position ({current_x:.2f}, {current_y:.2f}) is not inside a well. Please specify wells_to_scan or move to a well first.")
@@ -1280,7 +1280,7 @@ class SquidController:
                 logger.info(f"Scanning well {well_row}{well_column} ({well_idx + 1}/{len(wells_to_scan)})")
 
                 # Get well canvas for this well
-                canvas = self.experiment_manager.get_well_canvas(well_row, well_column, wellplate_type, well_padding_mm)
+                canvas = self.experiment_manager.get_well_canvas(well_row, well_column, well_plate_type, well_padding_mm)
 
                 # Validate channels are available in this canvas
                 for settings in illumination_settings:
@@ -1294,7 +1294,7 @@ class SquidController:
                 await canvas.start_stitching()
 
                 # Move to well center first
-                await self.move_to_well_async(well_row, well_column, wellplate_type)
+                await self.move_to_well_async(well_row, well_column, well_plate_type)
 
                 # Get well center coordinates for relative positioning
                 well_center_x = canvas.well_center_x
@@ -1339,11 +1339,11 @@ class SquidController:
                             # Autofocus if requested (first position or periodically)
                             if do_reflection_af and (i == 0 and j == 0):
                                 if hasattr(self, 'laserAutofocusController'):
-                                    await self.do_laser_autofocus()
+                                    await self.reflection_autofocus()
                                     # Update position again after autofocus
                                     actual_x_mm, actual_y_mm, actual_z_mm, _ = self.navigationController.update_pos(self.microcontroller)
                             elif do_contrast_autofocus and ((i * Nx + j) % CONFIG.ACQUISITION.NUMBER_OF_FOVS_PER_AF == 0):
-                                await self.do_autofocus()
+                                await self.contrast_autofocus()
                                 # Update position again after autofocus
                                 actual_x_mm, actual_y_mm, actual_z_mm, _ = self.navigationController.update_pos(self.microcontroller)
 
@@ -1379,7 +1379,7 @@ class SquidController:
                                     image, actual_x_mm, actual_y_mm,
                                     zarr_channel_idx=zarr_channel_idx,
                                     timepoint=timepoint,
-                                    wellplate_type=wellplate_type,
+                                    well_plate_type=well_plate_type,
                                     well_padding_mm=well_padding_mm,
                                     channel_name=channel_name
                                 )
@@ -1405,7 +1405,7 @@ class SquidController:
     def stop_scan_and_stitching(self):
         """
         Stop any ongoing scanning and stitching processes.
-        This will interrupt normal_scan_with_stitching and quick_scan_with_stitching.
+        This will interrupt scan_region_to_zarr and quick_scan_brightfield_to_zarr.
         """
         self.scan_stop_requested = True
         logger.info("Scan stop requested - ongoing scans will be interrupted")
@@ -1414,7 +1414,7 @@ class SquidController:
 
     async def _add_image_to_zarr_quick_well_based(self, image: np.ndarray, x_mm: float, y_mm: float,
                                                  zarr_channel_idx: int, timepoint: int = 0,
-                                                 wellplate_type='96', well_padding_mm=1.0, channel_name='BF LED matrix full'):
+                                                 well_plate_type='96', well_padding_mm=1.0, channel_name='BF LED matrix full'):
         """
         Add image to well canvas stitching queue for quick scan - only updates scales 1-5 (skips scale 0).
         The input image should already be at scale1 resolution (1/4 of original).
@@ -1425,14 +1425,14 @@ class SquidController:
             y_mm: Absolute Y position in mm
             zarr_channel_idx: Zarr channel index
             timepoint: Timepoint index
-            wellplate_type: Well plate type
+            well_plate_type: Well plate type
             well_padding_mm: Well padding in mm
             channel_name: Channel name for validation
         """
         logger.info(f'ZARR_QUEUE: Attempting to queue image at position ({x_mm:.2f}, {y_mm:.2f}), timepoint={timepoint}, channel={channel_name}')
 
         # Determine which well this position belongs to using padded boundaries for stitching
-        well_info = self.get_well_from_position(wellplate_type, x_mm, y_mm, well_padding_mm)
+        well_info = self.get_well_from_position(well_plate_type, x_mm, y_mm, well_padding_mm)
 
         logger.info(f'ZARR_QUEUE: Well detection result - status={well_info["position_status"]}, well={well_info.get("well_id", "None")}, distance={well_info["distance_from_center"]:.2f}mm')
 
@@ -1444,7 +1444,7 @@ class SquidController:
 
             # Get or create well canvas
             try:
-                well_canvas = self.experiment_manager.get_well_canvas(well_row, well_column, wellplate_type, well_padding_mm)
+                well_canvas = self.experiment_manager.get_well_canvas(well_row, well_column, well_plate_type, well_padding_mm)
                 logger.info(f'ZARR_QUEUE: Got well canvas for {well_row}{well_column}, stitching_active={well_canvas.is_stitching}')
             except Exception as e:
                 logger.error(f"ZARR_QUEUE: Failed to get well canvas for {well_row}{well_column}: {e}")
@@ -1745,7 +1745,7 @@ class SquidController:
 
         return self.zarr_canvas
 
-    def get_well_canvas(self, well_row: str, well_column: int, wellplate_type: str = '96',
+    def get_well_canvas(self, well_row: str, well_column: int, well_plate_type: str = '96',
                        padding_mm: float = 1.0):
         """
         Get or create a well-specific canvas.
@@ -1753,13 +1753,13 @@ class SquidController:
         Args:
             well_row: Well row (e.g., 'A', 'B')
             well_column: Well column (e.g., 1, 2, 3)
-            wellplate_type: Well plate type ('6', '12', '24', '96', '384')
+            well_plate_type: Well plate type ('6', '12', '24', '96', '384')
             padding_mm: Padding around well in mm
             
         Returns:
             WellZarrCanvas: The well-specific canvas
         """
-        well_id = f"{well_row}{well_column}_{wellplate_type}"
+        well_id = f"{well_row}{well_column}_{well_plate_type}"
 
         if well_id not in self.well_canvases:
             # Create new well canvas
@@ -1769,7 +1769,7 @@ class SquidController:
             canvas = WellZarrCanvas(
                 well_row=well_row,
                 well_column=well_column,
-                wellplate_type=wellplate_type,
+                well_plate_type=well_plate_type,
                 padding_mm=padding_mm,
                 base_path=zarr_path,
                 pixel_size_xy_um=self.pixel_size_xy,
@@ -1780,11 +1780,11 @@ class SquidController:
             )
 
             self.well_canvases[well_id] = canvas
-            logger.info(f"Created well canvas for {well_row}{well_column} ({wellplate_type})")
+            logger.info(f"Created well canvas for {well_row}{well_column} ({well_plate_type})")
 
         return self.well_canvases[well_id]
 
-    def create_well_canvas(self, well_row: str, well_column: int, wellplate_type: str = '96',
+    def create_well_canvas(self, well_row: str, well_column: int, well_plate_type: str = '96',
                           padding_mm: float = 1.0):
         """
         Create a new well-specific canvas (replaces existing if present).
@@ -1792,13 +1792,13 @@ class SquidController:
         Args:
             well_row: Well row (e.g., 'A', 'B')
             well_column: Well column (e.g., 1, 2, 3)
-            wellplate_type: Well plate type ('6', '12', '24', '96', '384')
+            well_plate_type: Well plate type ('6', '12', '24', '96', '384')
             padding_mm: Padding around well in mm
             
         Returns:
             dict: Information about the created canvas
         """
-        well_id = f"{well_row}{well_column}_{wellplate_type}"
+        well_id = f"{well_row}{well_column}_{well_plate_type}"
 
         # Close existing canvas if present
         if well_id in self.well_canvases:
@@ -1806,13 +1806,13 @@ class SquidController:
             logger.info(f"Closed existing well canvas for {well_row}{well_column}")
 
         # Create new canvas
-        canvas = self.get_well_canvas(well_row, well_column, wellplate_type, padding_mm)
+        canvas = self.get_well_canvas(well_row, well_column, well_plate_type, padding_mm)
 
         return {
             "well_id": well_id,
             "well_row": well_row,
             "well_column": well_column,
-            "wellplate_type": wellplate_type,
+            "well_plate_type": well_plate_type,
             "padding_mm": padding_mm,
             "canvas_path": str(canvas.zarr_path),
             "message": f"Created well canvas for {well_row}{well_column}"
@@ -1833,7 +1833,7 @@ class SquidController:
                 "well_id": well_id,
                 "well_row": canvas.well_row,
                 "well_column": canvas.well_column,
-                "wellplate_type": canvas.wellplate_type,
+                "well_plate_type": canvas.well_plate_type,
                 "canvas_path": str(canvas.zarr_path),
                 "well_center_x_mm": canvas.well_center_x,
                 "well_center_y_mm": canvas.well_center_y,
@@ -1847,22 +1847,22 @@ class SquidController:
             "total_count": len(canvases)
         }
 
-    def remove_well_canvas(self, well_row: str, well_column: int, wellplate_type: str = '96'):
+    def remove_well_canvas(self, well_row: str, well_column: int, well_plate_type: str = '96'):
         """
         Remove a well-specific canvas.
         
         Args:
             well_row: Well row (e.g., 'A', 'B')
             well_column: Well column (e.g., 1, 2, 3)
-            wellplate_type: Well plate type
+            well_plate_type: Well plate type
             
         Returns:
             dict: Information about the removed canvas
         """
-        well_id = f"{well_row}{well_column}_{wellplate_type}"
+        well_id = f"{well_row}{well_column}_{well_plate_type}"
 
         if well_id not in self.well_canvases:
-            raise ValueError(f"Well canvas for {well_row}{well_column} ({wellplate_type}) not found")
+            raise ValueError(f"Well canvas for {well_row}{well_column} ({well_plate_type}) not found")
 
         canvas = self.well_canvases[well_id]
         canvas.close()
@@ -1881,7 +1881,7 @@ class SquidController:
             "well_id": well_id,
             "well_row": well_row,
             "well_column": well_column,
-            "wellplate_type": wellplate_type,
+            "well_plate_type": well_plate_type,
             "message": f"Removed well canvas for {well_row}{well_column}"
         }
 
@@ -1935,7 +1935,7 @@ class SquidController:
 
     async def _add_image_to_zarr_normal_well_based(self, image: np.ndarray, x_mm: float, y_mm: float,
                                                  zarr_channel_idx: int, timepoint: int = 0,
-                                                 wellplate_type='96', well_padding_mm=1.0, channel_name='BF LED matrix full'):
+                                                 well_plate_type='96', well_padding_mm=1.0, channel_name='BF LED matrix full'):
         """
         Add image to well canvas stitching queue for normal scan - updates all scales (0-5).
         Uses the same routing logic as quick scan but with full scale processing.
@@ -1946,14 +1946,14 @@ class SquidController:
             y_mm: Absolute Y position in mm
             zarr_channel_idx: Zarr channel index
             timepoint: Timepoint index
-            wellplate_type: Well plate type
+            well_plate_type: Well plate type
             well_padding_mm: Well padding in mm
             channel_name: Channel name for validation
         """
         logger.info(f'ZARR_NORMAL: Attempting to queue image at position ({x_mm:.2f}, {y_mm:.2f}), timepoint={timepoint}, channel={channel_name}')
 
         # Determine which well this position belongs to using padded boundaries for stitching
-        well_info = self.get_well_from_position(wellplate_type, x_mm, y_mm, well_padding_mm)
+        well_info = self.get_well_from_position(well_plate_type, x_mm, y_mm, well_padding_mm)
 
         logger.info(f'ZARR_NORMAL: Well detection result - status={well_info["position_status"]}, well={well_info.get("well_id", "None")}, distance={well_info["distance_from_center"]:.2f}mm')
 
@@ -1965,7 +1965,7 @@ class SquidController:
 
             # Get or create well canvas
             try:
-                well_canvas = self.experiment_manager.get_well_canvas(well_row, well_column, wellplate_type, well_padding_mm)
+                well_canvas = self.experiment_manager.get_well_canvas(well_row, well_column, well_plate_type, well_padding_mm)
                 logger.info(f'ZARR_NORMAL: Got well canvas for {well_row}{well_column}, stitching_active={well_canvas.is_stitching}')
             except Exception as e:
                 logger.error(f"ZARR_NORMAL: Failed to get well canvas for {well_row}{well_column}: {e}")
@@ -2028,14 +2028,14 @@ class SquidController:
                 self.experiment_manager.create_experiment(experiment_name)
                 logger.info(f"Created new experiment '{experiment_name}'")
 
-    def _check_well_canvas_exists(self, well_row: str, well_column: int, wellplate_type: str = '96', experiment_name: str = None):
+    def _check_well_canvas_exists(self, well_row: str, well_column: int, well_plate_type: str = '96', experiment_name: str = None):
         """
         Check if a well canvas exists on disk for the specified experiment.
         
         Args:
             well_row: Well row (e.g., 'A', 'B')
             well_column: Well column (e.g., 1, 2, 3)
-            wellplate_type: Well plate type ('6', '12', '24', '96', '384')
+            well_plate_type: Well plate type ('6', '12', '24', '96', '384')
             experiment_name: Name of the experiment to check (default: None uses current experiment)
             
         Returns:
@@ -2047,14 +2047,14 @@ class SquidController:
 
         # Calculate the expected canvas path
         experiment_path = self.experiment_manager.base_path / target_experiment
-        fileset_name = f"well_{well_row}{well_column}_{wellplate_type}"
+        fileset_name = f"well_{well_row}{well_column}_{well_plate_type}"
         canvas_path = experiment_path / f"{fileset_name}.zarr"
 
         return canvas_path.exists()
 
     def get_stitched_region(self, center_x_mm: float, center_y_mm: float,
                            width_mm: float, height_mm: float,
-                           wellplate_type: str = '96', scale_level: int = 0,
+                           well_plate_type: str = '96', scale_level: int = 0,
                            channel_name: str = 'BF LED matrix full',
                            timepoint: int = 0, well_padding_mm: float = 2.0,
                            experiment_name: str = None):
@@ -2067,7 +2067,7 @@ class SquidController:
             center_y_mm: Center Y position in absolute stage coordinates (mm)
             width_mm: Width of region in mm
             height_mm: Height of region in mm
-            wellplate_type: Well plate type ('6', '12', '24', '96', '384')
+            well_plate_type: Well plate type ('6', '12', '24', '96', '384')
             scale_level: Scale level (0=full res, 1=1/4, 2=1/16, etc)
             channel_name: Name of channel to retrieve
             timepoint: Timepoint index (default 0)
@@ -2100,23 +2100,23 @@ class SquidController:
                        f"bounds=({region_min_x:.2f}-{region_max_x:.2f}, {region_min_y:.2f}-{region_max_y:.2f})")
 
             # Get well plate format configuration
-            if wellplate_type == '6':
+            if well_plate_type == '6':
                 wellplate_format = WELLPLATE_FORMAT_6
                 max_rows = 2  # A-B
                 max_cols = 3  # 1-3
-            elif wellplate_type == '12':
+            elif well_plate_type == '12':
                 wellplate_format = WELLPLATE_FORMAT_12
                 max_rows = 3  # A-C
                 max_cols = 4  # 1-4
-            elif wellplate_type == '24':
+            elif well_plate_type == '24':
                 wellplate_format = WELLPLATE_FORMAT_24
                 max_rows = 4  # A-D
                 max_cols = 6  # 1-6
-            elif wellplate_type == '96':
+            elif well_plate_type == '96':
                 wellplate_format = WELLPLATE_FORMAT_96
                 max_rows = 8  # A-H
                 max_cols = 12  # 1-12
-            elif wellplate_type == '384':
+            elif well_plate_type == '384':
                 wellplate_format = WELLPLATE_FORMAT_384
                 max_rows = 16  # A-P
                 max_cols = 24  # 1-24
@@ -2124,7 +2124,7 @@ class SquidController:
                 wellplate_format = WELLPLATE_FORMAT_96
                 max_rows = 8
                 max_cols = 12
-                wellplate_type = '96'
+                well_plate_type = '96'
 
             # Apply well plate offset for hardware mode
             if self.is_simulation:
@@ -2201,12 +2201,12 @@ class SquidController:
                 well_column = well_info['well_column']
 
                 # Check if the well canvas exists
-                if not self._check_well_canvas_exists(well_row, well_column, wellplate_type, target_experiment):
-                    logger.warning(f"Well canvas for {well_row}{well_column} ({wellplate_type}) does not exist in experiment '{target_experiment}'")
+                if not self._check_well_canvas_exists(well_row, well_column, well_plate_type, target_experiment):
+                    logger.warning(f"Well canvas for {well_row}{well_column} ({well_plate_type}) does not exist in experiment '{target_experiment}'")
                     return None
 
                 # Get well canvas and extract region
-                canvas = self.experiment_manager.get_well_canvas(well_row, well_column, wellplate_type, well_padding_mm, target_experiment)
+                canvas = self.experiment_manager.get_well_canvas(well_row, well_column, well_plate_type, well_padding_mm, target_experiment)
 
                 # Calculate absolute coordinates for the intersection region
                 intersection_center_x = (well_info['abs_min_x'] + well_info['abs_max_x']) / 2.0
@@ -2244,11 +2244,11 @@ class SquidController:
                 well_column = well_info['well_column']
 
                 # Check if the well canvas exists
-                if not self._check_well_canvas_exists(well_row, well_column, wellplate_type, target_experiment):
+                if not self._check_well_canvas_exists(well_row, well_column, well_plate_type, target_experiment):
                     continue
 
                 # Get well canvas and extract region
-                canvas = self.experiment_manager.get_well_canvas(well_row, well_column, wellplate_type, well_padding_mm, target_experiment)
+                canvas = self.experiment_manager.get_well_canvas(well_row, well_column, well_plate_type, well_padding_mm, target_experiment)
 
                 # Calculate absolute coordinates for the intersection region
                 intersection_center_x = (well_info['abs_min_x'] + well_info['abs_max_x']) / 2.0
@@ -2314,14 +2314,14 @@ class SquidController:
         logger.info(f"Experiment '{self.experiment_manager.current_experiment}' is ready")
 
     # Experiment management methods
-    def create_experiment(self, experiment_name: str, wellplate_type: str = '96',
+    def create_experiment(self, experiment_name: str, well_plate_type: str = '96',
                          well_padding_mm: float = 1.0, initialize_all_wells: bool = False):
         """
         Create a new experiment.
         
         Args:
             experiment_name: Name of the experiment
-            wellplate_type: Well plate type ('6', '12', '24', '96', '384')
+            well_plate_type: Well plate type ('6', '12', '24', '96', '384')
             well_padding_mm: Padding around each well in mm
             initialize_all_wells: If True, create canvases for all wells in the plate
             
@@ -2329,7 +2329,7 @@ class SquidController:
             dict: Information about the created experiment
         """
         return self.experiment_manager.create_experiment(
-            experiment_name, wellplate_type, well_padding_mm, initialize_all_wells
+            experiment_name, well_plate_type, well_padding_mm, initialize_all_wells
         )
 
     def list_experiments(self):
@@ -2360,18 +2360,18 @@ class SquidController:
         """
         return self.experiment_manager.get_experiment_info(experiment_name)
 
-    async def quick_scan_with_stitching(self, wellplate_type='96', exposure_time=5, intensity=50,
+    async def quick_scan_brightfield_to_zarr(self, well_plate_type='96', exposure_time=5, intensity=50,
                                       fps_target=10, action_ID='quick_scan_stitching',
                                       n_stripes=4, stripe_width_mm=4.0, dy_mm=0.9, velocity_scan_mm_per_s=7.0,
                                       do_contrast_autofocus=False, do_reflection_af=False, timepoint=0,
                                       experiment_name=None, well_padding_mm=1.0):
         """
-        Quick scan with live stitching to well-specific OME-Zarr canvases - brightfield only.
+        Quick brightfield scan with live stitching to well-specific OME-Zarr canvases.
         Scans entire well plate, creating individual zarr canvases for each well.
         Uses 4-stripe × 4 mm scanning pattern with serpentine motion per well.
         
         Args:
-            wellplate_type (str): Well plate type ('6', '12', '24', '96', '384')
+            well_plate_type (str): Well plate type ('6', '12', '24', '96', '384')
             exposure_time (float): Camera exposure time in ms (max 30ms)
             intensity (float): Brightfield LED intensity (0-100)
             fps_target (int): Target frame rate for acquisition (default 10fps)
@@ -2392,23 +2392,23 @@ class SquidController:
             raise ValueError("Quick scan exposure time must not exceed 30ms")
 
         # Get well plate format configuration
-        if wellplate_type == '6':
+        if well_plate_type == '6':
             wellplate_format = WELLPLATE_FORMAT_6
             max_rows = 2  # A-B
             max_cols = 3  # 1-3
-        elif wellplate_type == '12':
+        elif well_plate_type == '12':
             wellplate_format = WELLPLATE_FORMAT_12
             max_rows = 3  # A-C
             max_cols = 4  # 1-4
-        elif wellplate_type == '24':
+        elif well_plate_type == '24':
             wellplate_format = WELLPLATE_FORMAT_24
             max_rows = 4  # A-D
             max_cols = 6  # 1-6
-        elif wellplate_type == '96':
+        elif well_plate_type == '96':
             wellplate_format = WELLPLATE_FORMAT_96
             max_rows = 8  # A-H
             max_cols = 12  # 1-12
-        elif wellplate_type == '384':
+        elif well_plate_type == '384':
             wellplate_format = WELLPLATE_FORMAT_384
             max_rows = 16  # A-P
             max_cols = 24  # 1-24
@@ -2417,13 +2417,13 @@ class SquidController:
             wellplate_format = WELLPLATE_FORMAT_96
             max_rows = 8
             max_cols = 12
-            wellplate_type = '96'
+            well_plate_type = '96'
 
         # Ensure we have an active experiment
         self.ensure_active_experiment(experiment_name)
 
         # Always use well-based approach - create well canvases dynamically as we encounter wells
-        logger.info(f"Quick scan with stitching for experiment '{self.experiment_manager.current_experiment}': individual canvases for each well ({wellplate_type})")
+        logger.info(f"Quick scan with stitching for experiment '{self.experiment_manager.current_experiment}': individual canvases for each well ({well_plate_type})")
 
         # Validate that brightfield channel is available (we'll check per well canvas)
         channel_name = 'BF LED matrix full'
@@ -2439,7 +2439,7 @@ class SquidController:
         try:
             self.is_busy = True
             self.scan_stop_requested = False  # Reset stop flag at start of scan
-            logger.info(f'Starting quick scan with stitching: {wellplate_type} well plate, {n_stripes} stripes × {stripe_width_mm}mm, dy={dy_mm}mm, scan_velocity={scan_velocity}mm/s, fps={fps_target}, timepoint={timepoint}')
+            logger.info(f'Starting quick scan with stitching: {well_plate_type} well plate, {n_stripes} stripes × {stripe_width_mm}mm, dy={dy_mm}mm, scan_velocity={scan_velocity}mm/s, fps={fps_target}, timepoint={timepoint}')
 
             if do_contrast_autofocus:
                 logger.info('Contrast autofocus enabled for quick scan')
@@ -2525,7 +2525,7 @@ class SquidController:
                             logger.warning(f"Failed to set high-speed velocity for autofocus: {velocity_result['message']}")
 
                         # Move to well center using move_to_well function
-                        self.move_to_well(row_letter, col_number, wellplate_type)
+                        self.move_to_well(row_letter, col_number, well_plate_type)
 
                         # Wait for movement to complete
                         while self.microcontroller.is_busy():
@@ -2535,19 +2535,19 @@ class SquidController:
                         if do_reflection_af:
                             logger.info(f'Performing reflection autofocus at well {well_name}')
                             if hasattr(self, 'laserAutofocusController'):
-                                await self.do_laser_autofocus()
+                                await self.reflection_autofocus()
                             else:
                                 logger.warning('Reflection autofocus requested but laserAutofocusController not available')
                         elif do_contrast_autofocus:
                             logger.info(f'Performing contrast autofocus at well {well_name}')
-                            await self.do_autofocus()
+                            await self.contrast_autofocus()
 
                         # Update position after autofocus
                         actual_x_mm, actual_y_mm, actual_z_mm, _ = self.navigationController.update_pos(self.microcontroller)
                         logger.info(f'Autofocus completed at well {well_name}, current position: ({actual_x_mm:.2f}, {actual_y_mm:.2f}, {actual_z_mm:.2f})')
 
                     # Get well canvas for this well and validate brightfield channel
-                    canvas = self.experiment_manager.get_well_canvas(row_letter, col_number, wellplate_type, well_padding_mm)
+                    canvas = self.experiment_manager.get_well_canvas(row_letter, col_number, well_plate_type, well_padding_mm)
 
                     # Validate that brightfield channel is available in this canvas
                     if channel_name not in canvas.channel_to_zarr_index:
@@ -2581,7 +2581,7 @@ class SquidController:
                         well_name, n_stripes, stripe_start_x, stripe_end_x,
                         stripe_start_y, dy_mm, intensity, frame_interval,
                         zarr_channel_idx, limit_y_neg, limit_y_pos, timepoint=timepoint,
-                        wellplate_type=wellplate_type, well_padding_mm=well_padding_mm, channel_name=channel_name)
+                        well_plate_type=well_plate_type, well_padding_mm=well_padding_mm, channel_name=channel_name)
 
                     logger.info(f'Well {well_name} completed with {n_stripes} stripes, total frames: {total_frames}')
 
@@ -2655,7 +2655,7 @@ class SquidController:
     async def _scan_well_with_continuous_acquisition(self, well_name, n_stripes, stripe_start_x, stripe_end_x,
                                                    stripe_start_y, dy_mm, intensity, frame_interval,
                                                    zarr_channel_idx, limit_y_neg, limit_y_pos, timepoint=0,
-                                                   wellplate_type='96', well_padding_mm=1.0, channel_name='BF LED matrix full'):
+                                                   well_plate_type='96', well_padding_mm=1.0, channel_name='BF LED matrix full'):
         """Scan all stripes within a well with continuous frame acquisition."""
         total_frames = 0
 
@@ -2716,7 +2716,7 @@ class SquidController:
                     # Check if it's time for next frame
                     if current_time - last_frame_time >= frame_interval:
                         frame_acquired = await self._acquire_and_process_frame(
-                            zarr_channel_idx, timepoint, wellplate_type, well_padding_mm, channel_name
+                            zarr_channel_idx, timepoint, well_plate_type, well_padding_mm, channel_name
                         )
                         if frame_acquired:
                             stripe_frames += 1
@@ -2738,7 +2738,7 @@ class SquidController:
         return total_frames
 
     async def _acquire_and_process_frame(self, zarr_channel_idx, timepoint=0,
-                                       wellplate_type='96', well_padding_mm=1.0, channel_name='BF LED matrix full'):
+                                       well_plate_type='96', well_padding_mm=1.0, channel_name='BF LED matrix full'):
         """Acquire a single frame and add it to the stitching queue for quick scan."""
         # Get position before frame acquisition
         pos_before_x_mm, pos_before_y_mm, pos_before_z_mm, _ = self.navigationController.update_pos(self.microcontroller)
@@ -2810,7 +2810,7 @@ class SquidController:
             # Add to stitching queue for quick scan (using well-based approach)
             result = await self._add_image_to_zarr_quick_well_based(
                 processed_img, avg_x_mm, avg_y_mm,
-                zarr_channel_idx, timepoint, wellplate_type, well_padding_mm, channel_name
+                zarr_channel_idx, timepoint, well_plate_type, well_padding_mm, channel_name
             )
 
             logger.info(f'FRAME_ACQ: Frame processing completed at position ({avg_x_mm:.2f}, {avg_y_mm:.2f}), timepoint={timepoint}, result={result}')
@@ -2884,7 +2884,7 @@ class SquidController:
     def stop_scan_and_stitching(self):
         """
         Stop any ongoing scanning and stitching processes.
-        This will interrupt normal_scan_with_stitching and quick_scan_with_stitching.
+        This will interrupt scan_region_to_zarr and quick_scan_brightfield_to_zarr.
         """
         self.scan_stop_requested = True
         logger.info("Scan stop requested - ongoing scans will be interrupted")

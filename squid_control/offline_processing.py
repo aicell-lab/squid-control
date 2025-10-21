@@ -409,7 +409,7 @@ class OfflineProcessor:
             # Get zarr channel index
             zarr_channel_idx = canvas.get_zarr_channel_index(mapped_channel_name)
 
-            # Add image to canvas using stitching queue (same pattern as normal_scan_with_stitching)
+            # Add image to canvas using stitching queue (same pattern as scan_region_to_zarr)
             import asyncio
             import concurrent.futures
             
@@ -485,7 +485,7 @@ class OfflineProcessor:
             # Get zarr channel index
             zarr_channel_idx = canvas.get_zarr_channel_index(mapped_channel_name)
 
-            # Add image to canvas using stitching queue (same pattern as normal_scan_with_stitching)
+            # Add image to canvas using stitching queue (same pattern as scan_region_to_zarr)
             await self._add_image_to_stitching_queue(canvas, image, x_mm, y_mm, zarr_channel_idx)
 
             return True
@@ -1336,19 +1336,19 @@ class OfflineProcessor:
 
     async def _add_image_to_stitching_queue(self, canvas, image, x_mm, y_mm, zarr_channel_idx, z_idx=0, timepoint=0):
         """
-        Add image to stitching queue using the exact same pattern as normal_scan_with_stitching.
+        Add image to stitching queue using the exact same pattern as scan_region_to_zarr.
         This ensures proper processing with all scales and coordinate conversion.
         
         Args:
             canvas: WellZarrCanvas instance
             image: Image array
-            x_mm, y_mm: Absolute coordinates (like normal_scan_with_stitching)
+            x_mm, y_mm: Absolute coordinates (like scan_region_to_zarr)
             zarr_channel_idx: Local zarr channel index
             z_idx: Z-slice index (default 0)
             timepoint: Timepoint index (default 0)
         """
         try:
-            # Add to stitching queue with normal scan flag (all scales) - same as normal_scan_with_stitching
+            # Add to stitching queue with normal scan flag (all scales) - same as scan_region_to_zarr
             queue_item = {
                 'image': image.copy(),
                 'x_mm': x_mm,  # Use absolute coordinates - WellZarrCanvas will convert to well-relative

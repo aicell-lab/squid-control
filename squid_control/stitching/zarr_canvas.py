@@ -1784,10 +1784,10 @@ class WellZarrCanvas(WellZarrCanvasBase):
     - Well-center-relative coordinate system (0,0 at well center)
     - Automatic well center calculation from well plate formats
     - Canvas size based on well diameter + configurable padding
-    - Well-specific fileset naming (well_{row}{column}_{wellplate_type})
+    - Well-specific fileset naming (well_{row}{column}_{well_plate_type})
     """
 
-    def __init__(self, well_row: str, well_column: int, wellplate_type: str = '96',
+    def __init__(self, well_row: str, well_column: int, well_plate_type: str = '96',
                  padding_mm: float = 1.0, base_path: str = None,
                  pixel_size_xy_um: float = 0.333, channels: List[str] = None, **kwargs):
         """
@@ -1796,7 +1796,7 @@ class WellZarrCanvas(WellZarrCanvasBase):
         Args:
             well_row: Well row (e.g., 'A', 'B')
             well_column: Well column (e.g., 1, 2, 3)
-            wellplate_type: Well plate type ('6', '12', '24', '96', '384')
+            well_plate_type: Well plate type ('6', '12', '24', '96', '384')
             padding_mm: Padding around well in mm (default 2.0)
             base_path: Base directory for zarr storage
             pixel_size_xy_um: Pixel size in micrometers
@@ -1809,12 +1809,12 @@ class WellZarrCanvas(WellZarrCanvasBase):
         )
 
         # Get well plate format
-        self.wellplate_format = self._get_wellplate_format(wellplate_type)
+        self.wellplate_format = self._get_wellplate_format(well_plate_type)
 
         # Store well information
         self.well_row = well_row
         self.well_column = well_column
-        self.wellplate_type = wellplate_type
+        self.well_plate_type = well_plate_type
         self.padding_mm = padding_mm
 
         # Calculate well center coordinates (absolute stage coordinates)
@@ -1845,7 +1845,7 @@ class WellZarrCanvas(WellZarrCanvasBase):
         }
 
         # Create well-specific fileset name
-        fileset_name = f"well_{well_row}{well_column}_{wellplate_type}"
+        fileset_name = f"well_{well_row}{well_column}_{well_plate_type}"
 
         # Initialize parent ZarrCanvas with well-specific parameters
         super().__init__(
@@ -1857,11 +1857,11 @@ class WellZarrCanvas(WellZarrCanvasBase):
             **kwargs
         )
 
-        logger.info(f"WellZarrCanvas initialized for well {well_row}{well_column} ({wellplate_type})")
+        logger.info(f"WellZarrCanvas initialized for well {well_row}{well_column} ({well_plate_type})")
         logger.info(f"Well center: ({self.well_center_x:.2f}, {self.well_center_y:.2f}) mm")
         logger.info(f"Canvas size: {canvas_size_mm:.2f} mm, padding: {padding_mm:.2f} mm")
 
-    def _get_wellplate_format(self, wellplate_type: str):
+    def _get_wellplate_format(self, well_plate_type: str):
         """Get well plate format configuration."""
         from squid_control.control.config import (
             WELLPLATE_FORMAT_6,
@@ -1871,15 +1871,15 @@ class WellZarrCanvas(WellZarrCanvasBase):
             WELLPLATE_FORMAT_384,
         )
 
-        if wellplate_type == '6':
+        if well_plate_type == '6':
             return WELLPLATE_FORMAT_6
-        elif wellplate_type == '12':
+        elif well_plate_type == '12':
             return WELLPLATE_FORMAT_12
-        elif wellplate_type == '24':
+        elif well_plate_type == '24':
             return WELLPLATE_FORMAT_24
-        elif wellplate_type == '96':
+        elif well_plate_type == '96':
             return WELLPLATE_FORMAT_96
-        elif wellplate_type == '384':
+        elif well_plate_type == '384':
             return WELLPLATE_FORMAT_384
         else:
             return WELLPLATE_FORMAT_96  # Default
@@ -1915,7 +1915,7 @@ class WellZarrCanvas(WellZarrCanvasBase):
                 "row": self.well_row,
                 "column": self.well_column,
                 "well_id": f"{self.well_row}{self.well_column}",
-                "wellplate_type": self.wellplate_type,
+                "well_plate_type": self.well_plate_type,
                 "well_center_x_mm": self.well_center_x,
                 "well_center_y_mm": self.well_center_y,
                 "well_diameter_mm": self.wellplate_format.WELL_SIZE_MM,
@@ -1987,14 +1987,14 @@ class ExperimentManager:
         """Get the current experiment name."""
         return self.current_experiment
 
-    def create_experiment(self, experiment_name: str, wellplate_type: str = '96',
+    def create_experiment(self, experiment_name: str, well_plate_type: str = '96',
                          well_padding_mm: float = 1.0, initialize_all_wells: bool = False):
         """
         Create a new experiment folder and optionally initialize all well canvases.
         
         Args:
             experiment_name: Name of the experiment
-            wellplate_type: Well plate type ('6', '12', '24', '96', '384')
+            well_plate_type: Well plate type ('6', '12', '24', '96', '384')
             well_padding_mm: Padding around each well in mm
             initialize_all_wells: If True, create canvases for all wells in the plate
             
@@ -2018,10 +2018,10 @@ class ExperimentManager:
         # Optionally initialize all wells
         initialized_wells = []
         if initialize_all_wells:
-            well_positions = self._get_all_well_positions(wellplate_type)
+            well_positions = self._get_all_well_positions(well_plate_type)
             for well_row, well_column in well_positions:
                 try:
-                    canvas = self.get_well_canvas(well_row, well_column, wellplate_type, well_padding_mm)
+                    canvas = self.get_well_canvas(well_row, well_column, well_plate_type, well_padding_mm)
                     initialized_wells.append(f"{well_row}{well_column}")
                 except Exception as e:
                     logger.warning(f"Failed to initialize well {well_row}{well_column}: {e}")
@@ -2029,7 +2029,7 @@ class ExperimentManager:
         return {
             "experiment_name": experiment_name,
             "experiment_path": str(experiment_path),
-            "wellplate_type": wellplate_type,
+            "well_plate_type": well_plate_type,
             "initialized_wells": initialized_wells,
             "total_wells": len(initialized_wells) if initialize_all_wells else 0
         }
@@ -2174,7 +2174,7 @@ class ExperimentManager:
             "message": f"Reset experiment '{experiment_name}'"
         }
 
-    def get_well_canvas(self, well_row: str, well_column: int, wellplate_type: str = '96',
+    def get_well_canvas(self, well_row: str, well_column: int, well_plate_type: str = '96',
                        padding_mm: float = 1.0, experiment_name: str = None):
         """
         Get or create a well canvas for the specified experiment.
@@ -2182,7 +2182,7 @@ class ExperimentManager:
         Args:
             well_row: Well row (e.g., 'A', 'B')
             well_column: Well column (e.g., 1, 2, 3)
-            wellplate_type: Well plate type ('6', '12', '24', '96', '384')
+            well_plate_type: Well plate type ('6', '12', '24', '96', '384')
             padding_mm: Padding around well in mm
             experiment_name: Name of the experiment to get canvas from (default: None uses current experiment)
             
@@ -2193,7 +2193,7 @@ class ExperimentManager:
         if target_experiment is None:
             raise RuntimeError("No experiment specified and no active experiment. Create or set an experiment first.")
 
-        well_id = f"{well_row}{well_column}_{wellplate_type}"
+        well_id = f"{well_row}{well_column}_{well_plate_type}"
 
         # If requesting from current experiment, use cached canvases
         if target_experiment == self.current_experiment and well_id in self.well_canvases:
@@ -2212,7 +2212,7 @@ class ExperimentManager:
         canvas = WellZarrCanvas(
             well_row=well_row,
             well_column=well_column,
-            wellplate_type=wellplate_type,
+            well_plate_type=well_plate_type,
             padding_mm=padding_mm,
             base_path=str(experiment_path),  # Use experiment folder as base
             pixel_size_xy_um=self.pixel_size_xy_um,
@@ -2254,7 +2254,7 @@ class ExperimentManager:
                 "well_id": well_id,
                 "well_row": canvas.well_row,
                 "well_column": canvas.well_column,
-                "wellplate_type": canvas.wellplate_type,
+                "well_plate_type": canvas.well_plate_type,
                 "canvas_path": str(canvas.zarr_path),
                 "well_center_x_mm": canvas.well_center_x,
                 "well_center_y_mm": canvas.well_center_y,
@@ -2435,18 +2435,18 @@ class ExperimentManager:
 
         return result
 
-    def _get_all_well_positions(self, wellplate_type: str):
+    def _get_all_well_positions(self, well_plate_type: str):
         """Get all well positions for a given plate type."""
 
-        if wellplate_type == '6':
+        if well_plate_type == '6':
             max_rows, max_cols = 2, 3  # A-B, 1-3
-        elif wellplate_type == '12':
+        elif well_plate_type == '12':
             max_rows, max_cols = 3, 4  # A-C, 1-4
-        elif wellplate_type == '24':
+        elif well_plate_type == '24':
             max_rows, max_cols = 4, 6  # A-D, 1-6
-        elif wellplate_type == '96':
+        elif well_plate_type == '96':
             max_rows, max_cols = 8, 12  # A-H, 1-12
-        elif wellplate_type == '384':
+        elif well_plate_type == '384':
             max_rows, max_cols = 16, 24  # A-P, 1-24
         else:
             max_rows, max_cols = 8, 12  # Default to 96-well

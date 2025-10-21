@@ -134,8 +134,7 @@ omit = [
     "squid_control/control/processing_handler.py",
     "squid_control/control/serial_peripherals.py",
     # AI/service modules not used in core simulation
-    "squid_control/hypha_tools/chatbot/*",
-    "squid_control/hypha_tools/hypha_storage.py",
+    "squid_control/hypha_tools/*",
     # Test files
     "tests/*",
     "scripts/*",

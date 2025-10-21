@@ -38,7 +38,15 @@ class MicroscopeVideoTrack(MediaStreamTrack):
         self.fps = 5  # Target FPS for WebRTC stream
         self.frame_width = 750
         self.frame_height = 750
-        logger.info("MicroscopeVideoTrack initialized with local_service")
+        
+        # Use print for immediate debugging
+        print(f"[VIDEO_TRACK] __init__ called: id={self.id}, kind={self.kind}, readyState={self.readyState}")
+        print(f"[VIDEO_TRACK] local_service type: {type(self.local_service).__name__}")
+        print(f"[VIDEO_TRACK] has get_video_frame: {hasattr(self.local_service, 'get_video_frame')}")
+        
+        logger.info(f"MicroscopeVideoTrack initialized: id={self.id}, kind={self.kind}, readyState={self.readyState}")
+        logger.info(f"MicroscopeVideoTrack local_service type: {type(self.local_service).__name__}")
+        logger.info(f"MicroscopeVideoTrack has local_service.get_video_frame: {hasattr(self.local_service, 'get_video_frame')}")
 
     def draw_crosshair(self, img, center_x, center_y, size=20, color=[255, 255, 255]):
         """Draw a crosshair at the specified position"""
@@ -57,13 +65,19 @@ class MicroscopeVideoTrack(MediaStreamTrack):
             img[start_y:end_y, center_x] = color
 
     async def recv(self):
+        # Use print for immediate debugging since logger might not be configured
+        print(f"[VIDEO_TRACK] recv() called - frame {self.count}, running={self.running}")
+        logger.info(f"MicroscopeVideoTrack recv() called - frame {self.count}, running={self.running}")
+        
         if not self.running:
+            print(f"[VIDEO_TRACK] ERROR: recv() called but track is not running")
             logger.warning("MicroscopeVideoTrack: recv() called but track is not running")
             raise Exception("Track stopped")
 
         try:
             if self.start_time is None:
                 self.start_time = time.time()
+                logger.info(f"MicroscopeVideoTrack: Started at {self.start_time}")
 
             # Time the entire frame processing (including sleep)
             frame_start_time = time.time()
@@ -86,6 +100,7 @@ class MicroscopeVideoTrack(MediaStreamTrack):
                 raise Exception("Local service not available")
 
             # Time getting the video frame from local service
+            logger.info(f"MicroscopeVideoTrack: Calling local_service.get_video_frame() for frame {self.count}")
             get_frame_start = time.time()
             frame_data = await self.local_service.get_video_frame(
                 frame_width=self.frame_width,
@@ -93,6 +108,7 @@ class MicroscopeVideoTrack(MediaStreamTrack):
             )
             get_frame_end = time.time()
             get_frame_latency = (get_frame_end - get_frame_start) * 1000  # Convert to ms
+            logger.info(f"MicroscopeVideoTrack: get_video_frame() returned in {get_frame_latency:.2f}ms")
 
             # Extract stage position from frame metadata
             stage_position = None
@@ -102,39 +118,14 @@ class MicroscopeVideoTrack(MediaStreamTrack):
             else:
                 logger.debug(f"Frame {self.count}: No metadata found in frame_data, keys: {list(frame_data.keys()) if isinstance(frame_data, dict) else 'not dict'}")
 
-            # Handle new JPEG format returned by get_video_frame
-            if isinstance(frame_data, dict) and 'data' in frame_data:
-                # New format: dictionary with JPEG data
-                jpeg_data = frame_data['data']
-                frame_size_bytes = frame_data.get('size_bytes', len(jpeg_data))
-
-                # Decode JPEG data to numpy array
-                decode_start = time.time()
-                if isinstance(jpeg_data, bytes):
-                    # Convert bytes to numpy array for cv2.imdecode
-                    jpeg_np = np.frombuffer(jpeg_data, dtype=np.uint8)
-                    # Decode JPEG to BGR format (OpenCV default)
-                    processed_frame_bgr = cv2.imdecode(jpeg_np, cv2.IMREAD_COLOR)
-                    if processed_frame_bgr is None:
-                        raise Exception("Failed to decode JPEG data")
-                    # Convert BGR to RGB for VideoFrame
-                    processed_frame = cv2.cvtColor(processed_frame_bgr, cv2.COLOR_BGR2RGB)
-                else:
-                    raise Exception(f"Unexpected JPEG data type: {type(jpeg_data)}")
-                decode_end = time.time()
-                decode_latency = (decode_end - decode_start) * 1000  # Convert to ms
-                print(f"Frame {self.count} decode time: {decode_latency:.2f}ms")
-            else:
-                # Fallback for old format (numpy array)
-                processed_frame = frame_data
-                if hasattr(processed_frame, 'nbytes'):
-                    frame_size_bytes = processed_frame.nbytes
-                else:
-                    import sys  # noqa: PLC0415
-                    frame_size_bytes = sys.getsizeof(processed_frame)
-
-                frame_size_kb = frame_size_bytes / 1024
-                print(f"Frame {self.count} raw data size: {frame_size_kb:.2f} KB ({frame_size_bytes} bytes)")
+            # Decode frame using VideoFrameProcessor (same as main service)
+            from squid_control.utils.video_utils import VideoFrameProcessor
+            
+            decode_start = time.time()
+            processed_frame = VideoFrameProcessor.decode_frame_jpeg(frame_data)
+            decode_end = time.time()
+            decode_latency = (decode_end - decode_start) * 1000  # Convert to ms
+            logger.info(f"Frame {self.count} decode time: {decode_latency:.2f}ms")
 
             # Time processing the frame
             process_start = time.time()
@@ -191,10 +182,13 @@ class MicroscopeVideoTrack(MediaStreamTrack):
                     logger.info(f"MicroscopeVideoTrack: Sent frame {self.count}")
 
             self.count += 1
+            logger.info(f"MicroscopeVideoTrack: Successfully created VideoFrame {self.count - 1}, returning it")
             return new_video_frame
 
         except Exception as e:
-            logger.error(f"MicroscopeVideoTrack: Error in recv(): {e}", exc_info=True)
+            logger.error(f"MicroscopeVideoTrack: Error in recv() at frame {self.count}: {e}", exc_info=True)
+            logger.error(f"MicroscopeVideoTrack: Error type: {type(e).__name__}")
+            logger.error(f"MicroscopeVideoTrack: local_service is {'None' if self.local_service is None else 'available'}")
             self.running = False
             raise
 

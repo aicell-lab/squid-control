@@ -2,7 +2,8 @@
 Mirror microscope service for cloud-to-local proxy.
 
 This module provides the MirrorMicroscopeService class that acts as a proxy
-between cloud and local microscope control systems.
+between cloud and local microscope control systems, transparently mirroring
+both methods and metadata (id, name, description, type) from the local service.
 """
 
 import asyncio
@@ -34,8 +35,10 @@ class MirrorMicroscopeService:
     """
     Mirror service that proxies requests between cloud and local microscope systems.
     
-    This service allows remote control of microscopes by mirroring local service
-    methods to the cloud while maintaining WebRTC video streaming capabilities.
+    This service allows remote control of microscopes by transparently mirroring local
+    service methods and metadata (id, name, description, type) to the cloud while maintaining
+    WebRTC video streaming capabilities. The mirror service presents the exact same identity
+    as the local service to provide a fully transparent proxy experience.
     """
 
     def __init__(self):
@@ -44,7 +47,7 @@ class MirrorMicroscopeService:
         self.cloud_server_url = "https://hypha.aicell.io"
         self.cloud_workspace = "reef-imaging"
         self.cloud_token = os.environ.get("REEF_WORKSPACE_TOKEN")
-        self.cloud_service_id = "mirror-microscope-control-squid-1"
+        self.cloud_service_id = "microscope-control-squid-1"
         self.cloud_server = None
         self.cloud_service = None  # Add reference to registered cloud service
 
@@ -276,7 +279,7 @@ class MirrorMicroscopeService:
             await asyncio.sleep(10)  # Check more frequently (was 30)
 
     async def start_hypha_service(self, server):
-        """Start the Hypha service with dynamically mirrored methods"""
+        """Start the Hypha service with dynamically mirrored methods and metadata (id, name, description, type)"""
         self.cloud_server = server
 
         # Ensure we have a connection to the local service
@@ -289,18 +292,47 @@ class MirrorMicroscopeService:
         # Get the mirrored methods from the current local service
         self.mirrored_methods = self._get_mirrored_methods()
 
-        # Base service configuration with core methods
+        # Extract metadata from local service to transparently mirror it
+        local_service_name = getattr(self.local_service, 'name', 'Microscope Control Service')
+        local_service_full_id = getattr(self.local_service, 'id', self.local_service_id)
+        local_service_description = getattr(self.local_service, 'description', None)
+        local_service_type = getattr(self.local_service, 'type', 'service')
+        
+        # Extract just the service name part from the full ID (remove workspace prefix)
+        # Local service ID format: "workspace/service-id" -> we want just "service-id"
+        if ':' in local_service_full_id:
+            local_service_id = local_service_full_id.split(':')[-1]  # Get the last part after ':'
+        else:
+            local_service_id = local_service_full_id
+        
+        logger.info("Mirroring local service metadata:")
+        logger.info(f"  - name: '{local_service_name}'")
+        logger.info(f"  - local_full_id: '{local_service_full_id}'")
+        logger.info(f"  - local_extracted_id: '{local_service_id}'")
+        logger.info(f"  - cloud_service_id: '{self.cloud_service_id}'")
+        logger.info(f"  - type: '{local_service_type}'")
+        if local_service_description:
+            logger.info(f"  - description: {local_service_description[:100]}...")
+        else:
+            logger.warning("  - description: None (local service has no description)")
+        
+        # Base service configuration - use cloud service ID but local service metadata
+        # Note: We use cloud_service_id to avoid conflicts with the local service
         service_config = {
-            "name": "Mirror Microscope Control Service",
-            "id": self.cloud_service_id,
+            "name": local_service_name,
+            "id": self.cloud_service_id,  # Use the cloud service ID to avoid conflicts
             "config": {
                 "visibility": "protected",
                 "require_context": True,  # Always require context for consistent schema
                 "run_in_executor": True
             },
-            "type": "echo",
+            "type": local_service_type,
             "ping": self.ping,
         }
+        
+        # Add description if the local service has one
+        if local_service_description:
+            service_config["description"] = local_service_description
 
         # Add all mirrored methods to the service configuration
         service_config.update(self.mirrored_methods)
@@ -309,7 +341,7 @@ class MirrorMicroscopeService:
         self.cloud_service = await server.register_service(service_config)
 
         logger.info(
-            f"Mirror service (service_id={self.cloud_service_id}) started successfully with {len(self.mirrored_methods)} mirrored methods, available at {self.cloud_server_url}/services"
+            f"Mirror service (cloud_id={self.cloud_service_id}) started successfully with {len(self.mirrored_methods)} mirrored methods, available at {self.cloud_server_url}/services"
         )
 
         logger.info(f'You can use this service using the service id: {self.cloud_service.id}')
@@ -348,20 +380,35 @@ class MirrorMicroscopeService:
                     # Mark as disconnected
                     self.webrtc_connected = False
                     self.metadata_data_channel = None
-                    self.local_service.off_illumination()
-                    logger.info("Illumination closed")
+                    try:
+                        await self.local_service.turn_off_illumination()
+                        logger.info("Illumination closed")
+                    except Exception as e:
+                        logger.error(f"Failed to turn off illumination: {e}")
                     if self.video_track and self.video_track.running:
                         logger.info(f"Connection state is {peer_connection.connectionState}. Stopping video track.")
                         self.video_track.stop()
+                    
+                    # Stop video buffering on local service
+                    try:
+                        logger.info("Stopping video buffering on local service (connection state change)")
+                        await self.local_service.stop_video_buffering()
+                        logger.info("Video buffering stopped on local service")
+                    except Exception as buffer_err:
+                        logger.warning(f"Failed to stop video buffering: {buffer_err}")
                 elif peer_connection.connectionState in ["connected"]:
                     # Mark as connected
                     self.webrtc_connected = True
 
             @peer_connection.on("track")
-            def on_track(track):
+            def on_track(track):  # MUST BE SYNC - aiortc expects synchronous event handlers
+                logger.info(f"=== on_track handler called ===")
                 logger.info(f"Track {track.kind} received from client")
+                logger.info(f"Track id: {track.id}")
+                logger.info(f"Peer connection state at track receipt: {peer_connection.connectionState}")
 
                 if self.video_track and self.video_track.running:
+                    logger.info(f"Stopping existing video track")
                     self.video_track.stop()
 
                 # Ensure local_service is available before creating video track
@@ -369,26 +416,63 @@ class MirrorMicroscopeService:
                     logger.error("Cannot create video track: local_service is not available")
                     return
 
-                try:
-                    self.local_service.on_illumination()
-                    logger.info("Illumination opened")
-                    self.video_track = MicroscopeVideoTrack(self.local_service, self)
-                    peer_connection.addTrack(self.video_track)
-                    logger.info("Added MicroscopeVideoTrack to peer connection")
-                except Exception as e:
-                    logger.error(f"Failed to create video track: {e}")
-                    return
+                # Create and add video track SYNCHRONOUSLY (critical for WebRTC negotiation)
+                self.video_track = MicroscopeVideoTrack(self.local_service, self)
+                logger.info(f"Created MicroscopeVideoTrack: id={self.video_track.id}, kind={self.video_track.kind}, running={self.video_track.running}")
+                
+                track_sender = peer_connection.addTrack(self.video_track)
+                logger.info(f"Added MicroscopeVideoTrack to peer connection, track_sender={track_sender}")
+                logger.info(f"Peer connection state: {peer_connection.connectionState}")
+                logger.info(f"Peer connection signalingState: {peer_connection.signalingState}")
+                logger.info(f"Number of senders: {len(peer_connection.getSenders())}")
+                logger.info(f"Number of transceivers: {len(peer_connection.getTransceivers())}")
+
+                # Start illumination and video buffering ASYNCHRONOUSLY (don't block on_track handler)
+                async def start_video_services():
+                    try:
+                        await self.local_service.turn_on_illumination()
+                        logger.info("Illumination turned on")
+                        
+                        # Start video buffering on local service
+                        logger.info("Starting video buffering on local service")
+                        try:
+                            await self.local_service.start_video_buffering()
+                            logger.info("Video buffering started on local service")
+                        except Exception as buffer_err:
+                            logger.warning(f"Failed to start video buffering: {buffer_err}")
+                    except Exception as e:
+                        logger.error(f"Failed to start video services: {e}", exc_info=True)
+                
+                # Schedule async operations (illumination, buffering)
+                asyncio.create_task(start_video_services())
 
                 @track.on("ended")
-                def on_ended():
+                def on_ended():  # Also sync
                     logger.info(f"Client track {track.kind} ended")
-                    self.local_service.off_illumination()
-                    logger.info("Illumination closed")
+                    
+                    async def cleanup():
+                        try:
+                            await self.local_service.turn_off_illumination()
+                            logger.info("Illumination closed")
+                        except Exception as e:
+                            logger.error(f"Failed to turn off illumination: {e}")
+                        
+                        # Stop video buffering on local service
+                        try:
+                            logger.info("Stopping video buffering on local service")
+                            await self.local_service.stop_video_buffering()
+                            logger.info("Video buffering stopped on local service")
+                        except Exception as buffer_err:
+                            logger.warning(f"Failed to stop video buffering: {buffer_err}")
+                    
                     if self.video_track:
                         logger.info("Stopping MicroscopeVideoTrack.")
-                        self.video_track.stop()  # Now synchronous
+                        self.video_track.stop()
                         self.video_track = None
                     self.metadata_data_channel = None
+                    
+                    # Schedule the async cleanup
+                    asyncio.create_task(cleanup())
 
         ice_servers = await self.fetch_ice_servers()
         if not ice_servers:
@@ -400,8 +484,7 @@ class MirrorMicroscopeService:
                 server,
                 service_id=self.webrtc_service_id,
                 config={
-                    "visibility": "protected",
-                    "require_context": True,  # Always require context for consistent schema
+                    "visibility": "public",  # Match main service - public visibility for WebRTC
                     "ice_servers": ice_servers,
                     "on_init": on_init,
                 },

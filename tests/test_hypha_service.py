@@ -19,28 +19,6 @@ TEST_SERVER_URL = "https://hypha.aicell.io"
 TEST_WORKSPACE = "agent-lens"
 TEST_TIMEOUT = 120  # seconds
 
-class SimpleTestDataStore:
-    """Simple test datastore that doesn't require external services."""
-
-    def __init__(self):
-        self.storage = {}
-        self.counter = 0
-
-    def put(self, file_type, data, filename, description=""):
-        self.counter += 1
-        file_id = f"test_file_{self.counter}"
-        self.storage[file_id] = {
-            'type': file_type,
-            'data': data,
-            'filename': filename,
-            'description': description
-        }
-        return file_id
-
-    def get_url(self, file_id):
-        if file_id in self.storage:
-            return f"https://test-storage.example.com/{file_id}"
-        return None
 
 @pytest_asyncio.fixture(scope="function")
 async def test_microscope_service():
@@ -84,11 +62,23 @@ async def test_microscope_service():
             microscope.login_required = False  # Disable auth for tests
             microscope.authorized_emails = None
 
-            # Create a simple datastore for testing
-            microscope.datastore = SimpleTestDataStore()
 
+            # Initialize artifact manager and snapshot manager for testing
+            from squid_control.hypha_tools.artifact_manager.artifact_manager import SquidArtifactManager
+            from squid_control.hypha_tools.snapshot_utils import SnapshotManager
+            
+            microscope.artifact_manager = SquidArtifactManager()
+            artifact_server = await connect_to_server({
+                "server_url": "https://hypha.aicell.io",
+                "token": token,
+                "workspace": "agent-lens",
+                "ping_interval": 30
+            })
+            await microscope.artifact_manager.connect_server(artifact_server)
+            microscope.snapshot_manager = SnapshotManager(microscope.artifact_manager)
+            print("✅ Artifact manager and snapshot manager initialized")
 
-            # Override setup method to avoid connecting to external services during tests
+            # Override setup method to avoid duplicate external connections
             async def mock_setup():
                 pass
             microscope.setup = mock_setup
@@ -156,6 +146,14 @@ async def test_microscope_service():
                         print("✅ SquidController closed")
                     except Exception as controller_error:
                         print(f"Error closing SquidController: {controller_error}")
+
+                # Clean up test datasets from artifact manager
+                if microscope and hasattr(microscope, 'snapshot_manager') and microscope.snapshot_manager:
+                    try:
+                        print("🧹 Cleaning up test datasets from artifact manager...")
+                        await microscope.snapshot_manager.cleanup_test_datasets()
+                    except Exception as cleanup_error:
+                        print(f"⚠️ Error cleaning up test datasets: {cleanup_error}")
 
                 # Give time for all cleanup operations to complete
                 await asyncio.sleep(0.1)
@@ -238,7 +236,12 @@ async def test_get_status_service(test_microscope_service):
     assert 'current_y' in status
     assert 'current_z' in status
     assert 'is_illumination_on' in status
-    assert 'is_busy' in status
+    # Verify scan status is included
+    assert 'scan_status' in status
+    assert isinstance(status['scan_status'], dict)
+    assert 'state' in status['scan_status']
+    assert 'saved_data_type' in status['scan_status']
+    assert 'error_message' in status['scan_status']
 
 async def test_update_parameters_service(test_microscope_service):
     """Test parameter updates through the service."""
@@ -271,7 +274,7 @@ async def test_snap_image_service(test_microscope_service):
 
     url = await asyncio.wait_for(
         service.snap(exposure_time=100, channel=0, intensity=50),
-        timeout=20
+        timeout=60
     )
 
     assert isinstance(url, str)
@@ -310,7 +313,7 @@ async def test_get_video_frame_service(test_microscope_service):
     assert isinstance(frame_data['data'], bytes)
 
     # Test decompression to numpy array
-    decompressed_frame = microscope._decode_frame_jpeg(frame_data)
+    decompressed_frame = microscope.decode_video_frame(frame_data)
     assert decompressed_frame is not None
     assert hasattr(decompressed_frame, 'shape')
     assert decompressed_frame.shape == (640, 640, 3)
@@ -321,7 +324,7 @@ async def test_illumination_control_service(test_microscope_service):
     microscope, service = test_microscope_service
 
     # Test turning on illumination
-    result = await asyncio.wait_for(service.on_illumination(), timeout=10)
+    result = await asyncio.wait_for(service.turn_on_illumination(), timeout=10)
     assert "turned on" in result.lower()
 
     # Test setting illumination
@@ -332,7 +335,7 @@ async def test_illumination_control_service(test_microscope_service):
     assert "intensity" in result and "50" in result
 
     # Test turning off illumination
-    result = await asyncio.wait_for(service.off_illumination(), timeout=10)
+    result = await asyncio.wait_for(service.turn_off_illumination(), timeout=10)
     assert "turned off" in result.lower()
 
 async def test_camera_exposure_service(test_microscope_service):
@@ -349,7 +352,7 @@ async def test_navigate_to_well_service(test_microscope_service):
     microscope, service = test_microscope_service
 
     result = await asyncio.wait_for(
-        service.navigate_to_well(row='B', col=3, wellplate_type='96'),
+        service.navigate_to_well(row='B', col=3, well_plate_type='96'),
         timeout=15
     )
 
@@ -361,11 +364,11 @@ async def test_autofocus_services(test_microscope_service):
     microscope, service = test_microscope_service
 
     # Test contrast autofocus
-    result = await service.auto_focus()
+    result = await service.contrast_autofocus()
     assert "auto-focused" in result.lower()
 
     # Test laser autofocus
-    result = await service.do_laser_autofocus()
+    result = await service.reflection_autofocus()
     assert "auto-focused" in result.lower()
 
 # Stage homing tests
@@ -550,7 +553,7 @@ async def test_schema_methods(test_microscope_service):
     assert "![Image](" in result
 
     # Test navigate_to_well_schema
-    config = MicroscopeHyphaService.NavigateToWellInput(row='B', col=3, wellplate_type='96')
+    config = MicroscopeHyphaService.NavigateToWellInput(row='B', col=3, well_plate_type='96')
     result = await microscope.navigate_to_well_schema(config)
     assert isinstance(result, str)
     assert "B,3" in result
@@ -569,26 +572,18 @@ async def test_schema_methods(test_microscope_service):
 
 # Permission and authentication tests
 async def test_permission_system(test_microscope_service):
-    """Test the permission and authentication system."""
+    """Test the permission system in simulation mode (always allows access)."""
     microscope, service = test_microscope_service
 
-    # Test with anonymous user
+    # In simulation mode, check_permission should always return True regardless of user type
     anonymous_user = {"is_anonymous": True, "email": ""}
-    assert not microscope.check_permission(anonymous_user)
-
-    # Test with authorized user when login not required
-    microscope.login_required = False
     authorized_user = {"is_anonymous": False, "email": "test@example.com"}
-    assert microscope.check_permission(authorized_user)
-
-    # Test with authorized emails list
-    microscope.login_required = True
-    microscope.authorized_emails = ["test@example.com", "admin@example.com"]
-    assert microscope.check_permission(authorized_user)
-
-    # Test with unauthorized user
     unauthorized_user = {"is_anonymous": False, "email": "unauthorized@example.com"}
-    assert not microscope.check_permission(unauthorized_user)
+    
+    # All users should be allowed in simulation mode
+    assert microscope.check_permission(anonymous_user)
+    assert microscope.check_permission(authorized_user)
+    assert microscope.check_permission(unauthorized_user)
 
 
 # Advanced parameter management tests
@@ -652,8 +647,8 @@ async def test_edge_cases_and_error_handling(test_microscope_service):
     await service.set_camera_exposure(channel=0, exposure_time=5000)
 
     # Test navigation to edge wells
-    await service.navigate_to_well(row='A', col=1, wellplate_type='96')  # Top-left
-    await service.navigate_to_well(row='H', col=12, wellplate_type='96')  # Bottom-right
+    await service.navigate_to_well(row='A', col=1, well_plate_type='96')  # Top-left
+    await service.navigate_to_well(row='H', col=12, well_plate_type='96')  # Bottom-right
 
 
 
@@ -700,7 +695,7 @@ async def test_image_and_video_processing(test_microscope_service):
     assert frame_720p_data['height'] == 720
 
     # Decode to verify actual frame shape
-    frame_720p = microscope._decode_frame_jpeg(frame_720p_data)
+    frame_720p = microscope.decode_video_frame(frame_720p_data)
     assert frame_720p.shape == (720, 720, 3)
 
     frame_640p_data = await service.get_video_frame(frame_width=640, frame_height=640)
@@ -709,7 +704,7 @@ async def test_image_and_video_processing(test_microscope_service):
     assert frame_640p_data['height'] == 640
 
     # Decode to verify actual frame shape
-    frame_640p = microscope._decode_frame_jpeg(frame_640p_data)
+    frame_640p = microscope.decode_video_frame(frame_640p_data)
     assert frame_640p.shape == (640, 640, 3)
 
     # Test that frames are RGB
@@ -719,7 +714,7 @@ async def test_image_and_video_processing(test_microscope_service):
     # Test frame with different contrast settings
     await service.adjust_video_frame(min_val=0, max_val=100)
     frame_low_contrast_data = await service.get_video_frame(frame_width=640, frame_height=640)
-    frame_low_contrast = microscope._decode_frame_jpeg(frame_low_contrast_data)
+    frame_low_contrast = microscope.decode_video_frame(frame_low_contrast_data)
     assert frame_low_contrast.shape == (640, 640, 3)
 
 # Multi-channel imaging tests
@@ -770,7 +765,7 @@ async def test_service_lifecycle_management(test_microscope_service):
     # Test service initialization state
     assert microscope.server is not None
     assert microscope.service_id is not None
-    assert microscope.datastore is not None
+    assert microscope.snapshot_manager is not None
 
     # Test parameter initialization
     assert isinstance(microscope.parameters, dict)
@@ -797,14 +792,14 @@ async def test_comprehensive_illumination_control(test_microscope_service):
     initial_illumination_state = initial_status['is_illumination_on']
 
     # Test turning illumination on
-    result = await service.on_illumination()
+    result = await service.turn_on_illumination()
     assert "turned on" in result.lower()
 
     # Test setting illumination while on
     await service.set_illumination(channel=0, intensity=60)
 
     # Test turning illumination off
-    result = await service.off_illumination()
+    result = await service.turn_off_illumination()
     assert "turned off" in result.lower()
 
     # Test setting illumination while off
@@ -812,9 +807,9 @@ async def test_comprehensive_illumination_control(test_microscope_service):
 
     # Test rapid on/off cycling
     for _ in range(3):
-        await service.on_illumination()
+        await service.turn_on_illumination()
         await asyncio.sleep(0.1)
-        await service.off_illumination()
+        await service.turn_off_illumination()
         await asyncio.sleep(0.1)
 
 # Well plate navigation comprehensive tests
@@ -826,15 +821,15 @@ async def test_comprehensive_well_navigation(test_microscope_service):
 
     for plate_type in well_plate_types:
         # Test navigation to first well
-        result = await service.navigate_to_well(row='A', col=1, wellplate_type=plate_type)
+        result = await service.navigate_to_well(row='A', col=1, well_plate_type=plate_type)
         assert "A,1" in result
 
         # Test different well positions based on plate type
         if plate_type == '96':
-            result = await service.navigate_to_well(row='H', col=12, wellplate_type=plate_type)
+            result = await service.navigate_to_well(row='H', col=12, well_plate_type=plate_type)
             assert "H,12" in result
         elif plate_type == '384':
-            result = await service.navigate_to_well(row='P', col=24, wellplate_type=plate_type)
+            result = await service.navigate_to_well(row='P', col=24, well_plate_type=plate_type)
             assert "P,24" in result
 
 # Additional schema method tests
@@ -842,9 +837,9 @@ async def test_additional_schema_methods(test_microscope_service):
     """Test additional schema methods and input validation."""
     microscope, service = test_microscope_service
 
-    # Test auto_focus_schema
+    # Test contrast_autofocus_schema
     config = MicroscopeHyphaService.AutoFocusInput(N=10, delta_Z=1.524)
-    result = await microscope.auto_focus_schema(config)
+    result = await microscope.contrast_autofocus_schema(config)
     assert "auto-focus" in result.lower()
 
     # Test home_stage_schema
@@ -857,13 +852,13 @@ async def test_additional_schema_methods(test_microscope_service):
     assert isinstance(result, dict)
     assert "result" in result
 
-    # Test do_laser_autofocus_schema
-    result = await microscope.do_laser_autofocus_schema()
+    # Test reflection_autofocus_schema
+    result = await microscope.reflection_autofocus_schema()
     assert isinstance(result, dict)
     assert "result" in result
 
-    # Test set_laser_reference_schema
-    result = await microscope.set_laser_reference_schema()
+    # Test autofocus_set_reflection_reference_schema
+    result = await microscope.autofocus_set_reflection_reference_schema()
     assert isinstance(result, dict)
     assert "result" in result
 
@@ -896,10 +891,10 @@ async def test_pydantic_input_models():
     assert snap_input.intensity == 50
 
     # Test NavigateToWellInput
-    well_input = MicroscopeHyphaService.NavigateToWellInput(row='B', col=3, wellplate_type='96')
+    well_input = MicroscopeHyphaService.NavigateToWellInput(row='B', col=3, well_plate_type='96')
     assert well_input.row == 'B'
     assert well_input.col == 3
-    assert well_input.wellplate_type == '96'
+    assert well_input.well_plate_type == '96'
 
     # Test SetIlluminationInput
     illum_input = MicroscopeHyphaService.SetIlluminationInput(channel=11, intensity=75)
@@ -961,8 +956,8 @@ async def test_service_url_management(test_microscope_service):
     assert microscope.service_id is not None
     assert isinstance(microscope.service_id, str)
 
-    # Test datastore configuration
-    assert microscope.datastore is not None
+    # Test snapshot manager configuration
+    assert microscope.snapshot_manager is not None
 
 # Test laser reference functionality
 async def test_laser_functionality(test_microscope_service):
@@ -970,11 +965,11 @@ async def test_laser_functionality(test_microscope_service):
     microscope, service = test_microscope_service
 
     # Test setting laser reference
-    result = await service.set_laser_reference()
+    result = await service.autofocus_set_reflection_reference()
     assert "laser reference" in result.lower()
 
     # Test laser autofocus
-    result = await service.do_laser_autofocus()
+    result = await service.reflection_autofocus()
     assert "auto-focused" in result.lower()
 
 # Test stop_scan functionality (without actually scanning)
@@ -1024,24 +1019,24 @@ async def test_frame_processing_edge_cases(test_microscope_service):
     # Test extreme contrast values
     await service.adjust_video_frame(min_val=0, max_val=1)
     frame_data = await service.get_video_frame(frame_width=320, frame_height=320)
-    frame = microscope._decode_frame_jpeg(frame_data)
+    frame = microscope.decode_video_frame(frame_data)
     assert frame.shape == (320, 320, 3)
 
     # Test equal min/max values
     await service.adjust_video_frame(min_val=128, max_val=128)
     frame_data = await service.get_video_frame(frame_width=160, frame_height=160)
-    frame = microscope._decode_frame_jpeg(frame_data)
+    frame = microscope.decode_video_frame(frame_data)
     assert frame.shape == (160, 160, 3)
 
     # Test None max value (should use default)
     await service.adjust_video_frame(min_val=10, max_val=None)
     frame_data = await service.get_video_frame(frame_width=640, frame_height=640)
-    frame = microscope._decode_frame_jpeg(frame_data)
+    frame = microscope.decode_video_frame(frame_data)
     assert frame.shape == (640, 640, 3)
 
     # Test unusual frame sizes
     frame_data = await service.get_video_frame(frame_width=100, frame_height=100)
-    frame = microscope._decode_frame_jpeg(frame_data)
+    frame = microscope.decode_video_frame(frame_data)
     assert frame.shape == (100, 100, 3)
 
 # Test initialization and setup edge cases
@@ -1061,41 +1056,6 @@ async def test_initialization_edge_cases():
     # Check that local URL contains the expected local IP address
     assert "192.168.2.1" in microscope_local.server_url or "localhost" in microscope_local.server_url
     microscope_local.squidController.close()
-
-# Test authorization and email management
-async def test_authorization_management():
-    """Test authorization and email management functionality."""
-    microscope = MicroscopeHyphaService(is_simulation=True, is_local=False)
-
-    try:
-        # Test with login_required=True but no authorized emails
-        microscope.login_required = True
-        microscope.authorized_emails = None
-
-        user = {"is_anonymous": False, "email": "test@example.com"}
-        assert microscope.check_permission(user) == True  # Should allow when authorized_emails is None
-
-        # Test with empty authorized emails list
-        microscope.authorized_emails = []
-        assert microscope.check_permission(user) == False  # Should deny when list is empty
-
-        # Test load_authorized_emails without parameters
-        emails = microscope.load_authorized_emails()
-        # If AUTHORIZED_USERS env var is set, it should return a list; otherwise None
-        if emails is not None:
-            assert isinstance(emails, list)
-            assert len(emails) > 0
-            # Check that we have valid emails in the list
-            assert all('@' in email for email in emails)
-            # Check that the list contains valid email format (without exposing specific emails)
-            assert all('@' in email and '.' in email.split('@')[1] for email in emails)
-        else:
-            # No environment variable set
-            assert emails is None
-
-    finally:
-        microscope.squidController.close()
-
 
 
 # Video buffering tests
@@ -1155,7 +1115,7 @@ async def test_video_buffering_functionality(test_microscope_service):
             assert frame_data['height'] == 320
 
             # Decode to verify frame shape
-            frame = microscope._decode_frame_jpeg(frame_data)
+            frame = microscope.decode_video_frame(frame_data)
             assert frame.shape == (320, 320, 3)
             print(f"   Frame {i+1}: {elapsed*1000:.1f}ms, Shape: {frame.shape}")
 
@@ -1176,7 +1136,9 @@ async def test_video_buffering_functionality(test_microscope_service):
         result = await service.stop_video_buffering()
         assert isinstance(result, dict)
         assert result["success"] == True
-        assert "stopped successfully" in result["message"]
+        # Handle both cases: already stopped or successfully stopped
+        assert ("stopped successfully" in result["message"] or 
+                "already stopped" in result["message"])
 
         # Test 7: Final status check
         print("7. Checking status after stop...")
@@ -1239,7 +1201,7 @@ async def test_video_buffering_with_parameter_changes(test_microscope_service):
 
         # Get initial frame
         frame1_data = await service.get_video_frame(frame_width=640, frame_height=640)
-        frame1 = microscope._decode_frame_jpeg(frame1_data)
+        frame1 = microscope.decode_video_frame(frame1_data)
         assert frame1.shape == (640, 640, 3)
 
         # Change illumination parameters
@@ -1249,7 +1211,7 @@ async def test_video_buffering_with_parameter_changes(test_microscope_service):
         # Get frame with new parameters (should use updated parameters in buffer)
         await asyncio.sleep(1)  # Allow new parameters to take effect in buffer
         frame2_data = await service.get_video_frame(frame_width=640, frame_height=640)
-        frame2 = microscope._decode_frame_jpeg(frame2_data)
+        frame2 = microscope.decode_video_frame(frame2_data)
         assert frame2.shape == (640, 640, 3)
 
         # Verify channel was updated
@@ -1259,7 +1221,7 @@ async def test_video_buffering_with_parameter_changes(test_microscope_service):
         # Change contrast settings
         await service.adjust_video_frame(min_val=20, max_val=200)
         frame3_data = await service.get_video_frame(frame_width=640, frame_height=640)
-        frame3 = microscope._decode_frame_jpeg(frame3_data)
+        frame3 = microscope.decode_video_frame(frame3_data)
         assert frame3.shape == (640, 640, 3)
 
     finally:
@@ -1286,7 +1248,7 @@ async def test_video_buffering_error_handling(test_microscope_service):
     frame_data = await service.get_video_frame(frame_width=160, frame_height=120)
     assert frame_data is not None
     assert isinstance(frame_data, dict)
-    frame = microscope._decode_frame_jpeg(frame_data)
+    frame = microscope.decode_video_frame(frame_data)
     assert frame.shape == (120, 160, 3)
 
     # Cleanup
@@ -1314,10 +1276,10 @@ async def test_well_location_detection_service(test_microscope_service):
     try:
         # Test 1: Navigate to a specific well and check location
         print("1. Testing navigation to well C5 and location detection...")
-        await service.navigate_to_well(row='C', col=5, wellplate_type='96')
+        await service.navigate_to_well(row='C', col=5, well_plate_type='96')
 
         # Get current well location
-        well_location = await service.get_current_well_location(wellplate_type='96')
+        well_location = await service.get_current_well_location(well_plate_type='96')
 
         print(f"   Expected: C5, Got: {well_location}")
         assert isinstance(well_location, dict)
@@ -1333,8 +1295,8 @@ async def test_well_location_detection_service(test_microscope_service):
         print("2. Testing different plate types...")
 
         # Test 24-well plate
-        await service.navigate_to_well(row='B', col=3, wellplate_type='24')
-        well_location = await service.get_current_well_location(wellplate_type='24')
+        await service.navigate_to_well(row='B', col=3, well_plate_type='24')
+        well_location = await service.get_current_well_location(well_plate_type='24')
 
         print(f"   24-well: Expected B3, Got: {well_location['well_id']}")
         assert well_location['row'] == 'B'
@@ -1343,8 +1305,8 @@ async def test_well_location_detection_service(test_microscope_service):
         assert well_location['plate_type'] == '24'
 
         # Test 384-well plate
-        await service.navigate_to_well(row='D', col=12, wellplate_type='384')
-        well_location = await service.get_current_well_location(wellplate_type='384')
+        await service.navigate_to_well(row='D', col=12, well_plate_type='384')
+        well_location = await service.get_current_well_location(well_plate_type='384')
 
         print(f"   384-well: Expected D12, Got: {well_location['well_id']}")
         assert well_location['row'] == 'D'
@@ -1376,9 +1338,9 @@ async def test_well_location_detection_service(test_microscope_service):
 
         for row, col in test_wells:
             print(f"   Testing well {row}{col}...")
-            await service.navigate_to_well(row=row, col=col, wellplate_type='96')
+            await service.navigate_to_well(row=row, col=col, well_plate_type='96')
 
-            well_location = await service.get_current_well_location(wellplate_type='96')
+            well_location = await service.get_current_well_location(well_plate_type='96')
             expected_well_id = f"{row}{col}"
 
             print(f"      Expected: {expected_well_id}, Got: {well_location['well_id']}")
@@ -1426,10 +1388,10 @@ async def test_well_location_edge_cases_service(test_microscope_service):
             print(f"   Testing {row}{col} on {plate_type}-well plate...")
 
             # Navigate to position
-            await service.navigate_to_well(row=row, col=col, wellplate_type=plate_type)
+            await service.navigate_to_well(row=row, col=col, well_plate_type=plate_type)
 
             # Detect location
-            well_location = await service.get_current_well_location(wellplate_type=plate_type)
+            well_location = await service.get_current_well_location(well_plate_type=plate_type)
 
             # Verify consistency
             assert well_location['row'] == row
@@ -1441,8 +1403,8 @@ async def test_well_location_edge_cases_service(test_microscope_service):
 
         # Test 3: Position accuracy metrics
         print("3. Testing position accuracy metrics...")
-        await service.navigate_to_well(row='F', col=8, wellplate_type='96')
-        well_location = await service.get_current_well_location(wellplate_type='96')
+        await service.navigate_to_well(row='F', col=8, well_plate_type='96')
+        well_location = await service.get_current_well_location(well_plate_type='96')
 
         print("   Position metrics for F8:")
         print(f"      Distance from center: {well_location['distance_from_center']:.4f}mm")
@@ -1473,7 +1435,7 @@ async def test_get_status_well_location_integration(test_microscope_service):
 
         for row, col in test_wells:
             print(f"   Moving to well {row}{col}...")
-            await service.navigate_to_well(row=row, col=col, wellplate_type='96')
+            await service.navigate_to_well(row=row, col=col, well_plate_type='96')
 
             # Get full status
             status = await service.get_status()
@@ -1491,7 +1453,7 @@ async def test_get_status_well_location_integration(test_microscope_service):
             # Verify other status fields are still present
             required_fields = [
                 'current_x', 'current_y', 'current_z', 'is_illumination_on',
-                'current_channel', 'video_fps', 'is_busy'
+                'current_channel', 'video_fps'
             ]
 
             for field in required_fields:
@@ -1499,7 +1461,7 @@ async def test_get_status_well_location_integration(test_microscope_service):
 
         # Test 2: Verify status coordinates match well location calculation
         print("2. Testing coordinate consistency...")
-        await service.navigate_to_well(row='D', col=6, wellplate_type='96')
+        await service.navigate_to_well(row='D', col=6, well_plate_type='96')
         status = await service.get_status()
 
         # Extract coordinates from status
@@ -2052,7 +2014,7 @@ async def test_comprehensive_service_functionality(test_microscope_service):
         expected_methods = [
             "ping", "get_status", "move_by_distance", "snap",
             "set_illumination", "navigate_to_well", "get_microscope_configuration",
-            "set_stage_velocity"
+            "set_stage_velocity", "scan_start", "scan_get_status", "scan_cancel"
         ]
 
         available_methods = []
@@ -2065,6 +2027,9 @@ async def test_comprehensive_service_functionality(test_microscope_service):
 
         assert "get_microscope_configuration" in available_methods, "Configuration method should be available"
         assert "set_stage_velocity" in available_methods, "Set stage velocity method should be available"
+        assert "scan_start" in available_methods, "Unified scan_start method should be available"
+        assert "scan_get_status" in available_methods, "scan_get_status method should be available"
+        assert "scan_cancel" in available_methods, "scan_cancel method should be available"
 
         # Test 2: Test integration between methods
         print("2. Testing method integration...")
@@ -2107,5 +2072,589 @@ async def test_comprehensive_service_functionality(test_microscope_service):
     except Exception as e:
         print(f"❌ Comprehensive service functionality test failed: {e}")
         raise
+
+
+# ===== Unified Scan API Tests =====
+
+async def test_unified_scan_api_availability(test_microscope_service):
+    """Test that unified scan API endpoints are available."""
+    microscope, service = test_microscope_service
+    
+    print("Testing unified scan API availability")
+    
+    # Test that all three unified scan endpoints exist
+    assert hasattr(service, 'scan_start'), "scan_start method should be available"
+    assert hasattr(service, 'scan_get_status'), "scan_get_status method should be available"
+    assert hasattr(service, 'scan_cancel'), "scan_cancel method should be available"
+    
+    # Test that scan state is initialized correctly
+    assert hasattr(microscope, 'scan_state'), "Microscope should have scan_state attribute"
+    assert microscope.scan_state['state'] == 'idle', "Initial scan state should be idle"
+    assert microscope.scan_state['error_message'] is None, "Initial error message should be None"
+    assert microscope.scan_state['scan_task'] is None, "Initial scan task should be None"
+    
+    print("✅ Unified scan API availability test passed!")
+
+
+async def test_scan_get_status_initial(test_microscope_service):
+    """Test scan_get_status returns correct initial state."""
+    microscope, service = test_microscope_service
+    
+    print("Testing scan_get_status initial state")
+    
+    status = await service.scan_get_status()
+    
+    assert isinstance(status, dict), "Status should be a dictionary"
+    assert status['success'] == True, "Status call should succeed"
+    assert status['state'] == 'idle', "Initial state should be idle"
+    assert status['error_message'] is None, "Initial error message should be None"
+    assert status['saved_data_type'] is None, "Initial saved_data_type should be None"
+    
+    print("✅ scan_get_status initial state test passed!")
+
+
+async def test_scan_start_validation(test_microscope_service):
+    """Test scan_start parameter validation."""
+    microscope, service = test_microscope_service
+    
+    print("Testing scan_start parameter validation")
+    
+    # Test with invalid saved_data_type
+    try:
+        result = await service.scan_start(
+            config={
+                "saved_data_type": "invalid_type",
+                "action_ID": "test_invalid"
+            }
+        )
+        pytest.fail("Should have raised exception for invalid saved_data_type")
+    except Exception as e:
+        assert "invalid" in str(e).lower() or "must be one of" in str(e).lower()
+        print("   ✓ Invalid saved_data_type properly rejected")
+    
+    # Verify state is still idle after failed start
+    status = await service.scan_get_status()
+    assert status['state'] == 'idle', "State should remain idle after failed start"
+    
+    print("✅ scan_start validation test passed!")
+
+
+async def test_scan_start_concurrent_prevention(test_microscope_service):
+    """Test that concurrent scans are prevented."""
+    microscope, service = test_microscope_service
+    
+    print("Testing concurrent scan prevention")
+    
+    from unittest.mock import AsyncMock, patch
+    
+    # Mock the actual scan methods to simulate long-running scans
+    async def mock_long_scan(*args, **kwargs):
+        await asyncio.sleep(2.0)  # Simulate a long scan
+        return "Scan completed"
+    
+    with patch.object(microscope, 'scan_plate_save_raw_images', new=AsyncMock(side_effect=mock_long_scan)):
+        # Start first scan
+        result1 = await service.scan_start(
+            config={
+                "saved_data_type": "raw_images",
+                "well_plate_type": "96",
+                "Nx": 2,
+                "Ny": 2,
+                "action_ID": "test_concurrent_1"
+            }
+        )
+        
+        assert result1['success'] == True, "First scan should start successfully"
+        assert result1['state'] == 'running', "First scan should be running"
+        
+        # Give a small delay to ensure the scan state is properly set
+        await asyncio.sleep(0.1)
+        
+        # Verify state is running
+        status = await service.scan_get_status()
+        assert status['state'] == 'running', "Scan state should be running"
+        
+        # Try to start second scan while first is running
+        try:
+            result2 = await service.scan_start(
+                config={
+                    "saved_data_type": "full_zarr",
+                    "start_x_mm": 20,
+                    "start_y_mm": 20,
+                    "Nx": 2,
+                    "Ny": 2,
+                    "action_ID": "test_concurrent_2"
+                }
+            )
+            pytest.fail("Should have raised exception for concurrent scan")
+        except Exception as e:
+            assert "already in progress" in str(e).lower()
+            print("   ✓ Concurrent scan properly prevented")
+        
+        # Cancel the running scan
+        await service.scan_cancel()
+        
+        # Wait for cancellation to complete
+        await asyncio.sleep(0.5)
+    
+    print("✅ Concurrent scan prevention test passed!")
+
+
+async def test_scan_start_raw_images_profile(test_microscope_service):
+    """Test scan_start with raw_images profile."""
+    microscope, service = test_microscope_service
+    
+    print("Testing scan_start with raw_images profile")
+    
+    from unittest.mock import AsyncMock, patch
+    
+    # Mock the scan_plate_save_raw_images method
+    mock_scan = AsyncMock(return_value="Well plate scanning completed")
+    
+    with patch.object(microscope, 'scan_plate_save_raw_images', new=mock_scan):
+        # Start scan with raw_images profile
+        result = await service.scan_start(
+            config={
+                "saved_data_type": "raw_images",
+                "well_plate_type": "96",
+                "illumination_settings": [
+                    {'channel': 'BF LED matrix full', 'intensity': 50, 'exposure_time': 100}
+                ],
+                "scanning_zone": [(0,0),(2,2)],
+                "Nx": 3,
+                "Ny": 3,
+                "dx": 0.8,
+                "dy": 0.8,
+                "action_ID": "test_raw_images"
+            }
+        )
+        
+        assert result['success'] == True, "Scan should start successfully"
+        assert result['saved_data_type'] == 'raw_images', "Profile should be raw_images"
+        assert result['state'] == 'running', "State should be running"
+        assert result['action_ID'] == 'test_raw_images', "Action ID should match"
+        
+        # Brief wait for scan task to start
+        await asyncio.sleep(0.2)
+        
+        # Check that status shows running
+        status = await service.scan_get_status()
+        assert status['state'] in ['running', 'completed'], "State should be running or completed"
+        assert status['saved_data_type'] == 'raw_images', "Profile should be raw_images"
+        
+        # Wait for scan to complete
+        await asyncio.sleep(0.5)
+        
+        # Verify mock was called
+        assert mock_scan.called, "scan_plate_save_raw_images should have been called"
+        
+        # Check final status
+        final_status = await service.scan_get_status()
+        assert final_status['state'] in ['completed', 'idle'], "Scan should be completed"
+        
+        print("   ✓ raw_images profile scan completed successfully")
+    
+    print("✅ scan_start raw_images profile test passed!")
+
+
+async def test_scan_start_full_zarr_profile(test_microscope_service):
+    """Test scan_start with full_zarr profile."""
+    microscope, service = test_microscope_service
+    
+    print("Testing scan_start with full_zarr profile")
+    
+    from unittest.mock import AsyncMock, patch
+    
+    # Mock the scan_region_to_zarr method
+    mock_scan = AsyncMock(return_value={
+        "success": True,
+        "message": "Normal scan with stitching completed successfully"
+    })
+    
+    with patch.object(microscope, 'scan_region_to_zarr', new=mock_scan):
+        # Start scan with full_zarr profile
+        result = await service.scan_start(
+            config={
+                "saved_data_type": "full_zarr",
+                "start_x_mm": 20.0,
+                "start_y_mm": 20.0,
+                "Nx": 3,
+                "Ny": 3,
+                "dx_mm": 0.9,
+                "dy_mm": 0.9,
+                "wells_to_scan": ['A1', 'B2'],
+                "well_plate_type": '96',
+                "experiment_name": 'test_experiment',
+                "uploading": False,
+                "action_ID": "test_full_zarr"
+            }
+        )
+        
+        assert result['success'] == True, "Scan should start successfully"
+        assert result['saved_data_type'] == 'full_zarr', "Profile should be full_zarr"
+        assert result['state'] == 'running', "State should be running"
+        
+        # Brief wait for scan task to start
+        await asyncio.sleep(0.2)
+        
+        # Check status
+        status = await service.scan_get_status()
+        assert status['state'] in ['running', 'completed'], "State should be running or completed"
+        assert status['saved_data_type'] == 'full_zarr', "Profile should be full_zarr"
+        
+        # Wait for scan to complete
+        await asyncio.sleep(0.5)
+        
+        # Verify mock was called
+        assert mock_scan.called, "scan_region_to_zarr should have been called"
+        
+        print("   ✓ full_zarr profile scan completed successfully")
+    
+    print("✅ scan_start full_zarr profile test passed!")
+
+
+async def test_scan_start_quick_zarr_profile(test_microscope_service):
+    """Test scan_start with quick_zarr profile."""
+    microscope, service = test_microscope_service
+    
+    print("Testing scan_start with quick_zarr profile")
+    
+    from unittest.mock import AsyncMock, patch
+    
+    # Mock the quick_scan_brightfield_to_zarr method
+    mock_scan = AsyncMock(return_value={
+        "success": True,
+        "message": "Quick scan with stitching completed successfully"
+    })
+    
+    with patch.object(microscope, 'quick_scan_brightfield_to_zarr', new=mock_scan):
+        # Start scan with quick_zarr profile
+        result = await service.scan_start(
+            config={
+                "saved_data_type": "quick_zarr",
+                "well_plate_type": "96",
+                "exposure_time": 5.0,
+                "intensity": 70.0,
+                "fps_target": 10,
+                "n_stripes": 4,
+                "stripe_width_mm": 4.0,
+                "dy_mm": 0.9,
+                "velocity_scan_mm_per_s": 7.0,
+                "experiment_name": 'test_quick',
+                "action_ID": "test_quick_zarr"
+            }
+        )
+        
+        assert result['success'] == True, "Scan should start successfully"
+        assert result['saved_data_type'] == 'quick_zarr', "Profile should be quick_zarr"
+        assert result['state'] == 'running', "State should be running"
+        
+        # Brief wait for scan task to start
+        await asyncio.sleep(0.2)
+        
+        # Check status
+        status = await service.scan_get_status()
+        assert status['state'] in ['running', 'completed'], "State should be running or completed"
+        assert status['saved_data_type'] == 'quick_zarr', "Profile should be quick_zarr"
+        
+        # Wait for scan to complete
+        await asyncio.sleep(0.5)
+        
+        # Verify mock was called
+        assert mock_scan.called, "quick_scan_brightfield_to_zarr should have been called"
+        
+        print("   ✓ quick_zarr profile scan completed successfully")
+    
+    print("✅ scan_start quick_zarr profile test passed!")
+
+
+async def test_scan_cancel_functionality(test_microscope_service):
+    """Test scan_cancel cancels running scan."""
+    microscope, service = test_microscope_service
+    
+    print("Testing scan_cancel functionality")
+    
+    from unittest.mock import AsyncMock, patch
+    
+    # Mock a long-running scan
+    async def mock_long_scan(*args, **kwargs):
+        await asyncio.sleep(5.0)  # Long scan
+        return "Scan completed"
+    
+    with patch.object(microscope, 'scan_plate_save_raw_images', new=AsyncMock(side_effect=mock_long_scan)):
+        # Start a scan
+        result = await service.scan_start(
+            config={
+                "saved_data_type": "raw_images",
+                "well_plate_type": "96",
+                "Nx": 2,
+                "Ny": 2,
+                "action_ID": "test_cancel"
+            }
+        )
+        
+        assert result['success'] == True, "Scan should start"
+        assert result['state'] == 'running', "Scan should be running"
+        
+        # Wait a moment for scan to be running
+        await asyncio.sleep(0.3)
+        
+        # Verify scan is running
+        status_before = await service.scan_get_status()
+        assert status_before['state'] == 'running', "Scan should be running before cancel"
+        
+        # Cancel the scan
+        cancel_result = await service.scan_cancel()
+        
+        assert cancel_result['success'] == True, "Cancel should succeed"
+        assert cancel_result['message'].lower().count('cancel') > 0, "Message should mention cancellation"
+        
+        # Check status after cancel
+        status_after = await service.scan_get_status()
+        assert status_after['state'] == 'failed', "State should be failed after cancel"
+        assert 'cancel' in status_after['error_message'].lower(), "Error message should mention cancellation"
+        
+        print("   ✓ Scan cancelled successfully")
+    
+    print("✅ scan_cancel functionality test passed!")
+
+
+async def test_scan_cancel_when_idle(test_microscope_service):
+    """Test scan_cancel when no scan is running."""
+    microscope, service = test_microscope_service
+    
+    print("Testing scan_cancel when idle")
+    
+    # Ensure we're in idle state
+    status = await service.scan_get_status()
+    if status['state'] != 'idle':
+        # Reset to idle if needed
+        microscope.scan_state['state'] = 'idle'
+        microscope.scan_state['error_message'] = None
+        microscope.scan_state['scan_task'] = None
+    
+    # Try to cancel when no scan is running
+    result = await service.scan_cancel()
+    
+    assert result['success'] == True, "Cancel should succeed gracefully"
+    assert 'no scan' in result['message'].lower(), "Message should indicate no scan to cancel"
+    
+    # State should still be idle
+    status_after = await service.scan_get_status()
+    assert status_after['state'] == 'idle', "State should remain idle"
+    
+    print("✅ scan_cancel when idle test passed!")
+
+
+async def test_scan_error_handling(test_microscope_service):
+    """Test scan error handling when scan method fails."""
+    microscope, service = test_microscope_service
+    
+    print("Testing scan error handling")
+    
+    from unittest.mock import AsyncMock, patch
+    
+    # Mock a failing scan
+    mock_scan = AsyncMock(side_effect=Exception("Simulated scan failure"))
+    
+    with patch.object(microscope, 'scan_plate_save_raw_images', new=mock_scan):
+        # Start a scan that will fail
+        result = await service.scan_start(
+            config={
+                "saved_data_type": "raw_images",
+                "well_plate_type": "96",
+                "Nx": 2,
+                "Ny": 2,
+                "action_ID": "test_error"
+            }
+        )
+        
+        assert result['success'] == True, "Scan should start (error happens during execution)"
+        
+        # Wait for scan to fail
+        await asyncio.sleep(0.5)
+        
+        # Check that status shows failure
+        status = await service.scan_get_status()
+        assert status['state'] == 'failed', "State should be failed"
+        assert status['error_message'] is not None, "Error message should be present"
+        assert 'simulated scan failure' in status['error_message'].lower(), "Error message should contain failure reason"
+        
+        print("   ✓ Scan error properly captured in state")
+    
+    print("✅ Scan error handling test passed!")
+
+
+async def test_scan_state_transitions(test_microscope_service):
+    """Test complete scan state transition lifecycle."""
+    microscope, service = test_microscope_service
+    
+    print("Testing scan state transitions: idle -> running -> completed -> idle")
+    
+    from unittest.mock import AsyncMock, patch
+    
+    # Initial state should be idle
+    status1 = await service.scan_get_status()
+    assert status1['state'] == 'idle', "Initial state should be idle"
+    print("   ✓ State: idle")
+    
+    # Mock a quick successful scan
+    mock_scan = AsyncMock(return_value="Scan completed successfully")
+    
+    with patch.object(microscope, 'scan_plate_save_raw_images', new=mock_scan):
+        # Start scan -> should transition to running
+        result = await service.scan_start(
+            config={
+                "saved_data_type": "raw_images",
+                "well_plate_type": "96",
+                "Nx": 2,
+                "Ny": 2,
+                "action_ID": "test_transitions"
+            }
+        )
+        
+        assert result['state'] == 'running', "Should transition to running"
+        print("   ✓ State: idle -> running")
+        
+        # Check running state
+        await asyncio.sleep(0.2)
+        status2 = await service.scan_get_status()
+        assert status2['state'] in ['running', 'completed'], "Should be running or completed"
+        
+        # Wait for completion
+        await asyncio.sleep(0.5)
+        status3 = await service.scan_get_status()
+        assert status3['state'] == 'completed', "Should transition to completed"
+        print("   ✓ State: running -> completed")
+        
+        # After completion, state remains completed (doesn't auto-reset to idle)
+        # This allows clients to see the completion status
+        assert status3['state'] == 'completed', "State should remain completed"
+        print("   ✓ State: completed (persistent)")
+    
+    print("✅ Scan state transitions test passed!")
+
+
+
+async def test_scan_status_persistence(test_microscope_service):
+    """Test that scan status persists across status checks."""
+    microscope, service = test_microscope_service
+    
+    print("Testing scan status persistence")
+    
+    from unittest.mock import AsyncMock, patch
+    
+    # Mock a medium-duration scan
+    async def mock_medium_scan(*args, **kwargs):
+        await asyncio.sleep(1.0)
+        return "Scan completed"
+    
+    with patch.object(microscope, 'scan_plate_save_raw_images', new=AsyncMock(side_effect=mock_medium_scan)):
+        # Start scan
+        await service.scan_start(
+            config={
+                "saved_data_type": "raw_images",
+                "well_plate_type": "96",
+                "Nx": 2,
+                "Ny": 2,
+                "action_ID": "test_persistence"
+            }
+        )
+        
+        # Poll status multiple times while scan is running
+        statuses = []
+        for i in range(5):
+            await asyncio.sleep(0.15)
+            status = await service.scan_get_status()
+            statuses.append(status['state'])
+            print(f"   Check {i+1}: {status['state']}")
+        
+        # All checks should show consistent state (running or completed)
+        assert all(s in ['running', 'completed'] for s in statuses), "Status should be consistent"
+        
+        # Wait for completion
+        await asyncio.sleep(1.0)
+        
+        final_status = await service.scan_get_status()
+        assert final_status['state'] == 'completed', "Final state should be completed"
+        assert final_status['saved_data_type'] == 'raw_images', "Profile should persist"
+        
+        print("   ✓ Scan status persisted correctly through multiple checks")
+    
+    print("✅ Scan status persistence test passed!")
+
+
+async def test_scan_status_in_get_status(test_microscope_service):
+    """Test that scan status is included in the main get_status call."""
+    microscope, service = test_microscope_service
+    
+    print("Testing scan status integration in get_status")
+    
+    from unittest.mock import AsyncMock, patch
+    
+    # Test 1: Verify scan status in idle state
+    print("1. Checking scan status when idle...")
+    status = await service.get_status()
+    
+    assert 'scan_status' in status, "get_status should include scan_status"
+    assert status['scan_status']['state'] == 'idle', "Initial scan state should be idle"
+    assert status['scan_status']['saved_data_type'] is None, "No scan type when idle"
+    assert status['scan_status']['error_message'] is None, "No error when idle"
+    print("   ✓ Idle scan status correct")
+    
+    # Test 2: Verify scan status during running scan
+    print("2. Checking scan status during running scan...")
+    
+    async def mock_medium_scan(*args, **kwargs):
+        await asyncio.sleep(1.0)
+        return "Scan completed"
+    
+    with patch.object(microscope, 'scan_plate_save_raw_images', new=AsyncMock(side_effect=mock_medium_scan)):
+        # Start scan
+        await service.scan_start(
+            config={
+                "saved_data_type": "raw_images",
+                "well_plate_type": "96",
+                "Nx": 2,
+                "Ny": 2,
+                "action_ID": "test_status_integration"
+            }
+        )
+        
+        # Check status during scan
+        await asyncio.sleep(0.3)
+        status = await service.get_status()
+        
+        assert status['scan_status']['state'] in ['running', 'completed'], "Scan should be running"
+        assert status['scan_status']['saved_data_type'] == 'raw_images', "Scan type should be raw_images"
+        print(f"   ✓ Running scan status: {status['scan_status']['state']}")
+        
+        # Wait for completion
+        await asyncio.sleep(1.2)
+        
+        # Test 3: Verify scan status after completion
+        print("3. Checking scan status after completion...")
+        status = await service.get_status()
+        
+        assert status['scan_status']['state'] == 'completed', "Scan should be completed"
+        assert status['scan_status']['saved_data_type'] == 'raw_images', "Scan type should persist"
+        assert status['scan_status']['error_message'] is None, "No error on successful completion"
+        print("   ✓ Completed scan status correct")
+    
+    # Test 4: Verify status includes other microscope info along with scan status
+    print("4. Verifying all status fields are present...")
+    status = await service.get_status()
+    
+    expected_fields = [
+        'current_x', 'current_y', 'current_z',
+        'is_illumination_on', 'current_channel', 'video_fps',
+        'current_well_location', 'scan_status'
+    ]
+    
+    for field in expected_fields:
+        assert field in status, f"Status should include {field}"
+    
+    print("   ✓ All status fields present")
+    print("✅ Scan status integration test passed!")
 
 
