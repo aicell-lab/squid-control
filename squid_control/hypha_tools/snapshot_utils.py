@@ -17,8 +17,8 @@ class SnapshotManager:
     Manages microscope snapshot storage using Artifact Manager.
     
     Snapshots are organized into:
-    - Gallery: "microscope-snapshots-{service_id}" (one per microscope)
-    - Datasets: "snapshots-{service_id}-{YYYY-MM-DD}" (one per day)
+    - Gallery: "microscope-snapshots" (shared by all microscopes)
+    - Datasets: "snapshots-{service_id}-{YYYY-MM-DD}" (one per day per microscope)
     - Files: "{uuid}.png" (UUID-based naming for uniqueness)
     
     All snapshots have public read access through the artifact manager.
@@ -37,22 +37,16 @@ class SnapshotManager:
         
     async def get_or_create_snapshots_gallery(self, microscope_service_id: str) -> dict:
         """
-        Get or create the snapshots gallery for a specific microscope.
+        Get or create the shared snapshots gallery for all microscopes.
         
         Args:
-            microscope_service_id: The hypha service ID of the microscope
+            microscope_service_id: The hypha service ID of the microscope (used for logging)
             
         Returns:
             dict: The gallery artifact information
         """
-        # Use the base microscope service ID (remove test prefixes)
-        base_service_id = microscope_service_id
-        if microscope_service_id.startswith('test-'):
-            # Extract the base service ID from test service ID
-            # e.g., "test-microscope-ad1db73b" -> "microscope"
-            base_service_id = "microscope"
-        
-        gallery_alias = f"microscope-snapshots-{base_service_id}"
+        # Use a single shared gallery for all microscopes
+        gallery_alias = "microscope-snapshots"
         
         try:
             # Try to get existing gallery
@@ -70,9 +64,8 @@ class SnapshotManager:
                 print(f"Creating new snapshots gallery: {gallery_alias}")
                 
                 gallery_manifest = {
-                    "name": f"Snapshots Gallery - {base_service_id}",
-                    "description": f"Daily snapshot collection for microscope {base_service_id}",
-                    "microscope_service_id": base_service_id,
+                    "name": "Microscope Snapshots Gallery",
+                    "description": "Shared gallery for daily snapshot collections from all microscopes",
                     "created_by": "squid-control-system",
                     "type": "snapshot-gallery"
                 }
@@ -255,7 +248,7 @@ class SnapshotManager:
         Deletes any datasets that start with 'snapshots-test'.
         """
         try:
-            # Get the snapshots gallery
+            # Get the shared snapshots gallery
             gallery = await self.get_or_create_snapshots_gallery("microscope")
             
             # List all datasets in the gallery
