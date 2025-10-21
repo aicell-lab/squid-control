@@ -223,11 +223,10 @@ class SnapshotManager:
             # Commit the changes
             await self._svc.commit(artifact_id=dataset["id"])
             
-            # Get public URL for the snapshot
-            file_url = await self._svc.get_file(
-                artifact_id=dataset["id"],
-                file_path=filename
-            )
+            # Construct direct artifact manager URL instead of using signed S3 URL
+            # Format: https://hypha.aicell.io/{workspace}/artifacts/{dataset_alias}/files/{filename}
+            dataset_alias = dataset.get("alias", "").replace(f"{self.workspace}/", "")
+            file_url = f"https://hypha.aicell.io/{self.workspace}/artifacts/{dataset_alias}/files/{filename}"
             
             print(f"Snapshot saved successfully: {filename}")
             print(f"Public URL: {file_url}")
