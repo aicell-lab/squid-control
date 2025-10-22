@@ -1133,11 +1133,23 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to close illumination: {e}")
             raise e
 
-    async def scan_plate_save_raw_images(self, well_plate_type: str = "96", illumination_settings: List[dict] = None, do_contrast_autofocus: bool = False, do_reflection_af: bool = True, scanning_zone: List[tuple] = None, Nx: int = 3, Ny: int = 3, dx: float = 0.8, dy: float = 0.8, action_ID: str = 'testPlateScan', context=None):
+    async def scan_plate_save_raw_images(self, well_plate_type: str = "96", illumination_settings: List[dict] = None, do_contrast_autofocus: bool = False, do_reflection_af: bool = True, wells_to_scan: List[str] = None, Nx: int = 3, Ny: int = 3, dx: float = 0.8, dy: float = 0.8, action_ID: str = 'testPlateScan', context=None):
         """
-        DEPRECATED: Use scan_start() with saved_data_type='raw_images' instead.
         
-        Scan the well plate according to the pre-defined position list with custom illumination settings
+        Scan the well plate according to the specified wells with custom illumination settings
+        
+        Args:
+            well_plate_type: Type of well plate ('96', '384', etc.)
+            illumination_settings: List of dictionaries with illumination settings
+            do_contrast_autofocus: Whether to perform contrast-based autofocus
+            do_reflection_af: Whether to perform reflection-based autofocus
+            wells_to_scan: List of wells to scan (e.g., ['A1', 'B2', 'C3'])
+            Nx: Number of X positions per well
+            Ny: Number of Y positions per well
+            dx: Distance between X positions in mm
+            dy: Distance between Y positions in mm
+            action_ID: Identifier for this scan
+            
         Returns: The message of the action
         """
         logger.warning("DEPRECATED: scan_plate_save_raw_images is deprecated and will be removed in a future release. Use scan_start() with saved_data_type='raw_images' instead.")
@@ -1154,8 +1166,8 @@ class MicroscopeHyphaService:
                     {'channel': 'Fluorescence 561 nm Ex', 'intensity': 98.0, 'exposure_time': 100.0},
                 ]
             
-            if scanning_zone is None:
-                scanning_zone = [(0, 0), (0, 0)]
+            if wells_to_scan is None:
+                wells_to_scan = ['A1']
 
             # Check if video buffering is active and stop it during scanning
             video_buffering_was_active = self.frame_acquisition_running
@@ -1180,7 +1192,7 @@ class MicroscopeHyphaService:
                 illumination_settings,
                 do_contrast_autofocus,
                 do_reflection_af,
-                scanning_zone,
+                wells_to_scan,
                 Nx,
                 Ny,
                 dx,
@@ -3748,7 +3760,7 @@ class MicroscopeHyphaService:
         
         For 'raw_images':
         - illumination_settings (List[dict]): Illumination settings
-        - scanning_zone (List[tuple]): Scanning zone coordinates
+        - wells_to_scan (List[str]): List of wells to scan (e.g., ['A1', 'B2', 'C3'])
         - Nx, Ny (int): Grid dimensions
         - dx, dy (float): Position intervals in mm
         
@@ -3809,7 +3821,7 @@ class MicroscopeHyphaService:
             if saved_data_type == 'raw_images':
                 # Extract raw_images specific parameters
                 illumination_settings = config.get('illumination_settings')
-                scanning_zone = config.get('scanning_zone', [(0,0),(7,11)])
+                wells_to_scan = config.get('wells_to_scan', ['A1'])
                 Nx = config.get('Nx', 3)
                 Ny = config.get('Ny', 3)
                 dx = config.get('dx', 0.8)
@@ -3821,7 +3833,7 @@ class MicroscopeHyphaService:
                     illumination_settings=illumination_settings,
                     do_contrast_autofocus=do_contrast_autofocus,
                     do_reflection_af=do_reflection_af,
-                    scanning_zone=scanning_zone,
+                    wells_to_scan=wells_to_scan,
                     Nx=Nx,
                     Ny=Ny,
                     dx=dx,
