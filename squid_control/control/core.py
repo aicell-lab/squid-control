@@ -3462,6 +3462,53 @@ class WellSelector:
             for col in range(start_col, stop_col + 1):
                 self.selected_wells.append((row, col))
 
+    def set_selected_wells_from_list(self, wells_list):
+        """
+        Set the selected wells from a list of well strings or tuples
+        
+        Args:
+            wells_list: List of well strings (e.g., ['A1', 'B2']) or tuples (e.g., [('A', 1), ('B', 2)])
+        """
+        self.selected_wells = []
+        
+        for well in wells_list:
+            if isinstance(well, str):
+                # Parse string format like 'A1', 'B2', etc.
+                if len(well) >= 2:
+                    row = well[0].upper()  # First character is row (A, B, C, etc.)
+                    try:
+                        column = int(well[1:])  # Rest is column number
+                        # Convert to 0-based indexing
+                        row_idx = ord(row) - ord('A')
+                        col_idx = column - 1
+                        self.selected_wells.append((row_idx, col_idx))
+                    except ValueError:
+                        print(f"Invalid well format '{well}', skipping")
+                        continue
+                else:
+                    print(f"Invalid well format '{well}', skipping")
+                    continue
+            elif isinstance(well, (list, tuple)) and len(well) == 2:
+                # Already in tuple format
+                row, column = well
+                if isinstance(row, str) and isinstance(column, (int, str)):
+                    if isinstance(column, str):
+                        try:
+                            column = int(column)
+                        except ValueError:
+                            print(f"Invalid column number '{column}' in well {well}, skipping")
+                            continue
+                    # Convert to 0-based indexing
+                    row_idx = ord(row.upper()) - ord('A')
+                    col_idx = column - 1
+                    self.selected_wells.append((row_idx, col_idx))
+                else:
+                    print(f"Invalid well format {well}, skipping")
+                    continue
+            else:
+                print(f"Invalid well format {well}, skipping")
+                continue
+
 class ScanCoordinates:
     def __init__(self):
         self.coordinates_mm = []

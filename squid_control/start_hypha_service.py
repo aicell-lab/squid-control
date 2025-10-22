@@ -633,8 +633,7 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to update parameters: {e}")
             raise e
 
-    @schema_function(skip_self=True)
-    def set_simulated_sample_data_alias(self, sample_data_alias: str=Field("agent-lens/20250824-example-data-20250824-221822", description="Zarr dataset alias in Hypha artifact manager (format: 'workspace/dataset-id')"), context=None):
+    def set_simulated_sample_data_alias(self, sample_data_alias: str="agent-lens/20250824-example-data-20250824-221822", context=None):
         """
         Configure which virtual Zarr sample dataset to use for simulation mode imaging.
         Returns: String confirmation message with the set sample alias.
@@ -643,7 +642,6 @@ class MicroscopeHyphaService:
         self.squidController.set_simulated_sample_data_alias(sample_data_alias)
         return f"The alias of simulated sample is set to {sample_data_alias}"
 
-    @schema_function(skip_self=True)
     def get_simulated_sample_data_alias(self, context=None):
         """
         Query the currently active virtual sample dataset alias for simulation mode.
@@ -1135,11 +1133,23 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to close illumination: {e}")
             raise e
 
-    async def scan_plate_save_raw_images(self, well_plate_type: str = "96", illumination_settings: List[dict] = None, do_contrast_autofocus: bool = False, do_reflection_af: bool = True, scanning_zone: List[tuple] = None, Nx: int = 3, Ny: int = 3, dx: float = 0.8, dy: float = 0.8, action_ID: str = 'testPlateScan', context=None):
+    async def scan_plate_save_raw_images(self, well_plate_type: str = "96", illumination_settings: List[dict] = None, do_contrast_autofocus: bool = False, do_reflection_af: bool = True, wells_to_scan: List[str] = None, Nx: int = 3, Ny: int = 3, dx: float = 0.8, dy: float = 0.8, action_ID: str = 'testPlateScan', context=None):
         """
-        DEPRECATED: Use scan_start() with saved_data_type='raw_images' instead.
         
-        Scan the well plate according to the pre-defined position list with custom illumination settings
+        Scan the well plate according to the specified wells with custom illumination settings
+        
+        Args:
+            well_plate_type: Type of well plate ('96', '384', etc.)
+            illumination_settings: List of dictionaries with illumination settings
+            do_contrast_autofocus: Whether to perform contrast-based autofocus
+            do_reflection_af: Whether to perform reflection-based autofocus
+            wells_to_scan: List of wells to scan (e.g., ['A1', 'B2', 'C3'])
+            Nx: Number of X positions per well
+            Ny: Number of Y positions per well
+            dx: Distance between X positions in mm
+            dy: Distance between Y positions in mm
+            action_ID: Identifier for this scan
+            
         Returns: The message of the action
         """
         logger.warning("DEPRECATED: scan_plate_save_raw_images is deprecated and will be removed in a future release. Use scan_start() with saved_data_type='raw_images' instead.")
@@ -1156,8 +1166,8 @@ class MicroscopeHyphaService:
                     {'channel': 'Fluorescence 561 nm Ex', 'intensity': 98.0, 'exposure_time': 100.0},
                 ]
             
-            if scanning_zone is None:
-                scanning_zone = [(0, 0), (0, 0)]
+            if wells_to_scan is None:
+                wells_to_scan = ['A1']
 
             # Check if video buffering is active and stop it during scanning
             video_buffering_was_active = self.frame_acquisition_running
@@ -1182,7 +1192,7 @@ class MicroscopeHyphaService:
                 illumination_settings,
                 do_contrast_autofocus,
                 do_reflection_af,
-                scanning_zone,
+                wells_to_scan,
                 Nx,
                 Ny,
                 dx,
@@ -1199,24 +1209,6 @@ class MicroscopeHyphaService:
             # Always reset the scanning flag, regardless of success or failure
             self.scanning_in_progress = False
             logger.info("Well plate scanning completed, video buffering auto-start is now re-enabled")
-
-    @schema_function(skip_self=True)
-    def scan_plate_save_raw_images_simulated(self, context=None):
-        """
-        Scan the well plate according to the pre-defined position list and save raw images
-        Returns: The message of the action
-        """
-        try:
-            # Check authentication
-            if context and not self.check_permission(context.get("user", {})):
-                raise Exception("User not authorized to access this service")
-
-            time.sleep(600)
-            return "Well plate scanning completed"
-        except Exception as e:
-            logger.error(f"Failed to scan well plate: {e}")
-            raise e
-
 
     @schema_function(skip_self=True)
     def set_illumination(self, channel: int=Field(0, description="Illumination channel: 0=Brightfield, 11=405nm, 12=488nm, 13=638nm, 14=561nm, 15=730nm"), intensity: int=Field(50, description="LED illumination intensity percentage (range: 0-100)"), context=None):
@@ -1481,7 +1473,6 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to navigate to well: {e}")
             raise e
 
-    @schema_function(skip_self=True)
     def get_chatbot_url(self, context=None):
         """
         Get the URL of the chatbot service.
@@ -1797,7 +1788,6 @@ class MicroscopeHyphaService:
             "set_illumination": self.set_illumination,
             "set_camera_exposure": self.set_camera_exposure,
             "scan_plate_save_raw_images": self.scan_plate_save_raw_images,
-            "scan_plate_save_raw_images_simulated": self.scan_plate_save_raw_images_simulated,
             "home_stage": self.home_stage,
             "return_stage": self.return_stage,
             "navigate_to_well": self.navigate_to_well,
@@ -1836,8 +1826,6 @@ class MicroscopeHyphaService:
             "get_experiment_info": self.get_experiment_info,
             #Artifact manager functions
             "upload_zarr_dataset": self.upload_zarr_dataset,
-            "list_microscope_galleries": self.list_microscope_galleries,
-            "list_gallery_datasets": self.list_gallery_datasets,
             # Offline processing functions
             "process_timelapse_offline": self.process_timelapse_offline,
         }
@@ -2885,97 +2873,6 @@ class MicroscopeHyphaService:
             logger.error(f"Error uploading experiment dataset: {e}")
             raise e
 
-    @schema_function(skip_self=True)
-    async def list_microscope_galleries(self, microscope_service_id: str = Field(..., description="Microscope service ID to search for (e.g., 'microscope-control-squid-1')"), context=None):
-        """
-        Retrieve all galleries (collections) associated with a specific microscope service.
-        Returns: Dictionary with success status, microscope service ID, list of gallery objects (each with alias, manifest, artifact ID), and total count.
-        Notes: Includes both standard galleries ('microscope-gallery-{id}') and experiment-based galleries (numbered prefix matching). Requires AGENT_LENS_WORKSPACE_TOKEN.
-        """
-        try:
-            # Check authentication
-            if context and not self.check_permission(context.get("user", {})):
-                raise Exception("User not authorized to access this service")
-
-            if self.artifact_manager is None:
-                raise Exception("Artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
-
-            # List all collections in the agent-lens workspace (top-level)
-            all_collections = await self.artifact_manager.navigate_collections(parent_id=None)
-            galleries = []
-
-            # Check if microscope service ID ends with a number
-            import re
-            number_match = re.search(r'-(\d+)$', microscope_service_id)
-
-            for coll in all_collections:
-                manifest = coll.get('manifest', {})
-                alias = coll.get('alias', '')
-
-                # Standard gallery
-                if alias == f"agent-lens/microscope-gallery-{microscope_service_id}":
-                    galleries.append(coll)
-                # Experiment-based gallery (for microscope IDs ending with numbers)
-                elif number_match:
-                    gallery_number = number_match.group(1)
-                    if alias.startswith(f"agent-lens/{gallery_number}-"):
-                        # Check manifest for matching microscope_service_id
-                        if manifest.get('microscope_service_id') == microscope_service_id:
-                            galleries.append(coll)
-                # Fallback: check manifest field
-                elif manifest.get('microscope_service_id') == microscope_service_id:
-                    galleries.append(coll)
-
-            return {
-                "success": True,
-                "microscope_service_id": microscope_service_id,
-                "galleries": galleries,
-                "total": len(galleries)
-            }
-        except Exception as e:
-            logger.error(f"Error listing galleries: {e}")
-            raise e
-
-    @schema_function(skip_self=True)
-    async def list_gallery_datasets(self, gallery_id: Optional[str] = Field(None, description="Gallery artifact ID (e.g., 'agent-lens/1-...'). If None, searches using microscope_service_id or experiment_id"), microscope_service_id: Optional[str] = Field(None, description="Microscope service ID to locate gallery (alternative to gallery_id)"), experiment_id: Optional[str] = Field(None, description="Experiment ID to locate gallery (alternative to gallery_id)"), context=None):
-        """
-        List all datasets contained within a specific gallery (collection).
-        Returns: Dictionary with success status, gallery ID, gallery alias, gallery name, list of dataset objects, and total count.
-        Notes: Specify gallery by direct artifact ID OR by microscope_service_id/experiment_id for automatic lookup. Requires AGENT_LENS_WORKSPACE_TOKEN.
-        """
-        try:
-            # Check authentication
-            if context and not self.check_permission(context.get("user", {})):
-                raise Exception("User not authorized to access this service")
-
-            if self.artifact_manager is None:
-                raise Exception("Artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
-
-            # Find the gallery if not given
-            gallery = None
-            if gallery_id:
-                # Try to read the gallery directly
-                gallery = await self.artifact_manager._svc.read(artifact_id=gallery_id)
-            else:
-                # Use microscope_service_id and/or experiment_id to find the gallery
-                if microscope_service_id is None and experiment_id is None:
-                    raise Exception("You must provide either gallery_id, microscope_service_id, or experiment_id.")
-                gallery = await self.artifact_manager.create_or_get_microscope_gallery(
-                    microscope_service_id or '', experiment_id=experiment_id)
-            # List datasets in the gallery
-            datasets = await self.artifact_manager._svc.list(gallery["id"])
-            return {
-                "success": True,
-                "gallery_id": gallery["id"],
-                "gallery_alias": gallery.get("alias"),
-                "gallery_name": gallery.get("manifest", {}).get("name"),
-                "datasets": datasets,
-                "total": len(datasets)
-            }
-        except Exception as e:
-            logger.error(f"Error listing gallery datasets: {e}")
-            raise e
-
     def get_microscope_configuration_schema(self, config: GetMicroscopeConfigurationInput, context=None):
         return self.get_microscope_configuration(config.config_section, config.include_defaults, context)
 
@@ -3863,7 +3760,7 @@ class MicroscopeHyphaService:
         
         For 'raw_images':
         - illumination_settings (List[dict]): Illumination settings
-        - scanning_zone (List[tuple]): Scanning zone coordinates
+        - wells_to_scan (List[str]): List of wells to scan (e.g., ['A1', 'B2', 'C3'])
         - Nx, Ny (int): Grid dimensions
         - dx, dy (float): Position intervals in mm
         
@@ -3924,7 +3821,7 @@ class MicroscopeHyphaService:
             if saved_data_type == 'raw_images':
                 # Extract raw_images specific parameters
                 illumination_settings = config.get('illumination_settings')
-                scanning_zone = config.get('scanning_zone', [(0,0),(7,11)])
+                wells_to_scan = config.get('wells_to_scan', ['A1'])
                 Nx = config.get('Nx', 3)
                 Ny = config.get('Ny', 3)
                 dx = config.get('dx', 0.8)
@@ -3936,7 +3833,7 @@ class MicroscopeHyphaService:
                     illumination_settings=illumination_settings,
                     do_contrast_autofocus=do_contrast_autofocus,
                     do_reflection_af=do_reflection_af,
-                    scanning_zone=scanning_zone,
+                    wells_to_scan=wells_to_scan,
                     Nx=Nx,
                     Ny=Ny,
                     dx=dx,

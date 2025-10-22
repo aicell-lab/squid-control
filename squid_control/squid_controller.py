@@ -483,7 +483,7 @@ class SquidController:
                 print('z return timeout, the program will exit')
                 exit()
 
-    def plate_scan(self, well_plate_type='96', illumination_settings=None, do_contrast_autofocus=False, do_reflection_af=True, scanning_zone=[(0,0),(2,2)], Nx=3, Ny=3, dx=0.8, dy=0.8, action_ID='testPlateScanNew'):
+    def plate_scan(self, well_plate_type='96', illumination_settings=None, do_contrast_autofocus=False, do_reflection_af=True, wells_to_scan=['A1'], Nx=3, Ny=3, dx=0.8, dy=0.8, action_ID='testPlateScanNew'):
         """
         New well plate scanning function with custom illumination settings.
         
@@ -498,7 +498,7 @@ class SquidController:
                 }
             do_contrast_autofocus (bool): Whether to perform contrast-based autofocus
             do_reflection_af (bool): Whether to perform reflection-based autofocus
-            scanning_zone (list): List of two tuples [(start_row, start_col), (end_row, end_col)]
+            wells_to_scan (list): List of wells to scan (e.g., ['A1', 'B2', 'C3'])
             Nx (int): Number of X positions per well
             Ny (int): Number of Y positions per well
             dx (float): Distance between X positions in mm (default: 0.8)
@@ -523,8 +523,8 @@ class SquidController:
         # Move to scanning position
         self.move_to_scaning_position()
 
-        # Set up scan coordinates
-        self.scanCoordinates.well_selector.set_selected_wells(scanning_zone[0], scanning_zone[1])
+        # Set up scan coordinates using wells_to_scan
+        self.scanCoordinates.well_selector.set_selected_wells_from_list(wells_to_scan)
         self.scanCoordinates.get_selected_wells_to_coordinates(well_plate_type=well_plate_type, is_simulation=self.is_simulation)
 
         # Configure multipoint controller
