@@ -1201,24 +1201,6 @@ class MicroscopeHyphaService:
             logger.info("Well plate scanning completed, video buffering auto-start is now re-enabled")
 
     @schema_function(skip_self=True)
-    def scan_plate_save_raw_images_simulated(self, context=None):
-        """
-        Scan the well plate according to the pre-defined position list and save raw images
-        Returns: The message of the action
-        """
-        try:
-            # Check authentication
-            if context and not self.check_permission(context.get("user", {})):
-                raise Exception("User not authorized to access this service")
-
-            time.sleep(600)
-            return "Well plate scanning completed"
-        except Exception as e:
-            logger.error(f"Failed to scan well plate: {e}")
-            raise e
-
-
-    @schema_function(skip_self=True)
     def set_illumination(self, channel: int=Field(0, description="Illumination channel: 0=Brightfield, 11=405nm, 12=488nm, 13=638nm, 14=561nm, 15=730nm"), intensity: int=Field(50, description="LED illumination intensity percentage (range: 0-100)"), context=None):
         """
         Configure illumination channel and intensity for the microscope.
@@ -1797,7 +1779,6 @@ class MicroscopeHyphaService:
             "set_illumination": self.set_illumination,
             "set_camera_exposure": self.set_camera_exposure,
             "scan_plate_save_raw_images": self.scan_plate_save_raw_images,
-            "scan_plate_save_raw_images_simulated": self.scan_plate_save_raw_images_simulated,
             "home_stage": self.home_stage,
             "return_stage": self.return_stage,
             "navigate_to_well": self.navigate_to_well,
