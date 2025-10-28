@@ -119,13 +119,14 @@ class ILLUMINATION_CODE(Enum):
 class ChannelInfo:
     """Channel information container with all naming variants."""
     def __init__(self, channel_id: int, human_name: str, zarr_name: str,
-                 example_image: str, param_name: str, description: str = ""):
+                 example_image: str, param_name: str, description: str = "", color: str = "FFFFFF"):
         self.channel_id = channel_id
         self.human_name = human_name  # Human-readable name used in UI
         self.zarr_name = zarr_name    # Name used in Zarr storage
         self.example_image = example_image  # Example image filename
         self.param_name = param_name  # Parameter name for settings
         self.description = description
+        self.color = color  # Hex color code for visualization
 
 class ChannelMapper:
     """Centralized channel mapping system for the microscope control system."""
@@ -138,7 +139,8 @@ class ChannelMapper:
             zarr_name="BF_LED_matrix_full",
             example_image="BF_LED_matrix_full.bmp",
             param_name="BF_intensity_exposure",
-            description="Bright field LED matrix full illumination"
+            description="Bright field LED matrix full illumination",
+            color="FFFFFF"  # White
         ),
         11: ChannelInfo(
             channel_id=11,
@@ -146,7 +148,8 @@ class ChannelMapper:
             zarr_name="Fluorescence_405_nm_Ex",
             example_image="Fluorescence_405_nm_Ex.bmp",
             param_name="F405_intensity_exposure",
-            description="405nm fluorescence excitation"
+            description="405nm fluorescence excitation",
+            color="8000FF"  # Blue-violet
         ),
         12: ChannelInfo(
             channel_id=12,
@@ -154,7 +157,8 @@ class ChannelMapper:
             zarr_name="Fluorescence_488_nm_Ex",
             example_image="Fluorescence_488_nm_Ex.bmp",
             param_name="F488_intensity_exposure",
-            description="488nm fluorescence excitation"
+            description="488nm fluorescence excitation",
+            color="00FF00"  # Green
         ),
         13: ChannelInfo(
             channel_id=13,
@@ -162,7 +166,8 @@ class ChannelMapper:
             zarr_name="Fluorescence_638_nm_Ex",
             example_image="Fluorescence_638_nm_Ex.bmp",
             param_name="F638_intensity_exposure",
-            description="638nm fluorescence excitation"
+            description="638nm fluorescence excitation",
+            color="FF0000"  # Red
         ),
         14: ChannelInfo(
             channel_id=14,
@@ -170,7 +175,8 @@ class ChannelMapper:
             zarr_name="Fluorescence_561_nm_Ex",
             example_image="Fluorescence_561_nm_Ex.bmp",
             param_name="F561_intensity_exposure",
-            description="561nm fluorescence excitation"
+            description="561nm fluorescence excitation",
+            color="FFFF00"  # Yellow
         ),
         15: ChannelInfo(
             channel_id=15,
@@ -178,7 +184,8 @@ class ChannelMapper:
             zarr_name="Fluorescence_730_nm_Ex",
             example_image="Fluorescence_730_nm_Ex.bmp",
             param_name="F730_intensity_exposure",
-            description="730nm fluorescence excitation"
+            description="730nm fluorescence excitation",
+            color="FF00FF"  # Magenta
         ),
     }
 
@@ -279,6 +286,16 @@ class ChannelMapper:
     def get_brightfield_channels(cls) -> List[ChannelInfo]:
         """Get all bright field channels (ID < 11)."""
         return [channel for channel in cls.CHANNELS.values() if channel.channel_id < 11]
+
+    @classmethod
+    def get_channel_color(cls, channel_id: int) -> str:
+        """Get hex color code for a channel by ID."""
+        return cls.get_channel_info(channel_id).color
+
+    @classmethod
+    def get_channel_color_by_name(cls, channel_name: str) -> str:
+        """Get hex color code for a channel by human-readable name."""
+        return cls.get_channel_by_human_name(channel_name).color
 
 
 # For backward compatibility, create simple channel mapping constants that can be imported

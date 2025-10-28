@@ -557,21 +557,8 @@ class WellZarrCanvasBase:
             for ch in self.channels:
                 try:
                     channel_info = ChannelMapper.get_channel_by_human_name(ch)
-                    # Assign colors based on channel type
-                    if channel_info.channel_id == 0:  # BF
-                        color = "FFFFFF"  # White
-                    elif channel_info.channel_id == 11:  # 405nm
-                        color = "8000FF"  # Blue-violet
-                    elif channel_info.channel_id == 12:  # 488nm
-                        color = "00FF00"  # Green
-                    elif channel_info.channel_id == 13:  # 638nm
-                        color = "FF0000"  # Red
-                    elif channel_info.channel_id == 14:  # 561nm
-                        color = "FFFF00"  # Yellow
-                    elif channel_info.channel_id == 15:  # 730nm
-                        color = "FF00FF"  # Magenta
-                    else:
-                        color = "FFFFFF"  # Default white
+                    # Get color from centralized channel mapping
+                    color = channel_info.color
 
                     omero_channels.append({
                         "label": ch,
