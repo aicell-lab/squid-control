@@ -2052,6 +2052,57 @@ class SquidController:
 
         return canvas_path.exists()
 
+    def get_single_well_region(self, well_row: str, well_column: int, well_plate_type: str = '96',
+                              channel_name: str = 'BF LED matrix full', scale_level: int = 0,
+                              timepoint: int = 0, well_padding_mm: float = 1.0,
+                              experiment_name: str = None):
+        """
+        Get all image data from a single well's OME-Zarr fileset.
+        
+        Args:
+            well_row: Well row letter (e.g., 'A', 'B')
+            well_column: Well column number (e.g., 1, 2)
+            well_plate_type: Well plate format ('6', '12', '24', '96', '384')
+            channel_name: Channel name to retrieve
+            scale_level: Pyramid scale level (0=full resolution)
+            timepoint: Timepoint index
+            well_padding_mm: Well boundary padding in millimeters
+            experiment_name: Experiment name (None uses active experiment)
+            
+        Returns:
+            np.ndarray: Well region data or None if not found
+        """
+        try:
+            # Ensure active experiment
+            target_experiment = self.ensure_active_experiment(experiment_name)
+            
+            # Check if well canvas exists
+            if not self._check_well_canvas_exists(well_row, well_column, well_plate_type, target_experiment):
+                logger.warning(f"Well canvas for {well_row}{well_column} ({well_plate_type}) does not exist in experiment '{target_experiment}'")
+                return None
+            
+            # Get well canvas
+            canvas = self.experiment_manager.get_well_canvas(well_row, well_column, well_plate_type, well_padding_mm, target_experiment)
+            
+            # Get well center coordinates
+            well_info = canvas.get_well_info()
+            center_x = well_info['well_info']['well_center_x_mm']
+            center_y = well_info['well_info']['well_center_y_mm']
+            well_diameter = well_info['well_info']['well_diameter_mm']
+            
+            # Get the entire well region
+            region = canvas.get_canvas_region_by_channel_name(
+                center_x, center_y,
+                well_diameter, well_diameter,
+                channel_name, scale=scale_level, timepoint=timepoint
+            )
+            
+            return region
+            
+        except Exception as e:
+            logger.error(f"Failed to get single well region for {well_row}{well_column}: {e}", exc_info=True)
+            return None
+
     def get_stitched_region(self, center_x_mm: float, center_y_mm: float,
                            width_mm: float, height_mm: float,
                            well_plate_type: str = '96', scale_level: int = 0,
