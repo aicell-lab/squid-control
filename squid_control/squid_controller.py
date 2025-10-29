@@ -1389,6 +1389,9 @@ class SquidController:
                 finally:
                     # Stop stitching for this well
                     await canvas.stop_stitching()
+                    # Activate channels that have data
+                    logger.info(f'Activating channels with data for well {well_row}{well_column}')
+                    canvas.activate_channels_with_data()
                     logger.info(f'Completed scanning well {well_row}{well_column}')
 
             logger.info('Normal scan with stitching completed for all wells')
@@ -2670,6 +2673,9 @@ class SquidController:
                 if well_canvas.is_stitching:
                     logger.info(f'QUICK_SCAN: Stopping stitching for well canvas {well_id}, queue_size={well_canvas.preprocessing_queue.qsize()}')
                     await well_canvas.stop_stitching()
+                    # Activate channels that have data
+                    logger.info(f'QUICK_SCAN: Activating channels with data for well {well_id}')
+                    well_canvas.activate_channels_with_data()
                     logger.info(f'QUICK_SCAN: Stopped stitching for well canvas {well_id}')
 
             # Final stitching status after stopping
