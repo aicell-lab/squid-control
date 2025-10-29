@@ -387,9 +387,7 @@ async def segment_well_region_grid_based(
         canvas_height_mm = well_info['canvas_info']['canvas_height_mm']
         
         # Calculate cell size (use minimum to ensure cells fit)
-        # Limit to inscribed square (well_diameter / √2) to stay within circular well
-        inscribed_square_size = well_diameter / 1.41421356237  # well_diameter / √2
-        cell_size_mm = min(canvas_width_mm, canvas_height_mm, inscribed_square_size) / grid_size
+        cell_size_mm = min(canvas_width_mm, canvas_height_mm, well_diameter) / grid_size
         
         logger.info(f"Well {well_id} - center: ({center_x:.2f}, {center_y:.2f})mm")
         logger.info(f"Canvas size: {canvas_width_mm:.2f}x{canvas_height_mm:.2f}mm")
@@ -421,9 +419,8 @@ async def segment_well_region_grid_based(
                         max_percentile = config.get('max_percentile', 99.0)
                         weight = config.get('weight', 1.0)
                         
-                        # Get cell region from this channel - use inscribed square limit
-                        # Cell size is already calculated with inscribed square in mind, but ensure request doesn't exceed it
-                        request_size = min(cell_size_mm, inscribed_square_size)
+                        # Get cell region from this channel
+                        request_size = min(cell_size_mm, well_diameter)
                         channel_data = canvas.get_canvas_region_by_channel_name(
                             cell_center_x, cell_center_y, request_size, request_size,
                             channel_name, scale=scale_level, timepoint=timepoint
@@ -636,10 +633,9 @@ async def segment_well_region(
             
             logger.info(f"  Channel: {channel_name}, contrast: {min_percentile}%-{max_percentile}%, weight: {weight}")
             
-            # Get channel data - use inscribed square (well_diameter / √2) to stay within circular well
-            inscribed_square_size = well_diameter / 1.41421356237  # well_diameter / √2
+            # Get channel data
             channel_data = canvas.get_canvas_region_by_channel_name(
-                center_x, center_y, inscribed_square_size, inscribed_square_size,
+                center_x, center_y, well_diameter, well_diameter,
                 channel_name, scale=scale_level, timepoint=timepoint
             )
             
