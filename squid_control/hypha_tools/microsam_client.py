@@ -142,31 +142,37 @@ def encode_image_to_jpeg(image: np.ndarray, quality: int = 95) -> bytes:
 
 def apply_contrast_adjustment(image: np.ndarray, min_percentile: float, max_percentile: float) -> np.ndarray:
     """
-    Apply percentile-based contrast adjustment to image.
+    Apply simple percentile-based contrast adjustment to image.
+    
+    Threshold calculation:
+    - min_threshold = min_percentile * 255 / 100 (e.g., 1.0% -> 2.55)
+    - max_threshold = max_percentile * 255 / 100 (e.g., 99.0% -> 252.45)
+    
+    Then clip values to [min_threshold, max_threshold] and normalize to 0-255.
     
     Args:
         image: Input image array
-        min_percentile: Lower percentile (e.g., 1.0 for 1st percentile)
-        max_percentile: Upper percentile (e.g., 99.0 for 99th percentile)
+        min_percentile: Lower percentile percentage (e.g., 1.0 for 1%)
+        max_percentile: Upper percentile percentage (e.g., 99.0 for 99%)
     
     Returns:
         Contrast-adjusted image normalized to 0-255 range
     """
     logger.debug(f"Applying contrast adjustment: {min_percentile}%-{max_percentile}%")
     
-    # Calculate percentile values
-    p_min = np.percentile(image, min_percentile)
-    p_max = np.percentile(image, max_percentile)
+    # Calculate thresholds as percentage of 255
+    min_threshold = min_percentile * 255.0 / 100.0
+    max_threshold = max_percentile * 255.0 / 100.0
     
-    logger.debug(f"Percentile values: min={p_min:.2f}, max={p_max:.2f}")
+    logger.debug(f"Thresholds: min={min_threshold:.2f}, max={max_threshold:.2f} (out of 255)")
     
-    # Clip and normalize
-    clipped = np.clip(image, p_min, p_max)
+    # Clip image values to threshold range
+    clipped = np.clip(image, min_threshold, max_threshold)
     
-    # Avoid division by zero
-    if p_max > p_min:
-        normalized = ((clipped - p_min) / (p_max - p_min) * 255).astype(np.uint8)
-        logger.debug(f"Contrast adjustment applied: {image.min()}-{image.max()} -> 0-255")
+    # Normalize clipped values to 0-255 range
+    if max_threshold > min_threshold:
+        normalized = ((clipped - min_threshold) / (max_threshold - min_threshold) * 255).astype(np.uint8)
+        logger.debug(f"Contrast adjustment applied: {image.min()}-{image.max()} -> clipped to [{min_threshold:.2f}, {max_threshold:.2f}] -> normalized to 0-255")
     else:
         normalized = np.zeros_like(image, dtype=np.uint8)
         logger.warning("Image has uniform intensity - contrast adjustment resulted in zero range")
@@ -216,8 +222,8 @@ async def segment_image(microsam_service, image_array: np.ndarray,
         jpeg_quality: JPEG quality 1-100, higher = better quality but larger file (default: 95)
     
     Returns:
-        segmentation: Instance segmentation mask as uint16 array with shape (H, W)
-                     Each cell has a unique integer ID (0=background, 1-N=objects)
+        segmentation: Binary segmentation mask as uint8 array with shape (H, W)
+                     Binary mask: 0 = background, 255 = segmented pixels
     
     Raises:
         ValueError: If image shape is unsupported
@@ -226,6 +232,7 @@ async def segment_image(microsam_service, image_array: np.ndarray,
     Note:
         For multi-channel inputs, use merge_channels_with_colors() first to create RGB image.
         JPEG compression significantly reduces payload size (typically 10:1 ratio) and prevents WebSocket timeouts.
+        The returned mask is a binary mask (uint8), not instance segmentation with unique IDs.
     """
     logger.info(f"Segmenting image with shape: {image_array.shape}, dtype: {image_array.dtype}")
     logger.info(f"Contrast adjustment: {min_contrast_percentile}%-{max_contrast_percentile}%")
@@ -250,38 +257,313 @@ async def segment_image(microsam_service, image_array: np.ndarray,
     jpeg_base64 = base64.b64encode(jpeg_bytes).decode('utf-8')
     
     # Send JPEG-compressed image to microSAM
-    # microSAM should decode the JPEG back to numpy array
+    # microSAM returns a JPEG base64 string containing a binary mask (uint8: 0 or 255)
     logger.info(f"Calling microSAM segment_all with JPEG-compressed image "
                f"({compressed_size_mb:.2f} MB)")
     
-    segmentation_result = await microsam_service.segment_all(
+    segmentation_result_b64 = await microsam_service.segment_all(
         image_or_embedding=jpeg_base64,  # Send base64-encoded JPEG
-        embedding=False,
-        format='jpeg'  # Indicate format to microSAM
+        embedding=False
     )
     
     try:
-        logger.info(f"✅ Segmentation completed! Result shape: {segmentation_result.shape}, dtype: {segmentation_result.dtype}")
+        # Decode the returned JPEG base64 string back to numpy array
+        # microSAM returns a JPEG base64 string containing a binary mask (uint8: 0 or 255)
+        if isinstance(segmentation_result_b64, str):
+            # Decode base64 to bytes
+            segmentation_jpeg_bytes = base64.b64decode(segmentation_result_b64)
+            # Decode JPEG bytes to numpy array (grayscale binary mask: 0 or 255)
+            nparr = np.frombuffer(segmentation_jpeg_bytes, np.uint8)
+            segmentation_result = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
+            
+            if segmentation_result is None:
+                raise ValueError("Failed to decode segmentation result from JPEG")
+            
+            logger.info(f"✅ Segmentation completed! Result shape: {segmentation_result.shape}, dtype: {segmentation_result.dtype}")
+        else:
+            # Fallback: if it's already a numpy array (shouldn't happen per server definition)
+            segmentation_result = segmentation_result_b64
+            logger.info(f"✅ Segmentation completed! Result shape: {segmentation_result.shape}, dtype: {segmentation_result.dtype}")
         
-        # Convert to uint16 for storage (supports up to 65,535 unique objects)
-        if segmentation_result.dtype != np.uint16:
-            # Check if we need to handle the conversion carefully
-            max_label = segmentation_result.max()
-            if max_label > 65535:
-                logger.warning(f"Segmentation has {max_label} objects, truncating to uint16 range")
-            segmentation_result = segmentation_result.astype(np.uint16)
-            logger.debug(f"Converted segmentation to uint16")
+        # Ensure result is uint8 binary mask (0 or 255)
+        # The mask should already be in this format from microSAM, but verify and normalize if needed
+        if segmentation_result.dtype != np.uint8:
+            segmentation_result = segmentation_result.astype(np.uint8)
         
-        # Count unique objects (excluding background)
-        unique_labels = np.unique(segmentation_result)
-        num_objects = len(unique_labels) - 1 if 0 in unique_labels else len(unique_labels)
-        logger.info(f"🔬 Detected {num_objects} objects in segmentation")
+        # Normalize to binary mask: values > 0 become 255, 0 stays 0
+        # This handles any potential variations in the mask values
+        segmentation_result = np.where(segmentation_result > 0, 255, 0).astype(np.uint8)
+        
+        # Calculate statistics about the binary mask
+        segmented_pixels = np.sum(segmentation_result == 255)
+        total_pixels = segmentation_result.size
+        segmented_percentage = (segmented_pixels / total_pixels) * 100.0
+        
+        # Count connected components as approximate object count
+        # Use cv2.findContours to count distinct objects
+        contours, _ = cv2.findContours(
+            segmentation_result, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        num_objects = len(contours)
+        
+        logger.info(
+            f"🔬 Binary mask stats: {segmented_pixels}/{total_pixels} pixels segmented "
+            f"({segmented_percentage:.2f}%), ~{num_objects} objects detected"
+        )
         
         return segmentation_result
         
     except Exception as e:
         logger.error(f"❌ Segmentation failed: {e}", exc_info=True)
         raise Exception(f"microSAM segmentation failed: {e}")
+
+
+async def segment_well_region_grid_based(
+    microsam_service,
+    experiment_manager,
+    source_experiment: str,
+    well_row: str,
+    well_column: int,
+    channel_configs: List[Dict[str, Any]],
+    scale_level: int,
+    timepoint: int,
+    well_plate_type: str,
+    well_padding_mm: float,
+    seg_canvas,
+    segmentation_channel: str,
+    channel_idx: int,
+    cell_progress_callback: Optional[Callable[[str, int, int, int, int], None]] = None,
+    well_index: Optional[int] = None,
+    total_wells: Optional[int] = None
+) -> Dict[str, Any]:
+    """
+    Segment well region by processing it as a 9x9 grid to reduce memory usage.
+    Each grid cell is processed separately: load channels, merge, segment, and write to zarr.
+    
+    Args:
+        microsam_service: Connected microSAM service
+        experiment_manager: ExperimentManager instance
+        source_experiment: Name of the source experiment
+        well_row: Well row letter (e.g., 'A', 'B')
+        well_column: Well column number (e.g., 1, 2)
+        channel_configs: List of dicts with channel configurations
+        scale_level: Pyramid scale level (0=full resolution)
+        timepoint: Timepoint index
+        well_plate_type: Well plate format ('96', '384', etc.)
+        well_padding_mm: Well padding in millimeters
+        seg_canvas: Segmentation canvas for writing results
+        segmentation_channel: Channel name for segmentation masks
+        channel_idx: Channel index in segmentation canvas
+        cell_progress_callback: Optional callback(well_id, cell_idx, total_cells, completed_wells, total_wells)
+    
+    Returns:
+        Dictionary with processing statistics (cells_processed, cells_failed, etc.)
+    """
+    well_id = f"{well_row}{well_column}"
+    logger.info(f"📍 Processing well {well_id} with {len(channel_configs)} channels using 9x9 grid")
+    
+    grid_size = 9
+    total_cells = grid_size * grid_size  # 81 cells
+    
+    stats = {
+        'well_id': well_id,
+        'cells_processed': 0,
+        'cells_failed': 0,
+        'cells_skipped': 0
+    }
+    
+    try:
+        # Get well canvas from source experiment
+        canvas = experiment_manager.get_well_canvas(
+            well_row, well_column, well_plate_type, well_padding_mm, source_experiment
+        )
+        
+        # Get well center coordinates and canvas bounds
+        well_info = canvas.get_well_info()
+        center_x = well_info['well_info']['well_center_x_mm']
+        center_y = well_info['well_info']['well_center_y_mm']
+        well_diameter = well_info['well_info']['well_diameter_mm']
+        canvas_width_mm = well_info['canvas_info']['canvas_width_mm']
+        canvas_height_mm = well_info['canvas_info']['canvas_height_mm']
+        
+        # Calculate cell size (use minimum to ensure cells fit)
+        # Limit to inscribed square (well_diameter / √2) to stay within circular well
+        inscribed_square_size = well_diameter / 1.41421356237  # well_diameter / √2
+        cell_size_mm = min(canvas_width_mm, canvas_height_mm, inscribed_square_size) / grid_size
+        
+        logger.info(f"Well {well_id} - center: ({center_x:.2f}, {center_y:.2f})mm")
+        logger.info(f"Canvas size: {canvas_width_mm:.2f}x{canvas_height_mm:.2f}mm")
+        logger.info(f"Grid: {grid_size}x{grid_size} cells, cell size: {cell_size_mm:.2f}mm")
+        
+        # Process each grid cell
+        cell_idx = 0
+        for grid_i in range(grid_size):
+            for grid_j in range(grid_size):
+                cell_idx += 1
+                
+                # Calculate cell center coordinates
+                # Grid indices: 0-8, cells should cover full canvas from -canvas_half to +canvas_half
+                # Cell centers span from -canvas_half + cell_size/2 to +canvas_half - cell_size/2
+                # This ensures cells properly cover the canvas edges
+                cell_center_x = center_x + (grid_i - (grid_size - 1) / 2.0) * cell_size_mm
+                cell_center_y = center_y + (grid_j - (grid_size - 1) / 2.0) * cell_size_mm
+                
+                logger.debug(f"  Cell {cell_idx}/{total_cells} ({grid_i},{grid_j}): center=({cell_center_x:.2f}, {cell_center_y:.2f})mm")
+                
+                try:
+                    # Load and process each channel for this cell
+                    processed_channels = []
+                    channel_names = []
+                    
+                    for config in channel_configs:
+                        channel_name = config['channel']
+                        min_percentile = config.get('min_percentile', 1.0)
+                        max_percentile = config.get('max_percentile', 99.0)
+                        weight = config.get('weight', 1.0)
+                        
+                        # Get cell region from this channel - use inscribed square limit
+                        # Cell size is already calculated with inscribed square in mind, but ensure request doesn't exceed it
+                        request_size = min(cell_size_mm, inscribed_square_size)
+                        channel_data = canvas.get_canvas_region_by_channel_name(
+                            cell_center_x, cell_center_y, request_size, request_size,
+                            channel_name, scale=scale_level, timepoint=timepoint
+                        )
+                        
+                        if channel_data is None:
+                            logger.debug(f"    No data for channel {channel_name} in cell {cell_idx}, skipping")
+                            continue
+                        
+                        # Apply contrast adjustment
+                        adjusted = apply_contrast_adjustment(channel_data, min_percentile, max_percentile)
+                        del channel_data  # Free memory immediately
+                        
+                        # Apply weight
+                        if weight != 1.0:
+                            adjusted = np.clip(adjusted * weight, 0, 255).astype(np.uint8)
+                        
+                        processed_channels.append(adjusted)
+                        channel_names.append(channel_name)
+                    
+                    if not processed_channels:
+                        logger.debug(f"  Cell {cell_idx} has no valid channel data, skipping")
+                        stats['cells_skipped'] += 1
+                        continue
+                    
+                    # Merge channels using OME-Zarr colors
+                    if len(processed_channels) == 1:
+                        merged_image = processed_channels[0]
+                    else:
+                        merged_image = merge_channels_with_colors(processed_channels, channel_names)
+                    
+                    # Free processed channels after merging
+                    del processed_channels
+                    del channel_names
+                    
+                    # Check if image has enough content (>5% non-black pixels)
+                    # Convert to grayscale if RGB for threshold check
+                    if len(merged_image.shape) == 3:
+                        gray_image = cv2.cvtColor(merged_image, cv2.COLOR_RGB2GRAY)
+                    else:
+                        gray_image = merged_image
+                    
+                    # Count non-black pixels (threshold > 10 to account for noise)
+                    non_black_threshold = 10
+                    non_black_pixels = np.sum(gray_image > non_black_threshold)
+                    total_pixels = gray_image.size
+                    non_black_percentage = (non_black_pixels / total_pixels) * 100.0
+                    
+                    if non_black_percentage < 5.0:
+                        logger.debug(
+                            f"  Cell {cell_idx}: Skipping segmentation - "
+                            f"only {non_black_percentage:.2f}% non-black pixels (threshold: 5%)"
+                        )
+                        stats['cells_skipped'] += 1
+                        del merged_image
+                        del gray_image
+                        continue
+                    
+                    # Segment this cell
+                    # Store original image dimensions to verify segmentation result matches
+                    original_image_shape = merged_image.shape[:2]  # (height, width)
+                    
+                    cell_segmentation = await segment_image(
+                        microsam_service, merged_image,
+                        min_contrast_percentile=0.0,
+                        max_contrast_percentile=100.0  # No additional contrast
+                    )
+                    
+                    # Free gray_image if it was created separately
+                    if len(merged_image.shape) == 3:
+                        del gray_image
+                    
+                    # Free merged image after segmentation
+                    del merged_image
+                    
+                    if cell_segmentation is None:
+                        logger.warning(f"  Cell {cell_idx} segmentation returned None, skipping")
+                        stats['cells_failed'] += 1
+                        continue
+                    
+                    # Verify segmentation mask dimensions match source image
+                    seg_shape = cell_segmentation.shape[:2]  # (height, width)
+                    if seg_shape != original_image_shape:
+                        logger.warning(
+                            f"  Cell {cell_idx}: Segmentation mask size mismatch! "
+                            f"Source: {original_image_shape}, Segmentation: {seg_shape}. "
+                            f"Resizing segmentation to match source dimensions."
+                        )
+                        # Resize segmentation to match source image dimensions
+                        cell_segmentation = cv2.resize(
+                            cell_segmentation, 
+                            (original_image_shape[1], original_image_shape[0]),  # (width, height)
+                            interpolation=cv2.INTER_NEAREST  # Preserve label values
+                        )
+                    
+                    # Write cell segmentation mask to segmentation canvas at the EXACT same location
+                    # as the source image was read from (same cell_center_x, cell_center_y coordinates)
+                    seg_canvas.add_image_sync(
+                        image=cell_segmentation,
+                        x_mm=cell_center_x,  # Same coordinate as source image read
+                        y_mm=cell_center_y,  # Same coordinate as source image read
+                        channel_idx=channel_idx,
+                        z_idx=0,
+                        timepoint=timepoint
+                    )
+                    
+                    logger.debug(
+                        f"  Cell {cell_idx}: Wrote segmentation mask (shape={cell_segmentation.shape}) "
+                        f"to position ({cell_center_x:.2f}, {cell_center_y:.2f})mm "
+                        f"- same location as source image"
+                    )
+                    
+                    # Free segmentation result after writing
+                    del cell_segmentation
+                    
+                    stats['cells_processed'] += 1
+                    
+                    # Call cell progress callback
+                    if cell_progress_callback and well_index is not None and total_wells is not None:
+                        try:
+                            cell_progress_callback(well_id, cell_idx, total_cells, well_index + 1, total_wells)
+                        except Exception as callback_error:
+                            logger.debug(f"Cell progress callback error: {callback_error}")
+                    
+                    # Log progress every 10 cells
+                    if cell_idx % 10 == 0:
+                        logger.info(f"  Progress: {cell_idx}/{total_cells} cells processed ({stats['cells_processed']} successful, {stats['cells_failed']} failed)")
+                    
+                except Exception as e:
+                    logger.error(f"  Failed to process cell {cell_idx} ({grid_i},{grid_j}): {e}")
+                    stats['cells_failed'] += 1
+                    continue
+        
+        logger.info(f"✅ Well {well_id} grid segmentation complete: {stats['cells_processed']} cells processed, {stats['cells_failed']} failed, {stats['cells_skipped']} skipped")
+        return stats
+        
+    except Exception as e:
+        logger.error(f"Failed to segment well {well_id}: {e}", exc_info=True)
+        stats['cells_failed'] = total_cells - stats['cells_processed']
+        return stats
 
 
 async def segment_well_region(
@@ -316,7 +598,8 @@ async def segment_well_region(
         well_padding_mm: Well padding in millimeters
     
     Returns:
-        segmentation: Segmentation mask as uint16 array, or None if well not found
+        segmentation: Binary segmentation mask as uint8 array (0 = background, 255 = segmented pixels),
+                     or None if well not found
     
     Example:
         channel_configs = [
@@ -353,9 +636,10 @@ async def segment_well_region(
             
             logger.info(f"  Channel: {channel_name}, contrast: {min_percentile}%-{max_percentile}%, weight: {weight}")
             
-            # Get channel data
+            # Get channel data - use inscribed square (well_diameter / √2) to stay within circular well
+            inscribed_square_size = well_diameter / 1.41421356237  # well_diameter / √2
             channel_data = canvas.get_canvas_region_by_channel_name(
-                center_x, center_y, well_diameter, well_diameter,
+                center_x, center_y, inscribed_square_size, inscribed_square_size,
                 channel_name, scale=scale_level, timepoint=timepoint
             )
             
@@ -479,8 +763,36 @@ async def segment_experiment_wells(
         logger.info(f"📊 Processing well {idx+1}/{len(wells_to_segment)}: {well_id}")
         
         try:
-            # Segment the well region with multi-channel support
-            segmentation = await segment_well_region(
+            # Get or create well canvas in segmentation experiment
+            seg_canvas = experiment_manager.get_well_canvas(
+                well_row, well_column, well_plate_type, well_padding_mm, segmentation_experiment
+            )
+            
+            # Use "BF LED matrix full" channel for segmentation masks to maintain OME-Zarr format consistency
+            segmentation_channel = "BF LED matrix full"
+            
+            # Get channel index for brightfield channel (should be 0 in standard OME-Zarr format)
+            if segmentation_channel not in seg_canvas.channel_to_zarr_index:
+                logger.error(f"Channel '{segmentation_channel}' not found in segmentation canvas!")
+                logger.error(f"Available channels: {list(seg_canvas.channel_to_zarr_index.keys())}")
+                raise ValueError(f"Channel '{segmentation_channel}' not available in segmentation canvas")
+            
+            channel_idx = seg_canvas.channel_to_zarr_index[segmentation_channel]
+            logger.info(f"Using channel '{segmentation_channel}' at index {channel_idx} for segmentation masks")
+            
+            # Create cell progress callback if main progress callback exists
+            def make_cell_callback(well_idx, total_wells):
+                def cell_callback(well_id_inner, cell_idx, total_cells, completed_wells, total_wells_inner):
+                    # Report progress every 10 cells or at completion
+                    if cell_idx % 10 == 0 or cell_idx == total_cells:
+                        if progress_callback:
+                            progress_callback(well_id_inner, completed_wells, total_wells_inner)
+                return cell_callback
+            
+            cell_callback = make_cell_callback(idx, len(wells_to_segment)) if progress_callback else None
+            
+            # Segment the well region using grid-based approach
+            cell_stats = await segment_well_region_grid_based(
                 microsam_service=microsam_service,
                 experiment_manager=experiment_manager,
                 source_experiment=source_experiment,
@@ -490,51 +802,24 @@ async def segment_experiment_wells(
                 scale_level=scale_level,
                 timepoint=timepoint,
                 well_plate_type=well_plate_type,
-                well_padding_mm=well_padding_mm
+                well_padding_mm=well_padding_mm,
+                seg_canvas=seg_canvas,
+                segmentation_channel=segmentation_channel,
+                channel_idx=channel_idx,
+                cell_progress_callback=cell_callback,
+                well_index=idx,
+                total_wells=len(wells_to_segment)
             )
             
-            if segmentation is None:
-                logger.warning(f"Segmentation returned None for well {well_id}")
+            # Check if segmentation was successful (at least some cells processed)
+            if cell_stats['cells_processed'] == 0:
+                logger.warning(f"No cells processed for well {well_id} (failed: {cell_stats['cells_failed']}, skipped: {cell_stats['cells_skipped']})")
                 results['failed_wells'] += 1
                 results['wells_failed'].append(well_id)
                 continue
             
-            # Save segmentation to the segmentation experiment
-            # Get or create well canvas in segmentation experiment
-            seg_canvas = experiment_manager.get_well_canvas(
-                well_row, well_column, well_plate_type, well_padding_mm, segmentation_experiment
-            )
-            
-            # Use channel name "Segmentation" for the segmentation masks
-            segmentation_channel = "Segmentation"
-            
-            # Get channel index for segmentation channel
-            if segmentation_channel in seg_canvas.channel_to_zarr_index:
-                channel_idx = seg_canvas.channel_to_zarr_index[segmentation_channel]
-            else:
-                # Add new channel if it doesn't exist
-                channel_idx = len(seg_canvas.channels)
-                seg_canvas.channels.append(segmentation_channel)
-                seg_canvas.channel_to_zarr_index[segmentation_channel] = channel_idx
-                logger.info(f"Added new channel '{segmentation_channel}' at index {channel_idx}")
-            
-            # Get well center for coordinate system
-            well_info = seg_canvas.get_well_info()
-            center_x = well_info['well_info']['well_center_x_mm']
-            center_y = well_info['well_info']['well_center_y_mm']
-            
-            # Add segmentation mask to canvas
-            # Note: add_image_sync expects absolute stage coordinates
-            seg_canvas.add_image_sync(
-                image=segmentation,
-                x_mm=center_x,  # Use well center
-                y_mm=center_y,
-                channel_idx=channel_idx,
-                z_idx=0,
-                timepoint=timepoint
-            )
-            
-            logger.info(f"✅ Saved segmentation for well {well_id} to '{segmentation_experiment}'")
+            logger.info(f"✅ Saved segmentation for well {well_id} to '{segmentation_experiment}' "
+                       f"({cell_stats['cells_processed']} cells processed, {cell_stats['cells_failed']} failed, {cell_stats['cells_skipped']} skipped)")
             
             results['successful_wells'] += 1
             results['wells_processed'].append(well_id)
