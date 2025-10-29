@@ -8,6 +8,7 @@ import asyncio
 import base64
 import io
 import math
+import re
 import time
 import uuid
 import zipfile
@@ -44,6 +45,44 @@ class SquidArtifactManager:
         self.experiment_id = None
         self.acquisition_settings = None
         self.description = None
+
+    def _sanitize_dataset_name(self, name: str) -> str:
+        """
+        Sanitize dataset name to comply with naming requirements:
+        - Lowercase letters, numbers, hyphens, and colons only
+        - Must start and end with alphanumeric character
+        
+        Args:
+            name: Original dataset name
+            
+        Returns:
+            str: Sanitized dataset name
+        """
+        # Convert to lowercase
+        sanitized = name.lower()
+        
+        # Replace underscores with hyphens
+        sanitized = sanitized.replace('_', '-')
+        
+        # Remove any characters that are not lowercase letters, numbers, hyphens, or colons
+        sanitized = re.sub(r'[^a-z0-9\-:]', '', sanitized)
+        
+        # Remove leading/trailing hyphens and colons (must start/end with alphanumeric)
+        sanitized = sanitized.strip('-:')
+        
+        # If empty after sanitization, use a default name
+        if not sanitized:
+            sanitized = 'dataset'
+        
+        # Ensure it starts with alphanumeric
+        if not sanitized[0].isalnum():
+            sanitized = 'dataset-' + sanitized
+        
+        # Ensure it ends with alphanumeric
+        if not sanitized[-1].isalnum():
+            sanitized = sanitized + '-data'
+        
+        return sanitized
 
     async def connect_server(self, server):
         """
@@ -396,6 +435,9 @@ class SquidArtifactManager:
         if dataset_name is None:
             timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
             dataset_name = f"{experiment_id}-{timestamp}"
+        
+        # Sanitize dataset name to comply with naming requirements
+        dataset_name = self._sanitize_dataset_name(dataset_name)
 
         # Validate all ZIP files with streaming validation to avoid memory exhaustion
         total_size_mb = 0
@@ -651,6 +693,9 @@ class SquidArtifactManager:
         # Generate dataset name with timestamp
         timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
         dataset_name = f"{self.experiment_id}-{timestamp}"
+        
+        # Sanitize dataset name to comply with naming requirements
+        dataset_name = self._sanitize_dataset_name(dataset_name)
 
         # Ensure gallery exists
         gallery = await self.create_or_get_microscope_gallery(self.microscope_service_id, self.experiment_id)
@@ -847,6 +892,9 @@ class SquidArtifactManager:
         if experiment_id is not None:
             timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
             dataset_name = f"{experiment_id}-{timestamp}"
+        
+        # Sanitize dataset name to comply with naming requirements
+        dataset_name = self._sanitize_dataset_name(dataset_name)
 
         # Validate ZIP file before upload
         await self._validate_zarr_zip_content(zarr_zip_content)
