@@ -1426,8 +1426,10 @@ class WellZarrCanvasBase:
         import os
         import zipfile
 
-        # Create temporary file for ZIP creation to avoid memory issues
-        temp_fd, temp_path = tempfile.mkstemp(suffix='.zip', prefix='zarr_export_')
+        # Create temporary file for ZIP creation in ZARR_PATH to avoid memory issues
+        # Ensure base_path exists
+        self.base_path.mkdir(parents=True, exist_ok=True)
+        temp_fd, temp_path = tempfile.mkstemp(suffix='.zip', prefix='zarr_export_', dir=str(self.base_path))
 
         try:
             # Close file descriptor immediately to avoid issues

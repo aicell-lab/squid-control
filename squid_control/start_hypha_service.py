@@ -42,7 +42,7 @@ import base64
 import signal
 import threading
 from collections import deque
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 # WebRTC imports
 import aiohttp
@@ -285,6 +285,21 @@ class MicroscopeHyphaService:
             'error_message': None,
             'scan_task': None,  # asyncio.Task for the running scan
             'saved_data_type': None,  # raw_images, full_zarr, quick_zarr
+        }
+
+        # Segmentation state tracking (single segmentation operation at a time)
+        self.segmentation_state = {
+            'state': 'idle',  # idle, running, completed, failed
+            'error_message': None,
+            'segmentation_task': None,  # asyncio.Task for the running segmentation
+            'progress': {
+                'total_wells': 0,
+                'completed_wells': 0,
+                'current_well': None,
+                'source_channel': None,
+                'source_experiment': None,
+                'segmentation_experiment': None
+            }
         }
 
         # Initialize coverage tracking if in test mode
@@ -1828,6 +1843,10 @@ class MicroscopeHyphaService:
             "upload_zarr_dataset": self.upload_zarr_dataset,
             # Offline processing functions
             "process_timelapse_offline": self.process_timelapse_offline,
+            # Segmentation functions
+            "segmentation_start": self.segmentation_start,
+            "segmentation_get_status": self.segmentation_get_status,
+            "segmentation_cancel": self.segmentation_cancel,
         }
         
         # Conditionally register Squid+ specific endpoints
@@ -2017,6 +2036,7 @@ class MicroscopeHyphaService:
         remote_server = await connect_to_server(
                 {"client_id": f"squid-remote-server-{self.service_id}-{uuid.uuid4()}", "server_url": "https://hypha.aicell.io", "token": remote_token, "workspace": remote_workspace, "ping_interval": 30}
             )
+        self.remote_server = remote_server
         if not self.service_id:
             raise ValueError("MICROSCOPE_SERVICE_ID is not set in the environment variables.")
         if self.is_local:
@@ -4064,6 +4084,290 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to cancel scan: {e}")
             raise e
 
+    # ===== Segmentation API Methods =====
+
+    async def _run_segmentation_background(self, source_experiment, wells_to_segment, channel_configs,
+                                          scale_level, timepoint, well_plate_type, well_padding_mm, context):
+        """
+        Internal method for background segmentation processing with multi-channel support.
+        
+        This method runs in a separate task to segment experiment wells using microSAM service.
+        
+        Args:
+            source_experiment: Name of the source experiment
+            wells_to_segment: List of well identifiers to segment
+            channel_configs: List of channel configurations for merging
+            scale_level: Pyramid scale level
+            timepoint: Timepoint index
+            well_plate_type: Well plate format
+            well_padding_mm: Well padding in millimeters
+            context: Request context
+            
+        Returns:
+            results: Dictionary with segmentation results
+        """
+        try:
+            self.segmentation_state['state'] = 'running'
+            self.segmentation_state['error_message'] = None
+            
+            logger.info(f"🚀 Starting background segmentation for experiment '{source_experiment}'")
+            logger.info(f"Event loop status: running={asyncio.get_event_loop().is_running()}")
+            
+            # Import microsam_client module
+            from squid_control.hypha_tools.microsam_client import connect_to_microsam, segment_experiment_wells
+            
+            # Verify server connection before starting
+            if self.remote_server is None:
+                raise Exception("Remote server connection not available")
+            
+            # Connect to microSAM service using remote_server (agent-lens workspace)
+            logger.info("Connecting to microSAM service...")
+            logger.info(f"Remote server workspace: {self.remote_server.config.workspace}")
+            
+            microsam_service = await connect_to_microsam(self.remote_server)
+            
+            # Define progress callback
+            def progress_callback(well_id, completed, total):
+                self.segmentation_state['progress']['completed_wells'] = completed
+                self.segmentation_state['progress']['current_well'] = well_id
+                logger.info(f"Progress: {completed}/{total} wells completed (current: {well_id})")
+            
+            # Initialize progress tracking
+            self.segmentation_state['progress']['total_wells'] = len(wells_to_segment)
+            self.segmentation_state['progress']['completed_wells'] = 0
+            self.segmentation_state['progress']['channel_configs'] = channel_configs
+            self.segmentation_state['progress']['source_experiment'] = source_experiment
+            self.segmentation_state['progress']['segmentation_experiment'] = f"{source_experiment}-segmentation"
+            
+            # Run segmentation with multi-channel support
+            results = await segment_experiment_wells(
+                microsam_service=microsam_service,
+                experiment_manager=self.squidController.experiment_manager,
+                source_experiment=source_experiment,
+                wells_to_segment=wells_to_segment,
+                channel_configs=channel_configs,
+                scale_level=scale_level,
+                timepoint=timepoint,
+                well_plate_type=well_plate_type,
+                well_padding_mm=well_padding_mm,
+                progress_callback=progress_callback
+            )
+            
+            # Update state to completed
+            self.segmentation_state['state'] = 'completed'
+            logger.info(f"✅ Segmentation completed successfully!")
+            logger.info(f"  Successful wells: {results['successful_wells']}/{results['total_wells']}")
+            
+            return results
+            
+        except asyncio.CancelledError:
+            self.segmentation_state['state'] = 'failed'
+            self.segmentation_state['error_message'] = 'Segmentation was cancelled by user'
+            logger.info("Segmentation was cancelled by user")
+            raise
+            
+        except Exception as e:
+            self.segmentation_state['state'] = 'failed'
+            self.segmentation_state['error_message'] = str(e)
+            logger.error(f"Segmentation failed: {e}", exc_info=True)
+            raise
+            
+        finally:
+            self.segmentation_state['segmentation_task'] = None
+
+    @schema_function(skip_self=True)
+    async def segmentation_start(self,
+        experiment_name: str = Field(..., description="Source experiment name to process"),
+        wells_to_segment: Optional[List[str]] = Field(None, description="List of wells (e.g., ['A1', 'B2']). None = all wells in experiment"),
+        channel_configs: List[Dict[str, Any]] = Field(
+            ..., 
+            description="Channel configurations for merging. Each dict must have 'channel' (name), and optionally 'min_percentile' (default 1.0), 'max_percentile' (default 99.0), 'weight' (default 1.0). Example: [{'channel': 'BF LED matrix full', 'min_percentile': 2.0, 'max_percentile': 98.0}]"
+        ),
+        scale_level: int = Field(0, description="Pyramid scale level: 0=full resolution, 1=1/4x, 2=1/16x, etc. Higher scales process faster."),
+        well_plate_type: str = Field("96", description="Well plate format: '6', '12', '24', '96', or '384'"),
+        well_padding_mm: float = Field(1.0, description="Well boundary padding in millimeters"),
+        context=None):
+        """
+        Launch multi-channel segmentation with color-mapped merging using microSAM BioEngine service.
+        Returns: Dictionary with success status, segmentation experiment name, state, and total wells count.
+        Notes: Segmentation executes asynchronously. Results saved to '{experiment_name}-segmentation' folder. Use segmentation_get_status() to monitor progress and segmentation_cancel() to abort.
+        """
+        try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
+            # Check if segmentation already running
+            if self.segmentation_state['state'] == 'running':
+                raise Exception("A segmentation is already in progress. Use segmentation_cancel() to stop it first.")
+            
+            logger.info(f"Segmentation start requested for experiment '{experiment_name}'")
+            
+            # Validate source experiment exists
+            if not hasattr(self.squidController, 'experiment_manager'):
+                raise Exception("Experiment manager not initialized")
+            
+            experiment_path = self.squidController.experiment_manager.base_path / experiment_name
+            if not experiment_path.exists():
+                raise ValueError(f"Source experiment '{experiment_name}' does not exist")
+            
+            # Auto-detect wells if not specified
+            if wells_to_segment is None:
+                logger.info("No wells specified, auto-detecting all wells in experiment...")
+                
+                # List all well zarr filesets in the experiment directory
+                detected_wells = []
+                for item in experiment_path.iterdir():
+                    if item.is_dir() and item.suffix == '.zarr' and item.stem.startswith('well_'):
+                        # Parse well identifier from fileset name (e.g., "well_A1_96.zarr" -> "A1")
+                        import re
+                        match = re.match(r'well_([A-Z]+)(\d+)_\d+', item.stem)
+                        if match:
+                            well_id = f"{match.group(1)}{match.group(2)}"
+                            detected_wells.append(well_id)
+                
+                if not detected_wells:
+                    raise ValueError(f"No wells found in experiment '{experiment_name}'")
+                
+                wells_to_segment = sorted(detected_wells)
+                logger.info(f"Auto-detected {len(wells_to_segment)} wells: {wells_to_segment}")
+            
+            # Validate wells_to_segment is a list
+            if not isinstance(wells_to_segment, list) or len(wells_to_segment) == 0:
+                raise ValueError("wells_to_segment must be a non-empty list")
+            
+            # Validate channel_configs
+            if not channel_configs or len(channel_configs) == 0:
+                raise ValueError("channel_configs must contain at least one channel configuration")
+            
+            for config in channel_configs:
+                if 'channel' not in config:
+                    raise ValueError("Each channel config must have 'channel' key")
+                # Set defaults
+                config.setdefault('min_percentile', 1.0)
+                config.setdefault('max_percentile', 99.0)
+                config.setdefault('weight', 1.0)
+                
+                # Validate percentile ranges
+                if not (0 <= config['min_percentile'] <= 100):
+                    raise ValueError(f"min_percentile must be between 0 and 100, got {config['min_percentile']}")
+                if not (0 <= config['max_percentile'] <= 100):
+                    raise ValueError(f"max_percentile must be between 0 and 100, got {config['max_percentile']}")
+                if config['min_percentile'] >= config['max_percentile']:
+                    raise ValueError(f"min_percentile must be less than max_percentile")
+            
+            logger.info(f"Segmentation configuration:")
+            logger.info(f"  Source experiment: '{experiment_name}'")
+            logger.info(f"  Wells to segment: {wells_to_segment}")
+            logger.info(f"  Channels: {len(channel_configs)} channel(s)")
+            for config in channel_configs:
+                logger.info(f"    - {config['channel']}: {config['min_percentile']}%-{config['max_percentile']}%, weight={config['weight']}")
+            logger.info(f"  Scale level: {scale_level}")
+            logger.info(f"  Well plate type: '{well_plate_type}'")
+            
+            # Launch segmentation in background (always use timepoint=0 for single timepoint experiments)
+            self.segmentation_state['segmentation_task'] = asyncio.create_task(
+                self._run_segmentation_background(
+                    source_experiment=experiment_name,
+                    wells_to_segment=wells_to_segment,
+                    channel_configs=channel_configs,
+                    scale_level=scale_level,
+                    timepoint=0,  # Always use timepoint 0 for single timepoint experiments
+                    well_plate_type=well_plate_type,
+                    well_padding_mm=well_padding_mm,
+                    context=context
+                )
+            )
+            
+            logger.info(f"✅ Segmentation task launched in background")
+            
+            return {
+                "success": True,
+                "message": f"Segmentation started for experiment '{experiment_name}'",
+                "source_experiment": experiment_name,
+                "segmentation_experiment": f"{experiment_name}-segmentation",
+                "state": "running",
+                "total_wells": len(wells_to_segment),
+                "wells_to_segment": wells_to_segment
+            }
+        
+        except Exception as e:
+            logger.error(f"Failed to start segmentation: {e}", exc_info=True)
+            raise e
+
+    @schema_function(skip_self=True)
+    def segmentation_get_status(self, context=None):
+        """
+        Query the current state of the background segmentation operation.
+        Returns: Dictionary with success flag, segmentation state ('idle', 'running', 'completed', 'failed'), progress details, and error_message (if failed).
+        Notes: State persists across client disconnections. Poll this endpoint to monitor long-running segmentations.
+        """
+        try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
+            return {
+                "success": True,
+                "state": self.segmentation_state['state'],
+                "error_message": self.segmentation_state['error_message'],
+                "progress": self.segmentation_state['progress']
+            }
+        
+        except Exception as e:
+            logger.error(f"Failed to get segmentation status: {e}")
+            raise e
+
+    @schema_function(skip_self=True)
+    async def segmentation_cancel(self, context=None):
+        """
+        Abort the currently running segmentation operation.
+        Returns: Dictionary with success status, confirmation message, and final segmentation state.
+        Notes: Segmentation stops gracefully where possible. Partial data may be retained in the segmentation experiment.
+        """
+        try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
+            # Check if segmentation is running
+            if self.segmentation_state['state'] != 'running':
+                return {
+                    "success": True,
+                    "message": f"No segmentation to cancel. Current state: {self.segmentation_state['state']}",
+                    "state": self.segmentation_state['state']
+                }
+            
+            logger.info("Segmentation cancellation requested")
+            
+            # Cancel the segmentation task
+            if self.segmentation_state['segmentation_task'] and not self.segmentation_state['segmentation_task'].done():
+                self.segmentation_state['segmentation_task'].cancel()
+                logger.info("Cancelled segmentation task")
+                
+                # Wait a moment for cancellation to propagate
+                try:
+                    await asyncio.wait_for(self.segmentation_state['segmentation_task'], timeout=1.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError):
+                    pass
+            
+            # Update state
+            self.segmentation_state['state'] = 'failed'
+            self.segmentation_state['error_message'] = 'Segmentation cancelled by user'
+            self.segmentation_state['segmentation_task'] = None
+            
+            logger.info("Segmentation cancelled successfully")
+            
+            return {
+                "success": True,
+                "message": "Segmentation cancelled successfully",
+                "state": self.segmentation_state['state']
+            }
+        
+        except Exception as e:
+            logger.error(f"Failed to cancel segmentation: {e}")
+            raise e
+
     async def stop_scan_and_stitching(self, context=None):
         """
         [DEPRECATED] Stop scan and stitching operations.
@@ -4443,6 +4747,7 @@ def signal_handler(sig, frame):
                 loop.create_task(_microscope_instance.stop_video_buffering())
             else:
                 loop.run_until_complete(_microscope_instance.stop_video_buffering())
+                loop.close()
         except Exception as e:
             logger.error(f'Error stopping video buffering: {e}')
 
