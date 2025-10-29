@@ -1632,16 +1632,34 @@ class MicroscopeHyphaService:
     
     class GetAvailableObjectivesInput(BaseModel):
         """Get available objectives and their positions."""
+    
+    @schema_function(skip_self=True)
+    async def inspect_tool(self, images: List[dict]=Field(..., description="A list of images to be inspected, each dictionary must contain 'http_url' (required) and optionally 'title' (optional)"), query: str=Field(..., description="User query about the images for GPT-4 vision model analysis"), context_description: str=Field(..., description="Context description for the visual inspection task, typically describing that images are taken from the microscope"), context=None):
+        """
+        Inspect images using GPT-4's vision model (GPT-4o) for analysis and description.
+        Returns: String response from the vision model containing image analysis based on the query.
+        Notes: All image URLs must be HTTP/HTTPS accessible. The method validates URLs and processes images through the GPT-4 vision API.
+        """
+        try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
 
-    async def inspect_tool(self, images: List[dict], query: str, context_description: str) -> str:
-        image_infos = [
-            self.ImageInfo(url=image_dict['http_url'], title=image_dict.get('title'))
-            for image_dict in images
-        ]
-        for image_info_obj in image_infos:
-            assert image_info_obj.url.startswith("http"), "Image URL must start with http."
-        response = await aask(image_infos, [context_description, query])
-        return response
+            image_infos = [
+                self.ImageInfo(url=image_dict['http_url'], title=image_dict.get('title'))
+                for image_dict in images
+            ]
+            for image_info_obj in image_infos:
+                if not image_info_obj.url.startswith("http"):
+                    raise ValueError("Image URL must start with http or https.")
+            
+            logger.info(f"Inspecting {len(image_infos)} image(s) with GPT-4 vision model. Query: {query[:100]}")
+            response = await aask(image_infos, [context_description, query])
+            logger.info("Image inspection completed successfully")
+            return response
+        except Exception as e:
+            logger.error(f"Failed to inspect images: {e}")
+            raise e
 
     def move_by_distance_schema(self, config: MoveByDistanceInput, context=None):
         self.get_status()
@@ -1822,6 +1840,7 @@ class MicroscopeHyphaService:
             "get_video_buffering_status": self.get_video_buffering_status,
             "set_video_fps": self.set_video_fps,
             "get_current_well_location": self.get_current_well_location,
+            "inspect_tool": self.inspect_tool,
             "get_microscope_configuration": self.get_microscope_configuration,
             "set_stage_velocity": self.set_stage_velocity,
             # Unified Scan API
