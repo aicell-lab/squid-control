@@ -388,11 +388,13 @@ async def segment_well_region_grid_based(
         canvas_height_mm = well_info['canvas_info']['canvas_height_mm']
         
         # Calculate tile size (use minimum to ensure tiles fit)
-        tile_size_mm = min(canvas_width_mm, canvas_height_mm, well_diameter) / grid_size
+        base_tile_size_mm = min(canvas_width_mm, canvas_height_mm, well_diameter) / grid_size
+        # Add 5% overlap to tile size to ensure proper segmentation at boundaries
+        tile_size_mm = base_tile_size_mm * 1.05
         
         logger.info(f"Well {well_id} - center: ({center_x:.2f}, {center_y:.2f})mm")
         logger.info(f"Canvas size: {canvas_width_mm:.2f}x{canvas_height_mm:.2f}mm")
-        logger.info(f"Grid: {grid_size}x{grid_size} tiles, tile size: {tile_size_mm:.2f}mm")
+        logger.info(f"Grid: {grid_size}x{grid_size} tiles, base tile size: {base_tile_size_mm:.2f}mm, with 5% overlap: {tile_size_mm:.2f}mm")
         
         # Process each grid tile
         tile_idx = 0
@@ -402,10 +404,10 @@ async def segment_well_region_grid_based(
                 
                 # Calculate tile center coordinates
                 # Grid indices: 0-8, tiles should cover full canvas from -canvas_half to +canvas_half
-                # Tile centers span from -canvas_half + tile_size/2 to +canvas_half - tile_size/2
-                # This ensures tiles properly cover the canvas edges
-                tile_center_x = center_x + (grid_i - (grid_size - 1) / 2.0) * tile_size_mm
-                tile_center_y = center_y + (grid_j - (grid_size - 1) / 2.0) * tile_size_mm
+                # Tile centers are spaced by base_tile_size (without overlap)
+                # Each tile region extends 5% beyond its boundary to create overlap
+                tile_center_x = center_x + (grid_i - (grid_size - 1) / 2.0) * base_tile_size_mm
+                tile_center_y = center_y + (grid_j - (grid_size - 1) / 2.0) * base_tile_size_mm
                 
                 logger.debug(f"  Tile {tile_idx}/{total_tiles} ({grid_i},{grid_j}): center=({tile_center_x:.2f}, {tile_center_y:.2f})mm")
                 
@@ -421,6 +423,7 @@ async def segment_well_region_grid_based(
                         weight = config.get('weight', 1.0)
                         
                         # Get tile region from this channel
+                        # Use overlapped tile size (5% larger than base) to ensure proper segmentation at boundaries
                         request_size = min(tile_size_mm, well_diameter)
                         channel_data = canvas.get_canvas_region_by_channel_name(
                             tile_center_x, tile_center_y, request_size, request_size,
