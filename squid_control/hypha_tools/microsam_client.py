@@ -6,11 +6,12 @@ and perform automated instance segmentation on microscopy images.
 """
 
 import asyncio
-import logging
-import numpy as np
-import cv2
 import base64
-from typing import Optional, List, Callable, Dict, Any
+import logging
+from typing import Any, Callable, Dict, List, Optional
+
+import cv2
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -332,13 +333,13 @@ async def segment_well_region_grid_based(
     seg_canvas,
     segmentation_channel: str,
     channel_idx: int,
-    cell_progress_callback: Optional[Callable[[str, int, int, int, int], None]] = None,
+    tile_progress_callback: Optional[Callable[[str, int, int, int, int], None]] = None,
     well_index: Optional[int] = None,
     total_wells: Optional[int] = None
 ) -> Dict[str, Any]:
     """
     Segment well region by processing it as a 9x9 grid to reduce memory usage.
-    Each grid cell is processed separately: load channels, merge, segment, and write to zarr.
+    Each grid tile is processed separately: load channels, merge, segment, and write to zarr.
     
     Args:
         microsam_service: Connected microSAM service
@@ -354,22 +355,22 @@ async def segment_well_region_grid_based(
         seg_canvas: Segmentation canvas for writing results
         segmentation_channel: Channel name for segmentation masks
         channel_idx: Channel index in segmentation canvas
-        cell_progress_callback: Optional callback(well_id, cell_idx, total_cells, completed_wells, total_wells)
+        tile_progress_callback: Optional callback(well_id, tile_idx, total_tiles, completed_wells, total_wells)
     
     Returns:
-        Dictionary with processing statistics (cells_processed, cells_failed, etc.)
+        Dictionary with processing statistics (tiles_processed, tiles_failed, etc.)
     """
     well_id = f"{well_row}{well_column}"
     logger.info(f"📍 Processing well {well_id} with {len(channel_configs)} channels using 9x9 grid")
     
     grid_size = 9
-    total_cells = grid_size * grid_size  # 81 cells
+    total_tiles = grid_size * grid_size  # 81 tiles
     
     stats = {
         'well_id': well_id,
-        'cells_processed': 0,
-        'cells_failed': 0,
-        'cells_skipped': 0
+        'tiles_processed': 0,
+        'tiles_failed': 0,
+        'tiles_skipped': 0
     }
     
     try:
@@ -386,30 +387,30 @@ async def segment_well_region_grid_based(
         canvas_width_mm = well_info['canvas_info']['canvas_width_mm']
         canvas_height_mm = well_info['canvas_info']['canvas_height_mm']
         
-        # Calculate cell size (use minimum to ensure cells fit)
-        cell_size_mm = min(canvas_width_mm, canvas_height_mm, well_diameter) / grid_size
+        # Calculate tile size (use minimum to ensure tiles fit)
+        tile_size_mm = min(canvas_width_mm, canvas_height_mm, well_diameter) / grid_size
         
         logger.info(f"Well {well_id} - center: ({center_x:.2f}, {center_y:.2f})mm")
         logger.info(f"Canvas size: {canvas_width_mm:.2f}x{canvas_height_mm:.2f}mm")
-        logger.info(f"Grid: {grid_size}x{grid_size} cells, cell size: {cell_size_mm:.2f}mm")
+        logger.info(f"Grid: {grid_size}x{grid_size} tiles, tile size: {tile_size_mm:.2f}mm")
         
-        # Process each grid cell
-        cell_idx = 0
+        # Process each grid tile
+        tile_idx = 0
         for grid_i in range(grid_size):
             for grid_j in range(grid_size):
-                cell_idx += 1
+                tile_idx += 1
                 
-                # Calculate cell center coordinates
-                # Grid indices: 0-8, cells should cover full canvas from -canvas_half to +canvas_half
-                # Cell centers span from -canvas_half + cell_size/2 to +canvas_half - cell_size/2
-                # This ensures cells properly cover the canvas edges
-                cell_center_x = center_x + (grid_i - (grid_size - 1) / 2.0) * cell_size_mm
-                cell_center_y = center_y + (grid_j - (grid_size - 1) / 2.0) * cell_size_mm
+                # Calculate tile center coordinates
+                # Grid indices: 0-8, tiles should cover full canvas from -canvas_half to +canvas_half
+                # Tile centers span from -canvas_half + tile_size/2 to +canvas_half - tile_size/2
+                # This ensures tiles properly cover the canvas edges
+                tile_center_x = center_x + (grid_i - (grid_size - 1) / 2.0) * tile_size_mm
+                tile_center_y = center_y + (grid_j - (grid_size - 1) / 2.0) * tile_size_mm
                 
-                logger.debug(f"  Cell {cell_idx}/{total_cells} ({grid_i},{grid_j}): center=({cell_center_x:.2f}, {cell_center_y:.2f})mm")
+                logger.debug(f"  Tile {tile_idx}/{total_tiles} ({grid_i},{grid_j}): center=({tile_center_x:.2f}, {tile_center_y:.2f})mm")
                 
                 try:
-                    # Load and process each channel for this cell
+                    # Load and process each channel for this tile
                     processed_channels = []
                     channel_names = []
                     
@@ -419,15 +420,15 @@ async def segment_well_region_grid_based(
                         max_percentile = config.get('max_percentile', 99.0)
                         weight = config.get('weight', 1.0)
                         
-                        # Get cell region from this channel
-                        request_size = min(cell_size_mm, well_diameter)
+                        # Get tile region from this channel
+                        request_size = min(tile_size_mm, well_diameter)
                         channel_data = canvas.get_canvas_region_by_channel_name(
-                            cell_center_x, cell_center_y, request_size, request_size,
+                            tile_center_x, tile_center_y, request_size, request_size,
                             channel_name, scale=scale_level, timepoint=timepoint
                         )
                         
                         if channel_data is None:
-                            logger.debug(f"    No data for channel {channel_name} in cell {cell_idx}, skipping")
+                            logger.debug(f"    No data for channel {channel_name} in tile {tile_idx}, skipping")
                             continue
                         
                         # Apply contrast adjustment
@@ -442,8 +443,8 @@ async def segment_well_region_grid_based(
                         channel_names.append(channel_name)
                     
                     if not processed_channels:
-                        logger.debug(f"  Cell {cell_idx} has no valid channel data, skipping")
-                        stats['cells_skipped'] += 1
+                        logger.debug(f"  Tile {tile_idx} has no valid channel data, skipping")
+                        stats['tiles_skipped'] += 1
                         continue
                     
                     # Merge channels using OME-Zarr colors
@@ -471,19 +472,19 @@ async def segment_well_region_grid_based(
                     
                     if non_black_percentage < 5.0:
                         logger.debug(
-                            f"  Cell {cell_idx}: Skipping segmentation - "
+                            f"  Tile {tile_idx}: Skipping segmentation - "
                             f"only {non_black_percentage:.2f}% non-black pixels (threshold: 5%)"
                         )
-                        stats['cells_skipped'] += 1
+                        stats['tiles_skipped'] += 1
                         del merged_image
                         del gray_image
                         continue
                     
-                    # Segment this cell
+                    # Segment this tile
                     # Store original image dimensions to verify segmentation result matches
                     original_image_shape = merged_image.shape[:2]  # (height, width)
                     
-                    cell_segmentation = await segment_image(
+                    tile_segmentation = await segment_image(
                         microsam_service, merged_image,
                         min_contrast_percentile=0.0,
                         max_contrast_percentile=100.0  # No additional contrast
@@ -496,70 +497,70 @@ async def segment_well_region_grid_based(
                     # Free merged image after segmentation
                     del merged_image
                     
-                    if cell_segmentation is None:
-                        logger.warning(f"  Cell {cell_idx} segmentation returned None, skipping")
-                        stats['cells_failed'] += 1
+                    if tile_segmentation is None:
+                        logger.warning(f"  Tile {tile_idx} segmentation returned None, skipping")
+                        stats['tiles_failed'] += 1
                         continue
                     
                     # Verify segmentation mask dimensions match source image
-                    seg_shape = cell_segmentation.shape[:2]  # (height, width)
+                    seg_shape = tile_segmentation.shape[:2]  # (height, width)
                     if seg_shape != original_image_shape:
                         logger.warning(
-                            f"  Cell {cell_idx}: Segmentation mask size mismatch! "
+                            f"  Tile {tile_idx}: Segmentation mask size mismatch! "
                             f"Source: {original_image_shape}, Segmentation: {seg_shape}. "
                             f"Resizing segmentation to match source dimensions."
                         )
                         # Resize segmentation to match source image dimensions
-                        cell_segmentation = cv2.resize(
-                            cell_segmentation, 
+                        tile_segmentation = cv2.resize(
+                            tile_segmentation, 
                             (original_image_shape[1], original_image_shape[0]),  # (width, height)
                             interpolation=cv2.INTER_NEAREST  # Preserve label values
                         )
                     
-                    # Write cell segmentation mask to segmentation canvas at the EXACT same location
-                    # as the source image was read from (same cell_center_x, cell_center_y coordinates)
+                    # Write tile segmentation mask to segmentation canvas at the EXACT same location
+                    # as the source image was read from (same tile_center_x, tile_center_y coordinates)
                     seg_canvas.add_image_sync(
-                        image=cell_segmentation,
-                        x_mm=cell_center_x,  # Same coordinate as source image read
-                        y_mm=cell_center_y,  # Same coordinate as source image read
+                        image=tile_segmentation,
+                        x_mm=tile_center_x,  # Same coordinate as source image read
+                        y_mm=tile_center_y,  # Same coordinate as source image read
                         channel_idx=channel_idx,
                         z_idx=0,
                         timepoint=timepoint
                     )
                     
                     logger.debug(
-                        f"  Cell {cell_idx}: Wrote segmentation mask (shape={cell_segmentation.shape}) "
-                        f"to position ({cell_center_x:.2f}, {cell_center_y:.2f})mm "
+                        f"  Tile {tile_idx}: Wrote segmentation mask (shape={tile_segmentation.shape}) "
+                        f"to position ({tile_center_x:.2f}, {tile_center_y:.2f})mm "
                         f"- same location as source image"
                     )
                     
                     # Free segmentation result after writing
-                    del cell_segmentation
+                    del tile_segmentation
                     
-                    stats['cells_processed'] += 1
+                    stats['tiles_processed'] += 1
                     
-                    # Call cell progress callback
-                    if cell_progress_callback and well_index is not None and total_wells is not None:
+                    # Call tile progress callback
+                    if tile_progress_callback and well_index is not None and total_wells is not None:
                         try:
-                            cell_progress_callback(well_id, cell_idx, total_cells, well_index + 1, total_wells)
+                            tile_progress_callback(well_id, tile_idx, total_tiles, well_index + 1, total_wells)
                         except Exception as callback_error:
-                            logger.debug(f"Cell progress callback error: {callback_error}")
+                            logger.debug(f"Tile progress callback error: {callback_error}")
                     
-                    # Log progress every 10 cells
-                    if cell_idx % 10 == 0:
-                        logger.info(f"  Progress: {cell_idx}/{total_cells} cells processed ({stats['cells_processed']} successful, {stats['cells_failed']} failed)")
+                    # Log progress every 10 tiles
+                    if tile_idx % 10 == 0:
+                        logger.info(f"  Progress: {tile_idx}/{total_tiles} tiles processed ({stats['tiles_processed']} successful, {stats['tiles_failed']} failed)")
                     
                 except Exception as e:
-                    logger.error(f"  Failed to process cell {cell_idx} ({grid_i},{grid_j}): {e}")
-                    stats['cells_failed'] += 1
+                    logger.error(f"  Failed to process tile {tile_idx} ({grid_i},{grid_j}): {e}")
+                    stats['tiles_failed'] += 1
                     continue
         
-        logger.info(f"✅ Well {well_id} grid segmentation complete: {stats['cells_processed']} cells processed, {stats['cells_failed']} failed, {stats['cells_skipped']} skipped")
+        logger.info(f"✅ Well {well_id} grid segmentation complete: {stats['tiles_processed']} tiles processed, {stats['tiles_failed']} failed, {stats['tiles_skipped']} skipped")
         return stats
         
     except Exception as e:
         logger.error(f"Failed to segment well {well_id}: {e}", exc_info=True)
-        stats['cells_failed'] = total_cells - stats['cells_processed']
+        stats['tiles_failed'] = total_tiles - stats['tiles_processed']
         return stats
 
 
@@ -776,19 +777,19 @@ async def segment_experiment_wells(
             channel_idx = seg_canvas.channel_to_zarr_index[segmentation_channel]
             logger.info(f"Using channel '{segmentation_channel}' at index {channel_idx} for segmentation masks")
             
-            # Create cell progress callback if main progress callback exists
-            def make_cell_callback(well_idx, total_wells):
-                def cell_callback(well_id_inner, cell_idx, total_cells, completed_wells, total_wells_inner):
-                    # Report progress every 10 cells or at completion
-                    if cell_idx % 10 == 0 or cell_idx == total_cells:
+            # Create tile progress callback if main progress callback exists
+            def make_tile_callback(well_idx, total_wells):
+                def tile_callback(well_id_inner, tile_idx, total_tiles, completed_wells, total_wells_inner):
+                    # Report progress every 10 tiles or at completion
+                    if tile_idx % 10 == 0 or tile_idx == total_tiles:
                         if progress_callback:
                             progress_callback(well_id_inner, completed_wells, total_wells_inner)
-                return cell_callback
+                return tile_callback
             
-            cell_callback = make_cell_callback(idx, len(wells_to_segment)) if progress_callback else None
+            tile_callback = make_tile_callback(idx, len(wells_to_segment)) if progress_callback else None
             
             # Segment the well region using grid-based approach
-            cell_stats = await segment_well_region_grid_based(
+            tile_stats = await segment_well_region_grid_based(
                 microsam_service=microsam_service,
                 experiment_manager=experiment_manager,
                 source_experiment=source_experiment,
@@ -802,20 +803,20 @@ async def segment_experiment_wells(
                 seg_canvas=seg_canvas,
                 segmentation_channel=segmentation_channel,
                 channel_idx=channel_idx,
-                cell_progress_callback=cell_callback,
+                tile_progress_callback=tile_callback,
                 well_index=idx,
                 total_wells=len(wells_to_segment)
             )
             
-            # Check if segmentation was successful (at least some cells processed)
-            if cell_stats['cells_processed'] == 0:
-                logger.warning(f"No cells processed for well {well_id} (failed: {cell_stats['cells_failed']}, skipped: {cell_stats['cells_skipped']})")
+            # Check if segmentation was successful (at least some tiles processed)
+            if tile_stats['tiles_processed'] == 0:
+                logger.warning(f"No tiles processed for well {well_id} (failed: {tile_stats['tiles_failed']}, skipped: {tile_stats['tiles_skipped']})")
                 results['failed_wells'] += 1
                 results['wells_failed'].append(well_id)
                 continue
             
             logger.info(f"✅ Saved segmentation for well {well_id} to '{segmentation_experiment}' "
-                       f"({cell_stats['cells_processed']} cells processed, {cell_stats['cells_failed']} failed, {cell_stats['cells_skipped']} skipped)")
+                       f"({tile_stats['tiles_processed']} tiles processed, {tile_stats['tiles_failed']} failed, {tile_stats['tiles_skipped']} skipped)")
             
             results['successful_wells'] += 1
             results['wells_processed'].append(well_id)
