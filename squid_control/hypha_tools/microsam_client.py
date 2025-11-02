@@ -95,17 +95,15 @@ def merge_channels_with_colors(channel_images: List[np.ndarray],
     logger.info(f"✅ Merged to RGB image: shape={rgb_image.shape}, dtype={rgb_image.dtype}")
     return rgb_image
 
-
-def encode_image_to_jpeg(image: np.ndarray, quality: int = 95) -> bytes:
+def encode_image_to_png(image: np.ndarray) -> bytes:
     """
-    Encode numpy array to JPEG bytes for efficient transmission.
+    Encode numpy array to PNG bytes for lossless transmission.
     
     Args:
         image: Image array in (H, W) for grayscale or (H, W, 3) for RGB, dtype uint8
-        quality: JPEG quality (1-100, default 95 for high quality)
     
     Returns:
-        jpeg_bytes: Compressed JPEG image as bytes
+        png_bytes: Compressed PNG image as bytes
     
     Raises:
         ValueError: If encoding fails
@@ -113,32 +111,30 @@ def encode_image_to_jpeg(image: np.ndarray, quality: int = 95) -> bytes:
     try:
         if len(image.shape) == 2:
             # Grayscale image
-            success, encoded = cv2.imencode('.jpg', image, 
-                                          [cv2.IMWRITE_JPEG_QUALITY, quality])
+            success, encoded = cv2.imencode('.png', image)
         elif len(image.shape) == 3 and image.shape[2] == 3:
             # RGB image - convert RGB to BGR for OpenCV
             bgr_image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-            success, encoded = cv2.imencode('.jpg', bgr_image,
-                                           [cv2.IMWRITE_JPEG_QUALITY, quality])
+            success, encoded = cv2.imencode('.png', bgr_image)
         else:
-            raise ValueError(f"Unsupported image shape for JPEG encoding: {image.shape}")
+            raise ValueError(f"Unsupported image shape for PNG encoding: {image.shape}")
         
         if not success:
-            raise ValueError("Failed to encode image to JPEG")
+            raise ValueError("Failed to encode image to PNG")
         
-        jpeg_bytes = encoded.tobytes()
+        png_bytes = encoded.tobytes()
         original_size = image.nbytes
-        compressed_size = len(jpeg_bytes)
+        compressed_size = len(png_bytes)
         compression_ratio = original_size / compressed_size if compressed_size > 0 else 1.0
         
-        logger.debug(f"JPEG encoding: {original_size:,} bytes -> {compressed_size:,} bytes "
-                    f"(ratio: {compression_ratio:.2f}x, quality: {quality})")
+        logger.debug(f"PNG encoding: {original_size:,} bytes -> {compressed_size:,} bytes "
+                    f"(ratio: {compression_ratio:.2f}x)")
         
-        return jpeg_bytes
+        return png_bytes
         
     except Exception as e:
-        logger.error(f"Error encoding image to JPEG: {e}")
-        raise ValueError(f"JPEG encoding failed: {e}")
+        logger.error(f"Error encoding image to PNG: {e}")
+        raise ValueError(f"PNG encoding failed: {e}")
 
 
 def apply_contrast_adjustment(image: np.ndarray, min_percentile: float, max_percentile: float) -> np.ndarray:
@@ -208,11 +204,10 @@ async def connect_to_microsam(server):
 
 async def segment_image(microsam_service, image_array: np.ndarray, 
                        min_contrast_percentile: float = 1.0,
-                       max_contrast_percentile: float = 99.0,
-                       jpeg_quality: int = 95) -> np.ndarray:
+                       max_contrast_percentile: float = 99.0) -> np.ndarray:
     """
     Segment a single image using the microSAM service with contrast adjustment.
-    Images are compressed to JPEG before transmission to reduce payload size and prevent WebSocket blocking.
+    Images are compressed to PNG before transmission for lossless quality.
     
     Args:
         microsam_service: Connected microSAM service
@@ -220,7 +215,6 @@ async def segment_image(microsam_service, image_array: np.ndarray,
                      Should be contrast-adjusted if using direct input
         min_contrast_percentile: Lower percentile for contrast (default: 1.0)
         max_contrast_percentile: Upper percentile for contrast (default: 99.0)
-        jpeg_quality: JPEG quality 1-100, higher = better quality but larger file (default: 95)
     
     Returns:
         segmentation: Binary segmentation mask as uint8 array with shape (H, W)
@@ -232,7 +226,7 @@ async def segment_image(microsam_service, image_array: np.ndarray,
     
     Note:
         For multi-channel inputs, use merge_channels_with_colors() first to create RGB image.
-        JPEG compression significantly reduces payload size (typically 10:1 ratio) and prevents WebSocket timeouts.
+        PNG compression provides lossless quality for accurate segmentation.
         The returned mask is a binary mask (uint8), not instance segmentation with unique IDs.
     """
     logger.info(f"Segmenting image with shape: {image_array.shape}, dtype: {image_array.dtype}")
@@ -245,40 +239,40 @@ async def segment_image(microsam_service, image_array: np.ndarray,
     
     original_size_mb = adjusted_image.nbytes / (1024 * 1024)
     
-    # Compress to JPEG for efficient transmission
-    logger.info(f"Compressing image to JPEG (quality={jpeg_quality}) for transmission...")
-    jpeg_bytes = encode_image_to_jpeg(adjusted_image, quality=jpeg_quality)
-    compressed_size_mb = len(jpeg_bytes) / (1024 * 1024)
+    # Compress to PNG for lossless transmission
+    logger.info("Compressing image to PNG for transmission...")
+    png_bytes = encode_image_to_png(adjusted_image)
+    compressed_size_mb = len(png_bytes) / (1024 * 1024)
     compression_ratio = original_size_mb / compressed_size_mb if compressed_size_mb > 0 else 1.0
     
     logger.info(f"Image compression: {original_size_mb:.2f} MB -> {compressed_size_mb:.2f} MB "
                f"({compression_ratio:.1f}x reduction)")
     
-    # Encode JPEG bytes to base64 for safe JSON transmission
-    jpeg_base64 = base64.b64encode(jpeg_bytes).decode('utf-8')
+    # Encode PNG bytes to base64 for safe JSON transmission
+    png_base64 = base64.b64encode(png_bytes).decode('utf-8')
     
-    # Send JPEG-compressed image to microSAM
-    # microSAM returns a JPEG base64 string containing a binary mask (uint8: 0 or 255)
-    logger.info(f"Calling microSAM segment_all with JPEG-compressed image "
+    # Send PNG-compressed image to microSAM
+    # microSAM returns a PNG base64 string containing a binary mask (uint8: 0 or 255)
+    logger.info(f"Calling microSAM segment_all with PNG-compressed image "
                f"({compressed_size_mb:.2f} MB)")
     
     segmentation_result_b64 = await microsam_service.segment_all(
-        image_or_embedding=jpeg_base64,  # Send base64-encoded JPEG
+        image_or_embedding=png_base64,  # Send base64-encoded PNG
         embedding=False
     )
     
     try:
-        # Decode the returned JPEG base64 string back to numpy array
-        # microSAM returns a JPEG base64 string containing a binary mask (uint8: 0 or 255)
+        # Decode the returned PNG base64 string back to numpy array
+        # microSAM returns a PNG base64 string containing a binary mask (uint8: 0 or 255)
         if isinstance(segmentation_result_b64, str):
             # Decode base64 to bytes
-            segmentation_jpeg_bytes = base64.b64decode(segmentation_result_b64)
-            # Decode JPEG bytes to numpy array (grayscale binary mask: 0 or 255)
-            nparr = np.frombuffer(segmentation_jpeg_bytes, np.uint8)
+            segmentation_png_bytes = base64.b64decode(segmentation_result_b64)
+            # Decode PNG bytes to numpy array (grayscale binary mask: 0 or 255)
+            nparr = np.frombuffer(segmentation_png_bytes, np.uint8)
             segmentation_result = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
             
             if segmentation_result is None:
-                raise ValueError("Failed to decode segmentation result from JPEG")
+                raise ValueError("Failed to decode segmentation result from PNG")
             
             logger.info(f"✅ Segmentation completed! Result shape: {segmentation_result.shape}, dtype: {segmentation_result.dtype}")
         else:
@@ -484,8 +478,9 @@ async def segment_well_region_grid_based(
                         continue
                     
                     # Segment this tile
-                    # Store original image dimensions to verify segmentation result matches
-                    original_image_shape = merged_image.shape[:2]  # (height, width)
+                    # CRITICAL: Store the EXACT image dimensions returned from zarr read
+                    # This ensures perfect alignment when writing back to zarr
+                    actual_read_shape = merged_image.shape[:2]  # (height, width)
                     
                     tile_segmentation = await segment_image(
                         microsam_service, merged_image,
@@ -505,22 +500,53 @@ async def segment_well_region_grid_based(
                         stats['tiles_failed'] += 1
                         continue
                     
-                    # Verify segmentation mask dimensions match source image
+                    # CRITICAL: Resize segmentation to EXACTLY match the actual zarr read region dimensions
+                    # This ensures perfect chunk alignment - the segmentation mask will be written
+                    # at the exact same pixel coordinates and size as the source region was read
                     seg_shape = tile_segmentation.shape[:2]  # (height, width)
-                    if seg_shape != original_image_shape:
-                        logger.warning(
-                            f"  Tile {tile_idx}: Segmentation mask size mismatch! "
-                            f"Source: {original_image_shape}, Segmentation: {seg_shape}. "
-                            f"Resizing segmentation to match source dimensions."
+                    if seg_shape != actual_read_shape:
+                        logger.debug(
+                            f"  Tile {tile_idx}: Resizing segmentation from {seg_shape} "
+                            f"to match actual zarr read size {actual_read_shape} for chunk alignment"
                         )
-                        # Resize segmentation to match source image dimensions
                         tile_segmentation = cv2.resize(
                             tile_segmentation, 
-                            (original_image_shape[1], original_image_shape[0]),  # (width, height)
-                            interpolation=cv2.INTER_NEAREST  # Preserve label values
+                            (actual_read_shape[1], actual_read_shape[0]),  # (width, height)
+                            interpolation=cv2.INTER_NEAREST  # Preserve binary mask values
                         )
                     
-                    # Write tile segmentation mask to segmentation canvas at the EXACT same location
+                    # CRITICAL: Merge overlapping masks instead of overwriting
+                    # Read existing mask region from zarr to merge with new mask (union operation)
+                    # This ensures overlapping tiles contribute to the final segmentation
+                    existing_mask = seg_canvas.get_canvas_region(
+                        tile_center_x, tile_center_y, request_size, request_size,
+                        scale=scale_level, channel_idx=channel_idx, timepoint=timepoint
+                    )
+                    
+                    if existing_mask is not None and existing_mask.size > 0:
+                        # Ensure existing mask matches the new mask dimensions
+                        if existing_mask.shape != tile_segmentation.shape:
+                            # Resize existing mask to match if dimensions differ (should be rare)
+                            logger.debug(
+                                f"  Tile {tile_idx}: Resizing existing mask from {existing_mask.shape} "
+                                f"to match new mask {tile_segmentation.shape} for merging"
+                            )
+                            existing_mask = cv2.resize(
+                                existing_mask,
+                                (tile_segmentation.shape[1], tile_segmentation.shape[0]),
+                                interpolation=cv2.INTER_NEAREST
+                            )
+                        
+                        # Merge masks using maximum (union operation for binary masks)
+                        # max(0, 0) = 0 (background), max(0, 255) = 255 (segmented), max(255, 255) = 255
+                        tile_segmentation = np.maximum(tile_segmentation, existing_mask).astype(np.uint8)
+                        
+                        logger.debug(
+                            f"  Tile {tile_idx}: Merged with existing mask "
+                            f"({np.sum(existing_mask > 0)} existing segmented pixels)"
+                        )
+                    
+                    # Write merged tile segmentation mask to segmentation canvas at the EXACT same location
                     # as the source image was read from (same tile_center_x, tile_center_y coordinates)
                     seg_canvas.add_image_sync(
                         image=tile_segmentation,
