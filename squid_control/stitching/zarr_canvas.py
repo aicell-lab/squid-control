@@ -1314,6 +1314,257 @@ class WellZarrCanvasBase:
 
         return self.get_canvas_region(x_mm, y_mm, width_mm, height_mm, scale, channel_idx, timepoint)
 
+    def get_canvas_region_pixels(self, center_x_px: int, center_y_px: int, width_px: int, height_px: int,
+                                 scale: int = 0, channel_idx: int = 0, timepoint: int = 0) -> Tuple[np.ndarray, Dict]:
+        """
+        Get a region from the canvas using pixel coordinates directly.
+        Returns both the region array and exact pixel bounds used for reading.
+        No preprocessing/transformation is applied.
+        
+        Args:
+            center_x_px: Center X position in pixels (at the specified scale)
+            center_y_px: Center Y position in pixels (at the specified scale)
+            width_px: Width in pixels (at the specified scale)
+            height_px: Height in pixels (at the specified scale)
+            scale: Scale level to retrieve from
+            channel_idx: Local zarr channel index (0, 1, 2, etc.)
+            timepoint: Timepoint index (default 0)
+            
+        Returns:
+            Tuple of (region_array, bounds_dict) where bounds_dict contains:
+                - 'x_start': Exact pixel x start coordinate
+                - 'x_end': Exact pixel x end coordinate
+                - 'y_start': Exact pixel y start coordinate
+                'y_end': Exact pixel y end coordinate
+            Returns (None, None) if read fails
+        """
+        # Validate channel index
+        if channel_idx >= len(self.channels) or channel_idx < 0:
+            logger.error(f"Channel index {channel_idx} out of bounds. Available channels: {len(self.channels)} (indices 0-{len(self.channels)-1})")
+            return None, None
+
+        # Validate timepoint
+        if timepoint not in self.available_timepoints:
+            logger.error(f"Timepoint {timepoint} not available. Available timepoints: {sorted(self.available_timepoints)}")
+            return None, None
+
+        with self.zarr_lock:
+            # Validate zarr arrays exist
+            if not hasattr(self, 'zarr_arrays') or scale not in self.zarr_arrays:
+                logger.error(f"Zarr arrays not initialized or scale {scale} not available")
+                return None, None
+
+            zarr_array = self.zarr_arrays[scale]
+
+            # Check if timepoint exists in zarr array
+            if timepoint >= zarr_array.shape[0]:
+                logger.warning(f"Timepoint {timepoint} not yet written to zarr array (shape: {zarr_array.shape})")
+                # Return zeros of the expected size
+                return np.zeros((height_px, width_px), dtype=zarr_array.dtype), {
+                    'x_start': max(0, center_x_px - width_px // 2),
+                    'x_end': max(0, center_x_px - width_px // 2) + width_px,
+                    'y_start': max(0, center_y_px - height_px // 2),
+                    'y_end': max(0, center_y_px - height_px // 2) + height_px
+                }
+
+            # Double-check zarr array dimensions
+            if channel_idx >= zarr_array.shape[1]:
+                logger.error(f"Channel index {channel_idx} exceeds zarr array channel dimension {zarr_array.shape[1]}")
+                return None, None
+
+            # Calculate exact bounds
+            x_start = max(0, center_x_px - width_px // 2)
+            x_end = min(zarr_array.shape[4], x_start + width_px)
+            y_start = max(0, center_y_px - height_px // 2)
+            y_end = min(zarr_array.shape[3], y_start + height_px)
+
+            # Read from zarr
+            try:
+                region = zarr_array[timepoint, channel_idx, 0, y_start:y_end, x_start:x_end]
+                bounds = {
+                    'x_start': x_start,
+                    'x_end': x_end,
+                    'y_start': y_start,
+                    'y_end': y_end
+                }
+                logger.debug(f"Successfully retrieved region from zarr at scale {scale}, channel {channel_idx}, timepoint {timepoint} "
+                           f"with bounds x=[{x_start}:{x_end}], y=[{y_start}:{y_end}]")
+                return region, bounds
+            except IndexError as e:
+                logger.error(f"IndexError reading from zarr array at scale {scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
+                logger.error(f"Zarr array shape: {zarr_array.shape}, trying to access timepoint {timepoint}")
+                return None, None
+            except Exception as e:
+                logger.error(f"Error reading from zarr array at scale {scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
+                return None, None
+
+    def add_image_sync_pixels(self, image: np.ndarray, x_start_px: int, y_start_px: int,
+                              channel_idx: int = 0, z_idx: int = 0, timepoint: int = 0,
+                              scale: int = 0):
+        """
+        Write image directly to zarr using pixel coordinates without any preprocessing.
+        Used for segmentation masks that must align exactly with source data.
+        No rotation, cropping, or resizing is applied.
+        Writes to all pyramid scales for consistency with regular stitching.
+        
+        Args:
+            image: Image array (2D, uint8) - must match exact dimensions for the region at scale 0
+            x_start_px: X start pixel coordinate (at scale 0)
+            y_start_px: Y start pixel coordinate (at scale 0)
+            channel_idx: Local zarr channel index (0, 1, 2, etc.)
+            z_idx: Z-slice index (default 0)
+            timepoint: Timepoint index (default 0)
+            scale: Scale level for the input coordinates (default 0) - used as reference scale
+        """
+        # Validate channel index
+        if channel_idx >= len(self.channels) or channel_idx < 0:
+            logger.error(f"ZARR_WRITE_PIXELS: Channel index {channel_idx} out of bounds. Available channels: {len(self.channels)} (indices 0-{len(self.channels)-1})")
+            return
+
+        # Validate image input
+        if image is None or image.size == 0:
+            logger.error(f"ZARR_WRITE_PIXELS: Invalid image input - image is None or empty")
+            return
+
+        logger.info(f"ZARR_WRITE_PIXELS: Writing image shape={image.shape}, dtype={image.dtype} to all scales, "
+                   f"channel={channel_idx}, timepoint={timepoint}, pixel bounds at scale {scale} x=[{x_start_px}:?], y=[{y_start_px}:?]")
+
+        # Validate timepoint
+        if timepoint not in self.available_timepoints:
+            with self.zarr_lock:
+                if timepoint not in self.available_timepoints:
+                    self.available_timepoints.append(timepoint)
+                    self.available_timepoints.sort()
+                    self._update_timepoint_metadata()
+                    logger.info(f"ZARR_WRITE_PIXELS: Created new timepoint {timepoint}")
+
+        with self.zarr_lock:
+            # Ensure zarr arrays are sized correctly for this timepoint (lazy expansion)
+            self._ensure_timepoint_exists_in_zarr(timepoint)
+
+            # Ensure image is uint8 before processing
+            image_base = image.copy()
+            if image_base.dtype != np.uint8:
+                logger.info(f"ZARR_WRITE_PIXELS: Converting image from {image_base.dtype} to uint8")
+                if image_base.dtype == np.uint16:
+                    image_base = (image_base / 256).astype(np.uint8)
+                elif image_base.dtype in [np.float32, np.float64]:
+                    if image_base.max() > image_base.min():
+                        image_base = ((image_base - image_base.min()) /
+                                    (image_base.max() - image_base.min()) * 255).astype(np.uint8)
+                    else:
+                        image_base = np.zeros_like(image_base, dtype=np.uint8)
+                else:
+                    image_base = image_base.astype(np.uint8)
+
+            # Write to all pyramid scales
+            scales_written = 0
+            for target_scale in range(self.num_scales):
+                try:
+                    # Validate zarr arrays exist for this scale
+                    if not hasattr(self, 'zarr_arrays') or target_scale not in self.zarr_arrays:
+                        logger.error(f"ZARR_WRITE_PIXELS: Zarr arrays not initialized or scale {target_scale} not available")
+                        continue
+
+                    zarr_array = self.zarr_arrays[target_scale]
+
+                    # Double-check zarr array dimensions
+                    if channel_idx >= zarr_array.shape[1]:
+                        logger.error(f"ZARR_WRITE_PIXELS: Channel index {channel_idx} exceeds zarr array channel dimension {zarr_array.shape[1]}")
+                        continue
+
+                    # Calculate scale factor from reference scale to target scale
+                    # If input is at scale 0 and we're writing to scale 1, we need to downsample by 4
+                    scale_factor_from_ref = 4 ** (target_scale - scale)
+                    
+                    # Convert pixel coordinates for this scale
+                    x_start_px_scaled = x_start_px // scale_factor_from_ref if scale_factor_from_ref > 1 else x_start_px
+                    y_start_px_scaled = y_start_px // scale_factor_from_ref if scale_factor_from_ref > 1 else y_start_px
+
+                    # Downsample image for this scale if needed
+                    if target_scale == scale:
+                        # Same scale: use original image
+                        scaled_image = image_base
+                    elif target_scale > scale:
+                        # Downscale: downsample image
+                        scale_factor_down = 4 ** (target_scale - scale)
+                        new_width = image_base.shape[1] // scale_factor_down
+                        new_height = image_base.shape[0] // scale_factor_down
+                        scaled_image = cv2.resize(image_base, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
+                    else:
+                        # Upscale: this shouldn't happen but handle it
+                        scale_factor_up = 4 ** (scale - target_scale)
+                        new_width = image_base.shape[1] * scale_factor_up
+                        new_height = image_base.shape[0] * scale_factor_up
+                        scaled_image = cv2.resize(image_base, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
+
+                    # Calculate exact bounds for this scale
+                    height, width = scaled_image.shape[:2]
+                    x_end_px_scaled = min(zarr_array.shape[4], x_start_px_scaled + width)
+                    y_end_px_scaled = min(zarr_array.shape[3], y_start_px_scaled + height)
+
+                    logger.info(f"ZARR_WRITE_PIXELS: Scale {target_scale} - zarr array shape={zarr_array.shape}, "
+                               f"image size={width}x{height}, calculated bounds x=[{x_start_px_scaled}:{x_end_px_scaled}], "
+                               f"y=[{y_start_px_scaled}:{y_end_px_scaled}]")
+
+                    # Crop image if it extends beyond canvas bounds
+                    img_width_actual = x_end_px_scaled - x_start_px_scaled
+                    img_height_actual = y_end_px_scaled - y_start_px_scaled
+
+                    # CRITICAL: Always validate bounds before writing to zarr arrays
+                    if y_end_px_scaled > y_start_px_scaled and x_end_px_scaled > x_start_px_scaled and img_height_actual > 0 and img_width_actual > 0:
+                        try:
+                            # Crop image to actual bounds
+                            image_to_write = scaled_image[:img_height_actual, :img_width_actual]
+
+                            # Ensure image is uint8
+                            if image_to_write.dtype != np.uint8:
+                                image_to_write = image_to_write.astype(np.uint8)
+
+                            # Write directly to zarr at exact pixel coordinates
+                            logger.info(f"ZARR_WRITE_PIXELS: Writing to scale {target_scale} - zarr array[{timepoint}, {channel_idx}, {z_idx}, "
+                                       f"{y_start_px_scaled}:{y_end_px_scaled}, {x_start_px_scaled}:{x_end_px_scaled}] "
+                                       f"with image shape={image_to_write.shape}")
+                            zarr_array[timepoint, channel_idx, z_idx, y_start_px_scaled:y_end_px_scaled, x_start_px_scaled:x_end_px_scaled] = image_to_write
+                            
+                            scales_written += 1
+                            logger.info(f"ZARR_WRITE_PIXELS: ✅ Successfully wrote to scale {target_scale}, channel {channel_idx}, timepoint {timepoint} "
+                                       f"with bounds x=[{x_start_px_scaled}:{x_end_px_scaled}], y=[{y_start_px_scaled}:{y_end_px_scaled}], "
+                                       f"image shape={image_to_write.shape}, dtype={image_to_write.dtype}")
+                            
+                        except IndexError as e:
+                            logger.error(f"ZARR_WRITE_PIXELS: ❌ IndexError writing to scale {target_scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
+                            logger.error(f"ZARR_WRITE_PIXELS: Zarr array shape: {zarr_array.shape}, trying to access "
+                                       f"[{timepoint}, {channel_idx}, {z_idx}, {y_start_px_scaled}:{y_end_px_scaled}, {x_start_px_scaled}:{x_end_px_scaled}]")
+                            import traceback
+                            traceback.print_exc()
+                        except Exception as e:
+                            logger.error(f"ZARR_WRITE_PIXELS: ❌ Error writing to scale {target_scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
+                            import traceback
+                            traceback.print_exc()
+                    else:
+                        logger.error(f"ZARR_WRITE_PIXELS: ❌ Invalid bounds for scale {target_scale} - cannot write: "
+                                   f"x_end={x_end_px_scaled} <= x_start={x_start_px_scaled} or "
+                                   f"y_end={y_end_px_scaled} <= y_start={y_start_px_scaled} or "
+                                   f"img_width_actual={img_width_actual} <= 0 or "
+                                   f"img_height_actual={img_height_actual} <= 0")
+                        logger.error(f"ZARR_WRITE_PIXELS: Scale {target_scale} - image shape={scaled_image.shape}, "
+                                   f"zarr array shape={zarr_array.shape}, "
+                                   f"requested bounds x=[{x_start_px_scaled}:{x_start_px_scaled + width}], "
+                                   f"y=[{y_start_px_scaled}:{y_start_px_scaled + height}]")
+
+                except Exception as e:
+                    logger.error(f"ZARR_WRITE_PIXELS: ❌ Error processing scale {target_scale}: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+            # Activate channel after successful writes (only once, not per scale)
+            if scales_written > 0:
+                self._ensure_channel_activated(channel_idx)
+                logger.info(f"ZARR_WRITE_PIXELS: ✅ Completed writing to {scales_written}/{self.num_scales} scale(s) for channel {channel_idx}, timepoint {timepoint}")
+            else:
+                logger.error(f"ZARR_WRITE_PIXELS: ❌ Failed to write to any scales for channel {channel_idx}, timepoint {timepoint}")
+
     def close(self):
         """Close the canvas and clean up resources."""
         if hasattr(self, 'zarr_array') and self.zarr_array is not None:

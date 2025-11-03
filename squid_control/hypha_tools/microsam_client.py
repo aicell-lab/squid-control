@@ -396,7 +396,7 @@ async def segment_well_region_grid_based(
             for grid_j in range(grid_size):
                 tile_idx += 1
                 
-                # Calculate tile center coordinates
+                # Calculate tile center coordinates in millimeters
                 # Grid indices: 0-8, tiles should cover full canvas from -canvas_half to +canvas_half
                 # Tile centers are spaced by base_tile_size (without overlap)
                 # Each tile region extends 5% beyond its boundary to create overlap
@@ -405,10 +405,23 @@ async def segment_well_region_grid_based(
                 
                 logger.debug(f"  Tile {tile_idx}/{total_tiles} ({grid_i},{grid_j}): center=({tile_center_x:.2f}, {tile_center_y:.2f})mm")
                 
+                # CRITICAL: Convert tile center to pixel coordinates ONCE at the beginning
+                # This ensures exact alignment between read and write operations
+                tile_center_x_px, tile_center_y_px = canvas.stage_to_pixel_coords(tile_center_x, tile_center_y, scale_level)
+                
+                # Calculate pixel bounds for the tile region
+                # Use overlapped tile size (5% larger than base) to ensure proper segmentation at boundaries
+                request_size = min(tile_size_mm, well_diameter)
+                scale_factor = 4 ** scale_level
+                request_size_px = int(request_size * 1000 / (canvas.pixel_size_xy_um * scale_factor))
+                
+                logger.debug(f"  Tile {tile_idx}: Pixel center=({tile_center_x_px}, {tile_center_y_px}), size={request_size_px}px")
+                
                 try:
-                    # Load and process each channel for this tile
+                    # Load and process each channel for this tile using pixel-based read
                     processed_channels = []
                     channel_names = []
+                    read_bounds = None  # Store exact pixel bounds from first channel read
                     
                     for config in channel_configs:
                         channel_name = config['channel']
@@ -416,17 +429,24 @@ async def segment_well_region_grid_based(
                         max_percentile = config.get('max_percentile', 99.0)
                         weight = config.get('weight', 1.0)
                         
-                        # Get tile region from this channel
-                        # Use overlapped tile size (5% larger than base) to ensure proper segmentation at boundaries
-                        request_size = min(tile_size_mm, well_diameter)
-                        channel_data = canvas.get_canvas_region_by_channel_name(
-                            tile_center_x, tile_center_y, request_size, request_size,
-                            channel_name, scale=scale_level, timepoint=timepoint
+                        # Get channel index for pixel-based read
+                        channel_idx_read = canvas.get_zarr_channel_index(channel_name)
+                        
+                        # Get tile region using pixel-based read method for exact alignment
+                        channel_data, bounds = canvas.get_canvas_region_pixels(
+                            tile_center_x_px, tile_center_y_px, request_size_px, request_size_px,
+                            scale=scale_level, channel_idx=channel_idx_read, timepoint=timepoint
                         )
                         
                         if channel_data is None:
                             logger.debug(f"    No data for channel {channel_name} in tile {tile_idx}, skipping")
                             continue
+                        
+                        # Store exact bounds from first successful read (all channels should have same bounds)
+                        if read_bounds is None:
+                            read_bounds = bounds
+                            logger.info(f"  Tile {tile_idx}: ✅ Read bounds captured - x=[{bounds['x_start']}:{bounds['x_end']}], "
+                                       f"y=[{bounds['y_start']}:{bounds['y_end']}], shape={channel_data.shape}")
                         
                         # Apply contrast adjustment
                         adjusted = apply_contrast_adjustment(channel_data, min_percentile, max_percentile)
@@ -441,6 +461,11 @@ async def segment_well_region_grid_based(
                     
                     if not processed_channels:
                         logger.debug(f"  Tile {tile_idx} has no valid channel data, skipping")
+                        stats['tiles_skipped'] += 1
+                        continue
+                    
+                    if read_bounds is None:
+                        logger.warning(f"  Tile {tile_idx}: No valid read bounds obtained, skipping")
                         stats['tiles_skipped'] += 1
                         continue
                     
@@ -477,11 +502,7 @@ async def segment_well_region_grid_based(
                         del gray_image
                         continue
                     
-                    # Segment this tile
-                    # CRITICAL: Store the EXACT image dimensions returned from zarr read
-                    # This ensures perfect alignment when writing back to zarr
-                    actual_read_shape = merged_image.shape[:2]  # (height, width)
-                    
+                    # Segment this tile - segmentation should preserve exact dimensions
                     tile_segmentation = await segment_image(
                         microsam_service, merged_image,
                         min_contrast_percentile=0.0,
@@ -500,33 +521,34 @@ async def segment_well_region_grid_based(
                         stats['tiles_failed'] += 1
                         continue
                     
-                    # CRITICAL: Resize segmentation to EXACTLY match the actual zarr read region dimensions
-                    # This ensures perfect chunk alignment - the segmentation mask will be written
-                    # at the exact same pixel coordinates and size as the source region was read
-                    seg_shape = tile_segmentation.shape[:2]  # (height, width)
-                    if seg_shape != actual_read_shape:
+                    # CRITICAL: Ensure segmentation mask dimensions match read region exactly
+                    # If segmentation changed dimensions, resize to match read bounds
+                    seg_height, seg_width = tile_segmentation.shape[:2]
+                    expected_height = read_bounds['y_end'] - read_bounds['y_start']
+                    expected_width = read_bounds['x_end'] - read_bounds['x_start']
+                    
+                    if seg_height != expected_height or seg_width != expected_width:
                         logger.debug(
-                            f"  Tile {tile_idx}: Resizing segmentation from {seg_shape} "
-                            f"to match actual zarr read size {actual_read_shape} for chunk alignment"
+                            f"  Tile {tile_idx}: Resizing segmentation from {seg_height}x{seg_width} "
+                            f"to match read bounds {expected_height}x{expected_width}"
                         )
                         tile_segmentation = cv2.resize(
-                            tile_segmentation, 
-                            (actual_read_shape[1], actual_read_shape[0]),  # (width, height)
+                            tile_segmentation,
+                            (expected_width, expected_height),  # (width, height)
                             interpolation=cv2.INTER_NEAREST  # Preserve binary mask values
                         )
                     
                     # CRITICAL: Merge overlapping masks instead of overwriting
-                    # Read existing mask region from zarr to merge with new mask (union operation)
-                    # This ensures overlapping tiles contribute to the final segmentation
-                    existing_mask = seg_canvas.get_canvas_region(
-                        tile_center_x, tile_center_y, request_size, request_size,
+                    # Read existing mask region using pixel-based read for exact alignment
+                    existing_mask, existing_bounds = seg_canvas.get_canvas_region_pixels(
+                        tile_center_x_px, tile_center_y_px, request_size_px, request_size_px,
                         scale=scale_level, channel_idx=channel_idx, timepoint=timepoint
                     )
                     
                     if existing_mask is not None and existing_mask.size > 0:
                         # Ensure existing mask matches the new mask dimensions
                         if existing_mask.shape != tile_segmentation.shape:
-                            # Resize existing mask to match if dimensions differ (should be rare)
+                            # Resize existing mask to match if dimensions differ
                             logger.debug(
                                 f"  Tile {tile_idx}: Resizing existing mask from {existing_mask.shape} "
                                 f"to match new mask {tile_segmentation.shape} for merging"
@@ -546,21 +568,27 @@ async def segment_well_region_grid_based(
                             f"({np.sum(existing_mask > 0)} existing segmented pixels)"
                         )
                     
-                    # Write merged tile segmentation mask to segmentation canvas at the EXACT same location
-                    # as the source image was read from (same tile_center_x, tile_center_y coordinates)
-                    seg_canvas.add_image_sync(
+                    # Write merged tile segmentation mask using pixel-based write with EXACT same bounds
+                    # This ensures perfect alignment - no preprocessing, no coordinate conversion errors
+                    logger.info(f"  Tile {tile_idx}: Attempting to write segmentation mask (shape={tile_segmentation.shape}, "
+                               f"dtype={tile_segmentation.dtype}) to pixel bounds x=[{read_bounds['x_start']}:{read_bounds['x_end']}], "
+                               f"y=[{read_bounds['y_start']}:{read_bounds['y_end']}]")
+                    
+                    seg_canvas.add_image_sync_pixels(
                         image=tile_segmentation,
-                        x_mm=tile_center_x,  # Same coordinate as source image read
-                        y_mm=tile_center_y,  # Same coordinate as source image read
+                        x_start_px=read_bounds['x_start'],  # Exact pixel bounds from read operation
+                        y_start_px=read_bounds['y_start'],  # Exact pixel bounds from read operation
                         channel_idx=channel_idx,
                         z_idx=0,
-                        timepoint=timepoint
+                        timepoint=timepoint,
+                        scale=scale_level
                     )
                     
-                    logger.debug(
-                        f"  Tile {tile_idx}: Wrote segmentation mask (shape={tile_segmentation.shape}) "
-                        f"to position ({tile_center_x:.2f}, {tile_center_y:.2f})mm "
-                        f"- same location as source image"
+                    logger.info(
+                        f"  Tile {tile_idx}: ✅ Completed write of segmentation mask (shape={tile_segmentation.shape}) "
+                        f"to pixel bounds x=[{read_bounds['x_start']}:{read_bounds['x_end']}], "
+                        f"y=[{read_bounds['y_start']}:{read_bounds['y_end']}] "
+                        f"- exact same bounds as source image read"
                     )
                     
                     # Free segmentation result after writing
