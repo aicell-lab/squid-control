@@ -1427,10 +1427,6 @@ class WellZarrCanvasBase:
                             zarr_array[timepoint, channel_idx, z_idx, y_start_px_scaled:y_end_px_scaled, x_start_px_scaled:x_end_px_scaled] = image_to_write
                             
                             scales_written += 1
-                            logger.info(f"ZARR_WRITE_PIXELS: ✅ Successfully wrote to scale {target_scale}, channel {channel_idx}, timepoint {timepoint} "
-                                       f"with bounds x=[{x_start_px_scaled}:{x_end_px_scaled}], y=[{y_start_px_scaled}:{y_end_px_scaled}], "
-                                       f"image shape={image_to_write.shape}, dtype={image_to_write.dtype}")
-                            
                         except IndexError as e:
                             logger.error(f"ZARR_WRITE_PIXELS: ❌ IndexError writing to scale {target_scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
                             logger.error(f"ZARR_WRITE_PIXELS: Zarr array shape: {zarr_array.shape}, trying to access "
@@ -1460,7 +1456,6 @@ class WellZarrCanvasBase:
             # Activate channel after successful writes (only once, not per scale)
             if scales_written > 0:
                 self._ensure_channel_activated(channel_idx)
-                logger.info(f"ZARR_WRITE_PIXELS: ✅ Completed writing to {scales_written}/{self.num_scales} scale(s) for channel {channel_idx}, timepoint {timepoint}")
             else:
                 logger.error(f"ZARR_WRITE_PIXELS: ❌ Failed to write to any scales for channel {channel_idx}, timepoint {timepoint}")
 

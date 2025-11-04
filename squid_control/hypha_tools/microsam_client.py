@@ -7,13 +7,19 @@ and perform automated instance segmentation on microscopy images.
 
 import asyncio
 import base64
+import json
 import logging
+import threading
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import cv2
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+# Global lock for thread-safe JSON file writes
+_polygon_file_lock = threading.Lock()
 
 
 def get_channel_color_hex(channel_name: str) -> str:
@@ -613,12 +619,260 @@ async def segment_well_region_grid_based(
                     continue
         
         logger.info(f"✅ Well {well_id} grid segmentation complete: {stats['tiles_processed']} tiles processed, {stats['tiles_failed']} failed, {stats['tiles_skipped']} skipped")
+        
+        # Launch background polygon extraction if well segmentation was successful
+        if stats['tiles_processed'] > 0:
+            try:
+                # Get segmentation experiment name from seg_canvas fileset_name
+                # fileset_name format: "well_A1_96"
+                segmentation_experiment = str(seg_canvas.base_path.name)
+                
+                logger.info(f"🚀 Launching background polygon extraction for well {well_id}")
+                
+                # Launch in background thread to avoid blocking segmentation
+                thread = threading.Thread(
+                    target=process_well_polygons_background,
+                    args=(experiment_manager, segmentation_experiment, well_row, well_column,
+                          well_plate_type, well_padding_mm, 1, timepoint),
+                    daemon=True  # Daemon thread won't block program exit
+                )
+                thread.start()
+                
+                logger.info(f"Background polygon extraction thread started for well {well_id}")
+                
+            except Exception as e:
+                logger.error(f"Failed to launch polygon extraction thread for well {well_id}: {e}")
+        
         return stats
         
     except Exception as e:
         logger.error(f"Failed to segment well {well_id}: {e}", exc_info=True)
         stats['tiles_failed'] = total_tiles - stats['tiles_processed']
         return stats
+
+
+def pixel_to_well_relative_mm(pixel_coords: np.ndarray, canvas_info: Dict, 
+                               pixel_size_xy_um: float, scale: int = 1) -> np.ndarray:
+    """
+    Convert pixel coordinates to well-relative millimeter coordinates.
+    
+    Args:
+        pixel_coords: Array of pixel coordinates (N, 2) in format [[x1, y1], [x2, y2], ...]
+        canvas_info: Dictionary from WellZarrCanvas.get_well_info()
+        pixel_size_xy_um: Pixel size in micrometers at scale 0
+        scale: Scale level (1 = 1/4 resolution)
+    
+    Returns:
+        Array of well-relative coordinates in mm (N, 2)
+    """
+    # Get canvas dimensions and padding info from canvas_info
+    canvas_width_px = canvas_info['canvas_info']['canvas_width_px']
+    canvas_height_px = canvas_info['canvas_info']['canvas_height_px']
+    
+    # Apply scale factor
+    scale_factor = 4 ** scale
+    scaled_pixel_size_um = pixel_size_xy_um * scale_factor
+    
+    # Calculate canvas center in pixels (at given scale)
+    canvas_center_x_px = canvas_width_px / (2 * scale_factor)
+    canvas_center_y_px = canvas_height_px / (2 * scale_factor)
+    
+    # Convert to well-relative coordinates (canvas center is well center = 0, 0)
+    # Subtract canvas center to get relative pixel coords, then convert to mm
+    relative_x_mm = (pixel_coords[:, 0] - canvas_center_x_px) * scaled_pixel_size_um / 1000.0
+    relative_y_mm = (pixel_coords[:, 1] - canvas_center_y_px) * scaled_pixel_size_um / 1000.0
+    
+    return np.column_stack([relative_x_mm, relative_y_mm])
+
+
+def extract_polygons_from_segmentation_mask(mask: np.ndarray, well_id: str, 
+                                            canvas_info: Dict, pixel_size_xy_um: float,
+                                            scale: int = 1, min_area_px: int = 100) -> List[Dict[str, str]]:
+    """
+    Extract polygon contours from a binary segmentation mask.
+    
+    Args:
+        mask: Binary segmentation mask (uint8, 0 or 255)
+        well_id: Well identifier (e.g., "A1")
+        canvas_info: Dictionary from WellZarrCanvas.get_well_info()
+        pixel_size_xy_um: Pixel size in micrometers at scale 0
+        scale: Scale level used (1 = 1/4 resolution)
+        min_area_px: Minimum contour area in pixels to keep (filters noise)
+    
+    Returns:
+        List of polygon dictionaries with format:
+        [{"well_id": "A1", "polygon_wkt": "POLYGON((x1 y1, x2 y2, ...))"}]
+    """
+    if mask is None or mask.size == 0:
+        logger.warning(f"Empty mask for well {well_id}")
+        return []
+    
+    # Find contours using RETR_EXTERNAL to get only outer boundaries (no holes)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if not contours:
+        logger.info(f"No contours found in well {well_id}")
+        return []
+    
+    polygons = []
+    
+    for contour in contours:
+        # Filter small contours (likely noise)
+        area = cv2.contourArea(contour)
+        if area < min_area_px:
+            continue
+        
+        # Simplify polygon to reduce point count (memory optimization)
+        # Epsilon = 0.001mm in pixels at current scale
+        epsilon_mm = 0.001
+        scale_factor = 4 ** scale
+        epsilon_px = (epsilon_mm * 1000.0) / (pixel_size_xy_um * scale_factor)
+        approx = cv2.approxPolyDP(contour, epsilon_px, closed=True)
+        
+        # Need at least 3 points for a polygon
+        if len(approx) < 3:
+            continue
+        
+        # Reshape from (N, 1, 2) to (N, 2)
+        points = approx.reshape(-1, 2)
+        
+        # Convert pixel coordinates to well-relative millimeters
+        points_mm = pixel_to_well_relative_mm(points, canvas_info, pixel_size_xy_um, scale)
+        
+        # Format as WKT POLYGON string with 5 decimal places
+        # WKT format: POLYGON((x1 y1, x2 y2, x3 y3, ..., x1 y1))
+        # Note: First and last points must be the same (closed polygon)
+        point_strings = [f"{x:.5f} {y:.5f}" for x, y in points_mm]
+        
+        # Ensure polygon is closed (first point == last point)
+        if not np.allclose(points_mm[0], points_mm[-1], atol=1e-6):
+            point_strings.append(f"{points_mm[0][0]:.5f} {points_mm[0][1]:.5f}")
+        
+        wkt = f"POLYGON(({', '.join(point_strings)}))"
+        
+        polygons.append({
+            "well_id": well_id,
+            "polygon_wkt": wkt
+        })
+    
+    logger.info(f"Extracted {len(polygons)} polygons from well {well_id} "
+               f"(from {len(contours)} total contours, min_area={min_area_px}px)")
+    
+    return polygons
+
+
+def append_polygons_to_json(json_path: Path, new_polygons: List[Dict[str, str]]):
+    """
+    Thread-safe append of polygons to JSON file.
+    
+    Args:
+        json_path: Path to polygons.json file
+        new_polygons: List of polygon dictionaries to append
+    """
+    if not new_polygons:
+        return
+    
+    with _polygon_file_lock:
+        try:
+            # Read existing data
+            if json_path.exists():
+                try:
+                    with open(json_path, 'r') as f:
+                        data = json.load(f)
+                except json.JSONDecodeError:
+                    logger.warning(f"Corrupt JSON file {json_path}, recreating")
+                    data = {"polygons": []}
+            else:
+                data = {"polygons": []}
+            
+            # Append new polygons
+            data["polygons"].extend(new_polygons)
+            
+            # Write back
+            with open(json_path, 'w') as f:
+                json.dump(data, f, indent=2)
+            
+            logger.info(f"Appended {len(new_polygons)} polygons to {json_path} "
+                       f"(total now: {len(data['polygons'])})")
+            
+        except Exception as e:
+            logger.error(f"Failed to append polygons to JSON: {e}", exc_info=True)
+
+
+def process_well_polygons_background(experiment_manager, segmentation_experiment: str,
+                                     well_row: str, well_column: int, well_plate_type: str,
+                                     well_padding_mm: float, scale: int = 1, timepoint: int = 0):
+    """
+    Background thread function to extract polygons from a completed well's segmentation mask.
+    
+    Args:
+        experiment_manager: ExperimentManager instance
+        segmentation_experiment: Name of segmentation experiment
+        well_row: Well row (e.g., 'A')
+        well_column: Well column (e.g., 1)
+        well_plate_type: Well plate format
+        well_padding_mm: Well padding in mm
+        scale: Scale level to read from (default 1)
+        timepoint: Timepoint index (default 0)
+    """
+    well_id = f"{well_row}{well_column}"
+    
+    try:
+        logger.info(f"🔄 Starting background polygon extraction for well {well_id}")
+        
+        # Get segmentation canvas
+        seg_canvas = experiment_manager.get_well_canvas(
+            well_row, well_column, well_plate_type, well_padding_mm, segmentation_experiment
+        )
+        
+        # Get well info for coordinate conversion
+        well_info = seg_canvas.get_well_info()
+        
+        # Get segmentation channel (BF LED matrix full = index 0)
+        segmentation_channel = "BF LED matrix full"
+        channel_idx = seg_canvas.get_zarr_channel_index(segmentation_channel)
+        
+        # Read the full segmentation mask at scale 1
+        with seg_canvas.zarr_lock:
+            if scale not in seg_canvas.zarr_arrays:
+                logger.error(f"Scale {scale} not available in segmentation canvas")
+                return
+            
+            zarr_array = seg_canvas.zarr_arrays[scale]
+            
+            # Read full mask for this well: [timepoint, channel, z=0, :, :]
+            mask = zarr_array[timepoint, channel_idx, 0, :, :]
+        
+        logger.info(f"Read segmentation mask for well {well_id}: shape={mask.shape}, "
+                   f"dtype={mask.dtype}, non-zero pixels={np.sum(mask > 0)}")
+        
+        # Extract polygons from mask
+        polygons = extract_polygons_from_segmentation_mask(
+            mask=mask,
+            well_id=well_id,
+            canvas_info=well_info,
+            pixel_size_xy_um=seg_canvas.pixel_size_xy_um,
+            scale=scale,
+            min_area_px=100  # Filter small noise
+        )
+        
+        # Free memory
+        del mask
+        
+        if not polygons:
+            logger.info(f"No polygons extracted for well {well_id}")
+            return
+        
+        # Append to JSON file
+        experiment_path = experiment_manager.base_path / segmentation_experiment
+        json_path = experiment_path / "polygons.json"
+        
+        append_polygons_to_json(json_path, polygons)
+        
+        logger.info(f"✅ Completed polygon extraction for well {well_id}: {len(polygons)} polygons")
+        
+    except Exception as e:
+        logger.error(f"Failed to process polygons for well {well_id}: {e}", exc_info=True)
 
 
 async def segment_experiment_wells(
@@ -671,6 +925,26 @@ async def segment_experiment_wells(
     
     # Set segmentation experiment as active for writing
     experiment_manager.set_active_experiment(segmentation_experiment)
+    
+    # Initialize/clean up polygons.json file
+    experiment_path = experiment_manager.base_path / segmentation_experiment
+    json_path = experiment_path / "polygons.json"
+    
+    # Delete existing polygons.json if present
+    if json_path.exists():
+        try:
+            json_path.unlink()
+            logger.info(f"Deleted existing polygons.json from '{segmentation_experiment}'")
+        except Exception as e:
+            logger.warning(f"Failed to delete existing polygons.json: {e}")
+    
+    # Create empty polygons.json structure
+    try:
+        with open(json_path, 'w') as f:
+            json.dump({"polygons": []}, f, indent=2)
+        logger.info(f"Created empty polygons.json in '{segmentation_experiment}'")
+    except Exception as create_err:
+        logger.warning(f"Failed to create polygons.json: {create_err}")
     
     results = {
         'source_experiment': source_experiment,

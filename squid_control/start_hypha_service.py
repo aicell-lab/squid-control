@@ -1866,6 +1866,7 @@ class MicroscopeHyphaService:
             "segmentation_start": self.segmentation_start,
             "segmentation_get_status": self.segmentation_get_status,
             "segmentation_cancel": self.segmentation_cancel,
+            "segmentation_get_polygons": self.segmentation_get_polygons,
         }
         
         # Conditionally register Squid+ specific endpoints
@@ -4329,6 +4330,89 @@ class MicroscopeHyphaService:
         
         except Exception as e:
             logger.error(f"Failed to cancel segmentation: {e}")
+            raise e
+
+    async def segmentation_get_polygons(self, experiment_name: str, well_id: str = None, context=None):
+        """
+        Retrieve polygon annotations from a completed segmentation experiment.
+        
+        This endpoint reads polygon data from the polygons.json file in the segmentation
+        experiment folder. Polygons are extracted from segmentation masks in WKT format
+        with well-relative millimeter coordinates.
+        
+        Args:
+            experiment_name: Name of the source experiment (not the segmentation experiment)
+            well_id: Optional well identifier to filter results (e.g., "A1", "B2")
+            context: Request context for authentication
+        
+        Returns:
+            Dictionary with:
+            - success: Boolean indicating if operation succeeded
+            - polygons: List of polygon objects with "well_id" and "polygon_wkt" fields
+            - total_count: Total number of polygons returned
+            - experiment_name: Name of the segmentation experiment
+        
+        Note: This endpoint does NOT use @schema_function decorator as requested.
+        """
+        try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
+            # Construct segmentation experiment name
+            segmentation_experiment = f"{experiment_name}-segmentation"
+            
+            logger.info(f"Fetching polygons from segmentation experiment: '{segmentation_experiment}'")
+            if well_id:
+                logger.info(f"Filtering for well: {well_id}")
+            
+            # Get path to polygons.json
+            if not hasattr(self.squidController, 'experiment_manager'):
+                raise Exception("Experiment manager not initialized")
+            
+            experiment_path = self.squidController.experiment_manager.base_path / segmentation_experiment
+            json_path = experiment_path / "polygons.json"
+            
+            # Check if file exists
+            if not json_path.exists():
+                logger.info(f"No polygons.json found in '{segmentation_experiment}', returning empty list")
+                return {
+                    "success": True,
+                    "polygons": [],
+                    "total_count": 0,
+                    "experiment_name": segmentation_experiment,
+                    "message": "No polygon data available (polygons.json not found)"
+                }
+            
+            # Read polygons from JSON file
+            try:
+                with open(json_path, 'r') as f:
+                    data = json.load(f)
+                
+                all_polygons = data.get("polygons", [])
+                
+                # Filter by well_id if specified
+                if well_id:
+                    filtered_polygons = [p for p in all_polygons if p.get("well_id") == well_id]
+                    logger.info(f"Filtered {len(filtered_polygons)} polygons for well {well_id} "
+                               f"(out of {len(all_polygons)} total)")
+                else:
+                    filtered_polygons = all_polygons
+                    logger.info(f"Returning all {len(filtered_polygons)} polygons")
+                
+                return {
+                    "success": True,
+                    "polygons": filtered_polygons,
+                    "total_count": len(filtered_polygons),
+                    "experiment_name": segmentation_experiment
+                }
+                
+            except json.JSONDecodeError as json_err:
+                logger.error(f"Failed to parse polygons.json: {json_err}")
+                raise Exception(f"Corrupt polygons.json file: {json_err}")
+            
+        except Exception as e:
+            logger.error(f"Failed to get polygons: {e}", exc_info=True)
             raise e
 
     async def stop_scan_and_stitching(self, context=None):
