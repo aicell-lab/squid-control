@@ -3482,62 +3482,6 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to get stitched region: {e}", exc_info=True)
             raise e
 
-    @schema_function(skip_self=True)
-    def get_single_well_region(self, well: str = Field(..., description="Well identifier (e.g., 'A1', 'B2')"),
-                               channel: str = Field('BF LED matrix full', description="Channel name"),
-                               scale: int = Field(0, description="Pyramid scale level (0=full resolution)"),
-                               timepoint: int = Field(0, description="Timepoint index"),
-                               well_plate_type: str = Field('96', description="Well plate format: '6', '12', '24', '96', or '384'"),
-                               well_padding_mm: float = Field(1.0, description="Well padding in millimeters"),
-                               output_format: str = Field('base64', description="Output format: 'base64' (PNG) or 'array'"),
-                               experiment_name: Optional[str] = Field(None, description="Experiment name (None uses active experiment)"),
-                               context=None):
-        """
-        Get all image data from a single well's OME-Zarr fileset at specified scale and channel.
-        Returns: Dictionary with success status, image data (base64 PNG or array), shape, dtype, and well metadata.
-        """
-        try:
-            if context and not self.check_permission(context.get("user", {})):
-                raise Exception("User not authorized to access this service")
-
-            # Parse well identifier (e.g., "A1" -> row='A', column=1)
-            import re
-            match = re.match(r'^([A-Z]+)(\d+)$', well.upper())
-            if not match:
-                raise ValueError(f"Invalid well identifier: {well}. Expected format: 'A1', 'B2', etc.")
-
-            region = self.squidController.get_single_well_region(
-                well_row=match.group(1), well_column=int(match.group(2)),
-                well_plate_type=well_plate_type, channel_name=channel,
-                scale_level=scale, timepoint=timepoint,
-                well_padding_mm=well_padding_mm, experiment_name=experiment_name
-            )
-
-            if region is None:
-                return {"success": False, "message": f"No data available for well {well}, channel '{channel}' at scale {scale}"}
-
-            # Convert to uint8 and format output
-            if region.dtype != np.uint8:
-                region = (region / region.max() * 255).astype(np.uint8) if region.max() > 0 else region.astype(np.uint8)
-
-            result = {"success": True, "shape": region.shape, "dtype": str(region.dtype), 
-                     "well": well, "channel": channel, "scale": scale, "timepoint": timepoint}
-
-            if output_format == 'base64':
-                import base64, io
-                from PIL import Image
-                buffer = io.BytesIO()
-                Image.fromarray(region, 'L').save(buffer, format='PNG')
-                result.update({"data": base64.b64encode(buffer.getvalue()).decode('utf-8'), "format": "png_base64"})
-            else:
-                result.update({"data": region.tolist(), "format": "array"})
-
-            return result
-
-        except Exception as e:
-            logger.error(f"Failed to get single well region: {e}", exc_info=True)
-            raise e
-
     def _merge_channels_to_rgb(self, channel_regions):
         """
         Merge multiple channel regions into a single RGB image using the channel color scheme.

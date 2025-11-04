@@ -73,11 +73,18 @@ async def main():
 ### 4. Visualize Results
 
 ```python
-    # Retrieve segmentation mask for a specific well
-    segmentation_result = await microscope.get_single_well_region(
-        well="A1",
-        channel="Segmentation",  # Segmentation channel
-        scale=1,
+    # Retrieve segmentation mask for a specific well using get_stitched_region
+    # Calculate well center coordinates (example for A1 in 96-well plate)
+    well_center_x = 12.5  # mm (adjust based on your well plate format)
+    well_center_y = 12.5  # mm
+    
+    segmentation_result = await microscope.get_stitched_region(
+        center_x_mm=well_center_x,
+        center_y_mm=well_center_y,
+        width_mm=7.0,  # Well diameter + padding
+        height_mm=7.0,
+        channel_name="Segmentation",  # Segmentation channel
+        scale_level=1,
         experiment_name="my-experiment-segmentation"
     )
     
@@ -91,7 +98,6 @@ async def main():
         img = Image.open(io.BytesIO(img_data))
         
         print(f"Segmentation shape: {segmentation_result['shape']}")
-        print(f"Well: {segmentation_result['well']}")
 ```
 
 ## Advanced Usage
@@ -119,30 +125,42 @@ result = await microscope.segmentation_start(
 )
 ```
 
-### Segment Fluorescence Channels
+### Segment Multiple Channels with Color Merging
 
 ```python
-# Segment fluorescence channel instead of brightfield
+# Segment using multiple channels with color merging
 result = await microscope.segmentation_start(
     experiment_name="my-experiment",
-    source_channel="Fluorescence 488 nm Ex"
+    channel_configs=[
+        {"channel": "BF LED matrix full", "min_percentile": 2.0, "max_percentile": 98.0},
+        {"channel": "Fluorescence 488 nm Ex", "min_percentile": 5.0, "max_percentile": 95.0, "weight": 1.0}
+    ]
 )
 ```
 
 ### Adjust Contrast for Better Segmentation
 
 ```python
-# Custom contrast adjustment for better cell boundary detection
+# Custom contrast adjustment per channel for better cell boundary detection
 result = await microscope.segmentation_start(
     experiment_name="my-experiment",
-    min_contrast_percentile=5.0,   # Clip bottom 5% of intensities
-    max_contrast_percentile=95.0   # Clip top 5% of intensities
+    channel_configs=[
+        {
+            "channel": "BF LED matrix full",
+            "min_percentile": 5.0,   # Clip bottom 5% of intensities
+            "max_percentile": 95.0,   # Clip top 5% of intensities
+            "weight": 1.0             # Channel weight (default 1.0)
+        }
+    ]
 )
 
 # Default auto-contrast (1st-99th percentile)
 result = await microscope.segmentation_start(
-    experiment_name="my-experiment"
-    # Uses default: min_contrast_percentile=1.0, max_contrast_percentile=99.0
+    experiment_name="my-experiment",
+    channel_configs=[
+        {"channel": "BF LED matrix full"}
+        # Uses default: min_percentile=1.0, max_percentile=99.0, weight=1.0
+    ]
 )
 ```
 
@@ -189,12 +207,19 @@ async def segment_experiment():
         await asyncio.sleep(5)
     
     # 4. View results
-    result = await microscope.get_single_well_region(
-        well="A1",
-        channel="Segmentation",
+    # Use get_stitched_region to retrieve segmentation mask
+    # Adjust center_x_mm and center_y_mm to your well coordinates
+    result = await microscope.get_stitched_region(
+        center_x_mm=12.5,  # Well center X (adjust for your well)
+        center_y_mm=12.5,  # Well center Y (adjust for your well)
+        width_mm=7.0,      # Well diameter + padding
+        height_mm=7.0,
+        channel_name="Segmentation",
+        scale_level=1,
         experiment_name="my-experiment-segmentation"
     )
-    print(f"📊 Segmentation shape: {result['shape']}")
+    if result['success']:
+        print(f"📊 Segmentation shape: {result['shape']}")
 
 # Run the workflow
 asyncio.run(segment_experiment())
