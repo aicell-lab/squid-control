@@ -4,9 +4,12 @@ Integration tests for microSAM segmentation functionality.
 Tests the segmentation API endpoints and helper functions.
 """
 
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+import json
+import tempfile
+from pathlib import Path
+from unittest.mock import AsyncMock, Mock, patch
 
+import cv2
 import numpy as np
 import pytest
 
@@ -298,10 +301,373 @@ class TestSegmentationWorkflow:
                         experiment_name=experiment_name,
                         wells_to_segment=None  # Auto-detect
                     )
-            except Exception as e:
+            except Exception:
                 # Expected to fail at connection, but should have detected wells
                 # Check that wells were detected by looking at the error or state
                 pass
+
+
+class TestPolygonExtraction:
+    """Test polygon extraction from segmentation masks."""
+    
+    def test_pixel_to_well_relative_mm(self):
+        """Test coordinate conversion from pixels to well-relative millimeters."""
+        from squid_control.hypha_tools.microsam_client import pixel_to_well_relative_mm
+        
+        # Create mock canvas info
+        canvas_info = {
+            'canvas_info': {
+                'canvas_width_px': 4000,
+                'canvas_height_px': 4000,
+                'pixel_size_xy_um': 0.333
+            }
+        }
+        
+        # Test coordinate conversion at scale 1 (1/4 resolution)
+        # At scale 1, canvas is 1000x1000 pixels (4000/4)
+        # Center of canvas at scale 1 is (500, 500)
+        pixel_coords = np.array([
+            [500, 500],   # Center of canvas at scale 1
+            [250, 250],   # Top-left quadrant at scale 1
+            [750, 750]    # Bottom-right quadrant at scale 1
+        ])
+        
+        result = pixel_to_well_relative_mm(pixel_coords, canvas_info, pixel_size_xy_um=0.333, scale=1)
+        
+        # Verify shape
+        assert result.shape == (3, 2)
+        
+        # Center pixel should be close to (0, 0) in well-relative coords
+        center_coords = result[0]
+        assert abs(center_coords[0]) < 1.0  # Should be close to 0 (allow some tolerance)
+        assert abs(center_coords[1]) < 1.0  # Should be close to 0 (allow some tolerance)
+        
+        # Verify coordinates are in millimeters (reasonable range for well size)
+        assert all(abs(coord) < 10.0 for coord in result.flatten())  # Well typically < 10mm radius
+    
+    def test_extract_polygons_simple_circle(self):
+        """Test polygon extraction from a simple circular mask."""
+        from squid_control.hypha_tools.microsam_client import extract_polygons_from_segmentation_mask
+        
+        # Create a simple circular mask using OpenCV
+        mask = np.zeros((500, 500), dtype=np.uint8)
+        cv2.circle(mask, (250, 250), 100, 255, -1)  # Filled circle
+        
+        canvas_info = {
+            'canvas_info': {
+                'canvas_width_px': 500,
+                'canvas_height_px': 500,
+                'pixel_size_xy_um': 0.333
+            }
+        }
+        
+        polygons = extract_polygons_from_segmentation_mask(
+            mask, "A1", canvas_info, pixel_size_xy_um=0.333, scale=1, min_area_px=50
+        )
+        
+        # Should extract at least one polygon
+        assert len(polygons) > 0
+        
+        # Check polygon format
+        polygon = polygons[0]
+        assert 'well_id' in polygon
+        assert 'polygon_wkt' in polygon
+        assert polygon['well_id'] == "A1"
+        
+        # Check WKT format
+        wkt = polygon['polygon_wkt']
+        assert wkt.startswith("POLYGON((")
+        assert wkt.endswith("))")
+        assert "," in wkt  # Should have multiple coordinate pairs
+    
+    def test_extract_polygons_multiple_cells(self):
+        """Test polygon extraction from mask with multiple cells."""
+        from squid_control.hypha_tools.microsam_client import extract_polygons_from_segmentation_mask
+        
+        # Create mask with multiple circles (cells)
+        mask = np.zeros((500, 500), dtype=np.uint8)
+        cv2.circle(mask, (150, 150), 50, 255, -1)  # Cell 1
+        cv2.circle(mask, (350, 150), 50, 255, -1)  # Cell 2
+        cv2.circle(mask, (250, 350), 50, 255, -1)  # Cell 3
+        
+        canvas_info = {
+            'canvas_info': {
+                'canvas_width_px': 500,
+                'canvas_height_px': 500,
+                'pixel_size_xy_um': 0.333
+            }
+        }
+        
+        polygons = extract_polygons_from_segmentation_mask(
+            mask, "A1", canvas_info, pixel_size_xy_um=0.333, scale=1, min_area_px=50
+        )
+        
+        # Should extract 3 polygons (one per cell)
+        assert len(polygons) == 3
+        
+        # All should have same well_id
+        for p in polygons:
+            assert p['well_id'] == "A1"
+            assert 'polygon_wkt' in p
+    
+    def test_extract_polygons_with_holes(self):
+        """Test that holes in masks are ignored (only outer contour extracted)."""
+        from squid_control.hypha_tools.microsam_client import extract_polygons_from_segmentation_mask
+        
+        # Create mask with outer circle and inner hole
+        mask = np.zeros((500, 500), dtype=np.uint8)
+        # Draw outer circle
+        cv2.circle(mask, (250, 250), 100, 255, -1)
+        # Draw inner hole
+        cv2.circle(mask, (250, 250), 50, 0, -1)
+        
+        canvas_info = {
+            'canvas_info': {
+                'canvas_width_px': 500,
+                'canvas_height_px': 500,
+                'pixel_size_xy_um': 0.333
+            }
+        }
+        
+        polygons = extract_polygons_from_segmentation_mask(
+            mask, "A1", canvas_info, pixel_size_xy_um=0.333, scale=1, min_area_px=50
+        )
+        
+        # Should extract only ONE polygon (outer boundary, hole ignored)
+        assert len(polygons) == 1
+        
+        # The polygon should represent the outer boundary
+        polygon = polygons[0]
+        assert polygon['well_id'] == "A1"
+        assert 'polygon_wkt' in polygon
+    
+    def test_extract_polygons_empty_mask(self):
+        """Test polygon extraction from empty mask."""
+        from squid_control.hypha_tools.microsam_client import extract_polygons_from_segmentation_mask
+        
+        # Create empty mask
+        mask = np.zeros((500, 500), dtype=np.uint8)
+        
+        canvas_info = {
+            'canvas_info': {
+                'canvas_width_px': 500,
+                'canvas_height_px': 500,
+                'pixel_size_xy_um': 0.333
+            }
+        }
+        
+        polygons = extract_polygons_from_segmentation_mask(
+            mask, "A1", canvas_info, pixel_size_xy_um=0.333, scale=1
+        )
+        
+        # Should return empty list
+        assert len(polygons) == 0
+    
+    def test_extract_polygons_min_area_filter(self):
+        """Test that small contours are filtered out."""
+        from squid_control.hypha_tools.microsam_client import extract_polygons_from_segmentation_mask
+        
+        # Create mask with one large and one small circle
+        mask = np.zeros((500, 500), dtype=np.uint8)
+        cv2.circle(mask, (250, 250), 100, 255, -1)  # Large cell
+        cv2.circle(mask, (100, 100), 5, 255, -1)    # Small noise
+        
+        canvas_info = {
+            'canvas_info': {
+                'canvas_width_px': 500,
+                'canvas_height_px': 500,
+                'pixel_size_xy_um': 0.333
+            }
+        }
+        
+        # With high min_area, only large cell should be extracted
+        polygons = extract_polygons_from_segmentation_mask(
+            mask, "A1", canvas_info, pixel_size_xy_um=0.333, scale=1, min_area_px=5000
+        )
+        
+        # Should extract only the large polygon
+        assert len(polygons) == 1
+    
+    def test_append_polygons_to_json(self):
+        """Test thread-safe JSON file appending."""
+        from squid_control.hypha_tools.microsam_client import append_polygons_to_json
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            json_path = Path(tmpdir) / "polygons.json"
+            
+            # Create initial empty JSON
+            with open(json_path, 'w') as f:
+                json.dump({"polygons": []}, f)
+            
+            # Append first batch
+            polygons1 = [
+                {"well_id": "A1", "polygon_wkt": "POLYGON((1.0 2.0, 3.0 4.0, 1.0 2.0))"},
+                {"well_id": "A1", "polygon_wkt": "POLYGON((5.0 6.0, 7.0 8.0, 5.0 6.0))"}
+            ]
+            append_polygons_to_json(json_path, polygons1)
+            
+            # Verify first batch was added
+            with open(json_path, 'r') as f:
+                data = json.load(f)
+            assert len(data['polygons']) == 2
+            
+            # Append second batch
+            polygons2 = [
+                {"well_id": "A2", "polygon_wkt": "POLYGON((9.0 10.0, 11.0 12.0, 9.0 10.0))"}
+            ]
+            append_polygons_to_json(json_path, polygons2)
+            
+            # Verify both batches are present
+            with open(json_path, 'r') as f:
+                data = json.load(f)
+            assert len(data['polygons']) == 3
+            assert data['polygons'][0]['well_id'] == "A1"
+            assert data['polygons'][2]['well_id'] == "A2"
+    
+    def test_append_polygons_to_json_corrupt_file(self):
+        """Test handling of corrupt JSON file."""
+        from squid_control.hypha_tools.microsam_client import append_polygons_to_json
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            json_path = Path(tmpdir) / "polygons.json"
+            
+            # Create corrupt JSON file
+            with open(json_path, 'w') as f:
+                f.write("invalid json content{")
+            
+            # Should recreate file and append
+            polygons = [
+                {"well_id": "A1", "polygon_wkt": "POLYGON((1.0 2.0, 3.0 4.0, 1.0 2.0))"}
+            ]
+            append_polygons_to_json(json_path, polygons)
+            
+            # Verify file was recreated and polygon added
+            with open(json_path, 'r') as f:
+                data = json.load(f)
+            assert len(data['polygons']) == 1
+
+
+class TestPolygonExtractionAPI:
+    """Test polygon extraction API endpoint."""
+    
+    @pytest.mark.asyncio
+    async def test_segmentation_get_polygons_no_file(self):
+        """Test API when polygons.json doesn't exist."""
+        from squid_control.start_hypha_service import MicroscopeHyphaService
+        
+        service = MicroscopeHyphaService(is_simulation=True, is_local=True)
+        service.squidController = Mock()
+        service.squidController.experiment_manager = Mock()
+        
+        # Mock experiment path
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service.squidController.experiment_manager.base_path = Path(tmpdir)
+            
+            result = await service.segmentation_get_polygons("test-experiment")
+            
+            assert result['success'] is True
+            assert result['polygons'] == []
+            assert result['total_count'] == 0
+            assert 'message' in result
+    
+    @pytest.mark.asyncio
+    async def test_segmentation_get_polygons_with_data(self):
+        """Test API with existing polygon data."""
+        from squid_control.start_hypha_service import MicroscopeHyphaService
+        
+        service = MicroscopeHyphaService(is_simulation=True, is_local=True)
+        service.squidController = Mock()
+        service.squidController.experiment_manager = Mock()
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service.squidController.experiment_manager.base_path = Path(tmpdir)
+            
+            # Create segmentation experiment directory
+            seg_experiment = Path(tmpdir) / "test-experiment-segmentation"
+            seg_experiment.mkdir()
+            
+            # Create polygons.json with test data
+            polygons_data = {
+                "polygons": [
+                    {"well_id": "A1", "polygon_wkt": "POLYGON((1.0 2.0, 3.0 4.0, 1.0 2.0))"},
+                    {"well_id": "A1", "polygon_wkt": "POLYGON((5.0 6.0, 7.0 8.0, 5.0 6.0))"},
+                    {"well_id": "A2", "polygon_wkt": "POLYGON((9.0 10.0, 11.0 12.0, 9.0 10.0))"}
+                ]
+            }
+            json_path = seg_experiment / "polygons.json"
+            with open(json_path, 'w') as f:
+                json.dump(polygons_data, f)
+            
+            # Get all polygons
+            result = await service.segmentation_get_polygons("test-experiment")
+            
+            assert result['success'] is True
+            assert result['total_count'] == 3
+            assert len(result['polygons']) == 3
+            assert result['experiment_name'] == "test-experiment-segmentation"
+    
+    @pytest.mark.asyncio
+    async def test_segmentation_get_polygons_filter_by_well(self):
+        """Test API with well_id filtering."""
+        from squid_control.start_hypha_service import MicroscopeHyphaService
+        
+        service = MicroscopeHyphaService(is_simulation=True, is_local=True)
+        service.squidController = Mock()
+        service.squidController.experiment_manager = Mock()
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service.squidController.experiment_manager.base_path = Path(tmpdir)
+            
+            # Create segmentation experiment directory
+            seg_experiment = Path(tmpdir) / "test-experiment-segmentation"
+            seg_experiment.mkdir()
+            
+            # Create polygons.json with test data
+            polygons_data = {
+                "polygons": [
+                    {"well_id": "A1", "polygon_wkt": "POLYGON((1.0 2.0, 3.0 4.0, 1.0 2.0))"},
+                    {"well_id": "A1", "polygon_wkt": "POLYGON((5.0 6.0, 7.0 8.0, 5.0 6.0))"},
+                    {"well_id": "A2", "polygon_wkt": "POLYGON((9.0 10.0, 11.0 12.0, 9.0 10.0))"}
+                ]
+            }
+            json_path = seg_experiment / "polygons.json"
+            with open(json_path, 'w') as f:
+                json.dump(polygons_data, f)
+            
+            # Get polygons filtered by well_id
+            result = await service.segmentation_get_polygons("test-experiment", well_id="A1")
+            
+            assert result['success'] is True
+            assert result['total_count'] == 2
+            assert len(result['polygons']) == 2
+            # All returned polygons should be from A1
+            for p in result['polygons']:
+                assert p['well_id'] == "A1"
+    
+    @pytest.mark.asyncio
+    async def test_segmentation_get_polygons_corrupt_json(self):
+        """Test API handling of corrupt JSON file."""
+        from squid_control.start_hypha_service import MicroscopeHyphaService
+        
+        service = MicroscopeHyphaService(is_simulation=True, is_local=True)
+        service.squidController = Mock()
+        service.squidController.experiment_manager = Mock()
+        
+        with tempfile.TemporaryDirectory() as tmpdir:
+            service.squidController.experiment_manager.base_path = Path(tmpdir)
+            
+            # Create segmentation experiment directory
+            seg_experiment = Path(tmpdir) / "test-experiment-segmentation"
+            seg_experiment.mkdir()
+            
+            # Create corrupt JSON file
+            json_path = seg_experiment / "polygons.json"
+            with open(json_path, 'w') as f:
+                f.write("invalid json content{")
+            
+            # Should raise exception
+            with pytest.raises(Exception, match="Corrupt polygons.json"):
+                await service.segmentation_get_polygons("test-experiment")
 
 
 if __name__ == "__main__":
