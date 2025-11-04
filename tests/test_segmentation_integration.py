@@ -201,13 +201,13 @@ class TestSegmentationWorkflow:
         # Test image
         test_image = np.random.randint(0, 1000, (100, 100), dtype=np.uint16)
         
-        # Test with default contrast
-        result1 = await segment_image(mock_microsam_service, test_image)
+        # Test with default contrast (disable resize to match mock return size)
+        result1 = await segment_image(mock_microsam_service, test_image, resize=1.0)
         assert result1.shape == (2, 2)
         assert result1.dtype == np.uint8
         
-        # Test with custom contrast
-        result2 = await segment_image(mock_microsam_service, test_image, 5.0, 95.0)
+        # Test with custom contrast (disable resize to match mock return size)
+        result2 = await segment_image(mock_microsam_service, test_image, 5.0, 95.0, resize=1.0)
         assert result2.shape == (2, 2)
         assert result2.dtype == np.uint8
         
