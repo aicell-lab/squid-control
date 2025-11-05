@@ -1389,6 +1389,9 @@ class SquidController:
                 finally:
                     # Stop stitching for this well
                     await canvas.stop_stitching()
+                    # Activate channels that have data
+                    logger.info(f'Activating channels with data for well {well_row}{well_column}')
+                    canvas.activate_channels_with_data()
                     logger.info(f'Completed scanning well {well_row}{well_column}')
 
             logger.info('Normal scan with stitching completed for all wells')
@@ -2214,29 +2217,60 @@ class SquidController:
                 intersection_width = well_info['abs_max_x'] - well_info['abs_min_x']
                 intersection_height = well_info['abs_max_y'] - well_info['abs_min_y']
 
-                region = canvas.get_canvas_region_by_channel_name(
-                    intersection_center_x, intersection_center_y,
-                    intersection_width, intersection_height,
-                    channel_name, scale=scale_level, timepoint=timepoint
+                # CRITICAL: Use pixel-based read to get exact bounds and ensure alignment
+                # Convert to pixel coordinates using canvas coordinate system
+                intersection_center_x_px, intersection_center_y_px = canvas.stage_to_pixel_coords(
+                    intersection_center_x, intersection_center_y, scale_level
+                )
+                
+                # Calculate pixel dimensions for the intersection region
+                scale_factor = 4 ** scale_level
+                intersection_width_px = int(intersection_width * 1000 / canvas.pixel_size_xy_um / scale_factor)
+                intersection_height_px = int(intersection_height * 1000 / canvas.pixel_size_xy_um / scale_factor)
+
+                # Get channel index for pixel-based read
+                try:
+                    channel_idx = canvas.get_zarr_channel_index(channel_name)
+                except ValueError as e:
+                    logger.warning(f"Channel '{channel_name}' not found in well {well_row}{well_column}: {e}")
+                    return None
+
+                # Use pixel-based read to get exact bounds
+                region, read_bounds = canvas.get_canvas_region_pixels(
+                    intersection_center_x_px, intersection_center_y_px,
+                    intersection_width_px, intersection_height_px,
+                    scale=scale_level, channel_idx=channel_idx, timepoint=timepoint
                 )
 
-                if region is None:
+                if region is None or read_bounds is None:
                     logger.warning(f"Failed to get region from well {well_row}{well_column}")
                     return None
 
-                logger.info(f"Retrieved single-well region from {well_row}{well_column}, shape: {region.shape}")
+                logger.info(f"Retrieved single-well region from {well_row}{well_column}, shape: {region.shape}, "
+                           f"read bounds x=[{read_bounds['x_start']}:{read_bounds['x_end']}], "
+                           f"y=[{read_bounds['y_start']}:{read_bounds['y_end']}]")
                 return region
 
             # Multiple wells - need to stitch them together
             logger.info(f"Stitching regions from {len(wells_to_query)} wells")
 
-            # Calculate the output image dimensions at the requested scale
+            # Get first canvas to determine pixel size for output image (use canvas pixel size for consistency)
+            first_canvas = self.experiment_manager.get_well_canvas(
+                well_regions[0]['well_row'], well_regions[0]['well_column'], 
+                well_plate_type, well_padding_mm, target_experiment
+            )
+            canvas_pixel_size_um = first_canvas.pixel_size_xy_um
+
+            # Calculate the output image dimensions at the requested scale using canvas pixel size
             scale_factor = 4 ** scale_level  # Each scale level is 4x smaller
-            output_width_pixels = int(width_mm / (self.pixel_size_xy / 1000) / scale_factor)
-            output_height_pixels = int(height_mm / (self.pixel_size_xy / 1000) / scale_factor)
+            output_width_pixels = int(width_mm * 1000 / canvas_pixel_size_um / scale_factor)
+            output_height_pixels = int(height_mm * 1000 / canvas_pixel_size_um / scale_factor)
 
             # Create output image
             output_image = np.zeros((output_height_pixels, output_width_pixels), dtype=np.uint8)
+
+            logger.info(f"Output image size: {output_width_pixels}x{output_height_pixels} pixels "
+                       f"(using canvas pixel size {canvas_pixel_size_um}µm, scale {scale_level})")
 
             # Process each well and place its data in the output image
             for well_info in well_regions:
@@ -2256,42 +2290,83 @@ class SquidController:
                 intersection_width = well_info['abs_max_x'] - well_info['abs_min_x']
                 intersection_height = well_info['abs_max_y'] - well_info['abs_min_y']
 
-                well_region = canvas.get_canvas_region_by_channel_name(
-                    intersection_center_x, intersection_center_y,
-                    intersection_width, intersection_height,
-                    channel_name, scale=scale_level, timepoint=timepoint
+                # CRITICAL: Use pixel-based read to get exact bounds and ensure alignment
+                # Convert to pixel coordinates using canvas coordinate system
+                intersection_center_x_px, intersection_center_y_px = canvas.stage_to_pixel_coords(
+                    intersection_center_x, intersection_center_y, scale_level
+                )
+                
+                # Calculate pixel dimensions for the intersection region
+                intersection_width_px = int(intersection_width * 1000 / canvas.pixel_size_xy_um / scale_factor)
+                intersection_height_px = int(intersection_height * 1000 / canvas.pixel_size_xy_um / scale_factor)
+
+                # Get channel index for pixel-based read
+                try:
+                    channel_idx = canvas.get_zarr_channel_index(channel_name)
+                except ValueError as e:
+                    logger.warning(f"Channel '{channel_name}' not found in well {well_row}{well_column}: {e}")
+                    continue
+
+                # Use pixel-based read to get exact bounds
+                well_region, read_bounds = canvas.get_canvas_region_pixels(
+                    intersection_center_x_px, intersection_center_y_px,
+                    intersection_width_px, intersection_height_px,
+                    scale=scale_level, channel_idx=channel_idx, timepoint=timepoint
                 )
 
-                if well_region is None:
+                if well_region is None or read_bounds is None:
                     logger.warning(f"Failed to get region from well {well_row}{well_column} - skipping")
                     continue
 
                 # Calculate where to place this region in the output image
-                # Convert absolute coordinates to output image coordinates
+                # Use canvas pixel size for consistency with read operation
                 rel_min_x = well_info['abs_min_x'] - region_min_x
                 rel_min_y = well_info['abs_min_y'] - region_min_y
 
-                # Convert to pixel coordinates
-                start_x_px = int(rel_min_x / (self.pixel_size_xy / 1000) / scale_factor)
-                start_y_px = int(rel_min_y / (self.pixel_size_xy / 1000) / scale_factor)
+                # Convert to pixel coordinates using canvas pixel size (consistent with read)
+                start_x_px = int(rel_min_x * 1000 / canvas_pixel_size_um / scale_factor)
+                start_y_px = int(rel_min_y * 1000 / canvas_pixel_size_um / scale_factor)
 
                 # Ensure we don't go out of bounds
                 start_x_px = max(0, min(start_x_px, output_width_pixels))
                 start_y_px = max(0, min(start_y_px, output_height_pixels))
 
-                end_x_px = min(start_x_px + well_region.shape[1], output_width_pixels)
-                end_y_px = min(start_y_px + well_region.shape[0], output_height_pixels)
+                # Use exact read bounds to determine placement
+                # The well_region might be slightly different size due to canvas bounds
+                actual_read_width = read_bounds['x_end'] - read_bounds['x_start']
+                actual_read_height = read_bounds['y_end'] - read_bounds['y_start']
+
+                end_x_px = min(start_x_px + actual_read_width, output_width_pixels)
+                end_y_px = min(start_y_px + actual_read_height, output_height_pixels)
 
                 # Crop the well region if needed to fit in output
                 well_width = end_x_px - start_x_px
                 well_height = end_y_px - start_y_px
 
+                # Ensure we're using the correct region size
+                if well_region.shape[0] != actual_read_height or well_region.shape[1] != actual_read_width:
+                    logger.debug(f"Well {well_row}{well_column}: Region shape mismatch - "
+                               f"expected {actual_read_height}x{actual_read_width}, got {well_region.shape}")
+                    # Crop to match actual read bounds
+                    well_region = well_region[:actual_read_height, :actual_read_width]
+
                 if well_width > 0 and well_height > 0:
-                    cropped_well_region = well_region[:well_height, :well_width]
+                    # Ensure we don't exceed the actual region size
+                    crop_height = min(well_height, well_region.shape[0])
+                    crop_width = min(well_width, well_region.shape[1])
+                    
+                    cropped_well_region = well_region[:crop_height, :crop_width]
+                    
+                    # Adjust end coordinates to match cropped size
+                    end_x_px = start_x_px + crop_width
+                    end_y_px = start_y_px + crop_height
+                    
                     output_image[start_y_px:end_y_px, start_x_px:end_x_px] = cropped_well_region
 
                     logger.info(f"Placed region from well {well_row}{well_column} at ({start_x_px}, {start_y_px}) "
-                               f"with size ({well_width}, {well_height})")
+                               f"with size ({crop_width}, {crop_height}), "
+                               f"read bounds x=[{read_bounds['x_start']}:{read_bounds['x_end']}], "
+                               f"y=[{read_bounds['y_start']}:{read_bounds['y_end']}]")
 
             logger.info(f"Successfully stitched region from {len(well_regions)} wells, "
                        f"output shape: {output_image.shape}")
@@ -2619,6 +2694,9 @@ class SquidController:
                 if well_canvas.is_stitching:
                     logger.info(f'QUICK_SCAN: Stopping stitching for well canvas {well_id}, queue_size={well_canvas.preprocessing_queue.qsize()}')
                     await well_canvas.stop_stitching()
+                    # Activate channels that have data
+                    logger.info(f'QUICK_SCAN: Activating channels with data for well {well_id}')
+                    well_canvas.activate_channels_with_data()
                     logger.info(f'QUICK_SCAN: Stopped stitching for well canvas {well_id}')
 
             # Final stitching status after stopping

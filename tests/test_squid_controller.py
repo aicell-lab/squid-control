@@ -1356,10 +1356,11 @@ async def test_plate_scan_with_custom_illumination_settings(sim_controller_fixtu
         controller.multipointController.start_new_experiment = mock_start_new_experiment
 
         # Test plate scan with the custom settings
+        # Use wells_to_scan to specify A1 to B2 since scanning_zone is not supported
         controller.plate_scan(
             well_plate_type='96',
             illumination_settings=custom_settings,
-            scanning_zone=[(0, 0), (1, 1)],  # A1 to B2
+            wells_to_scan=['A1', 'A2', 'B1', 'B2'],
             Nx=2, Ny=2,
             action_ID='test_custom_scan'
         )

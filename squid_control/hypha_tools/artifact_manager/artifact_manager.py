@@ -8,6 +8,7 @@ import asyncio
 import base64
 import io
 import math
+import re
 import time
 import uuid
 import zipfile
@@ -44,6 +45,51 @@ class SquidArtifactManager:
         self.experiment_id = None
         self.acquisition_settings = None
         self.description = None
+
+    def _sanitize_dataset_name(self, name: str) -> str:
+        """
+        Sanitize dataset name to comply with naming requirements:
+        - Lowercase letters, numbers, hyphens, and colons only
+        - Must start and end with alphanumeric character
+        
+        Args:
+            name: Original dataset name
+            
+        Returns:
+            str: Sanitized dataset name
+        """
+        # Convert to lowercase
+        sanitized = name.lower()
+        
+        # Replace underscores with hyphens
+        sanitized = sanitized.replace('_', '-')
+        
+        # Remove any characters that are not lowercase letters, numbers, hyphens, or colons
+        sanitized = re.sub(r'[^a-z0-9\-:]', '', sanitized)
+        
+        # Remove leading/trailing hyphens and colons (must start/end with alphanumeric)
+        sanitized = sanitized.strip('-:')
+        
+        # If empty after sanitization, use a default name
+        if not sanitized:
+            sanitized = 'dataset'
+        
+        # Ensure it starts with alphanumeric
+        if not sanitized[0].isalnum():
+            sanitized = 'dataset-' + sanitized
+        
+        # Ensure it ends with alphanumeric
+        if not sanitized[-1].isalnum():
+            sanitized = sanitized + '-data'
+        
+        return sanitized
+
+    def _remove_timestamp_from_experiment_id(self, experiment_id: str) -> str:
+        """Remove timestamp suffix (e.g., '_20251029-658166') and scan type ('_normal-scan', '_quick-scan') from experiment ID for gallery naming."""
+        if not experiment_id:
+            return experiment_id
+        # Remove scan type and timestamp patterns from the end
+        return re.sub(r'_(normal|quick)-scan(_\d{8}-\d+)?$', '', experiment_id)
 
     async def connect_server(self, server):
         """
@@ -302,9 +348,11 @@ class SquidArtifactManager:
             if experiment_id is None:
                 raise ValueError("experiment_id is required when microscope_service_id ends with a number")
             gallery_number = number_match.group(1)
-            # FIXED: Always use the base experiment_id for gallery naming, not folder-specific names
+            # Remove timestamp suffix from experiment_id for gallery naming
             # This ensures all datasets from the same experiment go into the same gallery
-            gallery_alias = f"{gallery_number}-{experiment_id}"
+            # even if they have different timestamps
+            experiment_id_for_gallery = self._remove_timestamp_from_experiment_id(experiment_id)
+            gallery_alias = f"{gallery_number}-{experiment_id_for_gallery}"
         else:
             # Standard case: use microscope-based gallery
             gallery_alias = f"microscope-gallery-{microscope_service_id}"
@@ -326,8 +374,10 @@ class SquidArtifactManager:
 
                 # Determine gallery name and description based on type
                 if number_match:
-                    gallery_name = f"Experiment Gallery - {experiment_id}"
-                    gallery_description = f"Dataset collection for experiment {experiment_id}"
+                    # Use cleaned experiment ID (without timestamp) for gallery name
+                    experiment_id_for_gallery = self._remove_timestamp_from_experiment_id(experiment_id)
+                    gallery_name = f"Experiment Gallery - {experiment_id_for_gallery}"
+                    gallery_description = f"Dataset collection for experiment {experiment_id_for_gallery}"
                     gallery_type = "experiment-gallery"
                 else:
                     gallery_name = f"Microscope Gallery - {microscope_service_id}"
@@ -394,8 +444,10 @@ class SquidArtifactManager:
 
         # Generate dataset name with timestamp if not provided
         if dataset_name is None:
-            timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
-            dataset_name = f"{experiment_id}-{timestamp}"
+            dataset_name = f"{experiment_id}"
+        
+        # Sanitize dataset name to comply with naming requirements
+        dataset_name = self._sanitize_dataset_name(dataset_name)
 
         # Validate all ZIP files with streaming validation to avoid memory exhaustion
         total_size_mb = 0
@@ -651,6 +703,9 @@ class SquidArtifactManager:
         # Generate dataset name with timestamp
         timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
         dataset_name = f"{self.experiment_id}-{timestamp}"
+        
+        # Sanitize dataset name to comply with naming requirements
+        dataset_name = self._sanitize_dataset_name(dataset_name)
 
         # Ensure gallery exists
         gallery = await self.create_or_get_microscope_gallery(self.microscope_service_id, self.experiment_id)
@@ -847,6 +902,9 @@ class SquidArtifactManager:
         if experiment_id is not None:
             timestamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
             dataset_name = f"{experiment_id}-{timestamp}"
+        
+        # Sanitize dataset name to comply with naming requirements
+        dataset_name = self._sanitize_dataset_name(dataset_name)
 
         # Validate ZIP file before upload
         await self._validate_zarr_zip_content(zarr_zip_content)
