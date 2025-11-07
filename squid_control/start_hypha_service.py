@@ -22,8 +22,8 @@ from PIL import Image
 try:
     from .control.camera import TriggerModeSetting
     from .control.config import CONFIG, ChannelMapper
-    from .hypha_tools.snapshot_utils import SnapshotManager
     from .hypha_tools.chatbot.aask import aask
+    from .hypha_tools.snapshot_utils import SnapshotManager
     from .squid_controller import SquidController
 except ImportError:
     # Fallback for direct script execution from project root
@@ -42,7 +42,7 @@ import base64
 import signal
 import threading
 from collections import deque
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
 
 # WebRTC imports
 import aiohttp
@@ -58,7 +58,6 @@ if ENV_FILE:
 import uuid  # noqa: E402
 
 # Set up logging
-
 from squid_control.utils.logging_utils import setup_logging
 from squid_control.utils.video_utils import VideoBuffer, VideoFrameProcessor
 
@@ -1851,6 +1850,7 @@ class MicroscopeHyphaService:
             "scan_region_to_zarr": self.scan_region_to_zarr,
             "quick_scan_brightfield_to_zarr": self.quick_scan_brightfield_to_zarr,
             "get_stitched_region": self.get_stitched_region,
+            "get_stitched_regions_batch": self.get_stitched_regions_batch,
             # Experiment management functions (replaces zarr fileset management)
             "create_experiment": self.create_experiment,
             "list_experiments": self.list_experiments,
@@ -3544,6 +3544,76 @@ class MicroscopeHyphaService:
             logger.error(f"Error merging channels to RGB: {e}")
             return None
 
+    def get_stitched_regions_batch(self, regions: list, context=None):
+        """
+        Get multiple stitched regions in a single call to reduce WebSocket overhead.
+        
+        Args:
+            regions: List of region parameter dictionaries. Each dict must contain:
+                - center_x_mm: float (required)
+                - center_y_mm: float (required)
+                - width_mm: float (default: 5.0)
+                - height_mm: float (default: 5.0)
+                - well_plate_type: str (default: '96')
+                - scale_level: int (default: 0)
+                - channel_name: str (default: 'BF LED matrix full')
+                - experiment_name: str (default: None)
+            context: Request context for authentication
+            
+        Returns:
+            Dictionary with success status, results list, and count.
+            Each result follows the same structure as get_stitched_region response, or None if failed.
+        """
+        try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                logger.warning("User not authorized to access this service")
+                raise Exception("User not authorized to access this service")
+
+            if not isinstance(regions, list):
+                raise ValueError("regions must be a list of dictionaries")
+
+            results = []
+            for i, region_params in enumerate(regions):
+                try:
+                    # Extract parameters with defaults
+                    center_x_mm = region_params.get("center_x_mm")
+                    center_y_mm = region_params.get("center_y_mm")
+                    
+                    if center_x_mm is None or center_y_mm is None:
+                        logger.warning(f"Region {i}: missing required center_x_mm or center_y_mm")
+                        results.append(None)
+                        continue
+
+                    # Call existing get_stitched_region with extracted parameters
+                    result = self.get_stitched_region(
+                        center_x_mm=center_x_mm,
+                        center_y_mm=center_y_mm,
+                        width_mm=region_params.get("width_mm", 5.0),
+                        height_mm=region_params.get("height_mm", 5.0),
+                        well_plate_type=region_params.get("well_plate_type", "96"),
+                        scale_level=region_params.get("scale_level", 0),
+                        channel_name=region_params.get("channel_name", "BF LED matrix full"),
+                        timepoint=region_params.get("timepoint", 0),
+                        well_padding_mm=region_params.get("well_padding_mm", 1.0),
+                        experiment_name=region_params.get("experiment_name", None),
+                        context=context
+                    )
+                    results.append(result)
+                except Exception as e:
+                    logger.error(f"Error processing region {i}: {e}", exc_info=True)
+                    results.append(None)
+
+            return {
+                "success": True,
+                "results": results,
+                "count": len(results)
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to get stitched regions batch: {e}", exc_info=True)
+            raise e
+
     @schema_function(skip_self=True)
     async def create_experiment(self, experiment_name: str = Field(..., description="Unique name for the new experiment folder"), context=None):
         """
@@ -4078,7 +4148,10 @@ class MicroscopeHyphaService:
             logger.info(f"Event loop status: running={asyncio.get_event_loop().is_running()}")
             
             # Import microsam_client module
-            from squid_control.hypha_tools.microsam_client import connect_to_microsam, segment_experiment_wells
+            from squid_control.hypha_tools.microsam_client import (
+                connect_to_microsam,
+                segment_experiment_wells,
+            )
             
             # Verify server connection before starting
             if self.remote_server is None:
