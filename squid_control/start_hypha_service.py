@@ -34,13 +34,12 @@ except ImportError:
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
-    from .control.config import CONFIG, ChannelMapper
+    from .control.config import ChannelMapper
     from .hypha_tools.chatbot.aask import aask
     from .squid_controller import SquidController
 
 import base64
 import signal
-import threading
 from collections import deque
 from typing import Any, Dict, List, Optional
 
@@ -208,7 +207,7 @@ class MicroscopeHyphaService:
         self.is_local = is_local
         self.squidController = SquidController(is_simulation=is_simulation)
         self.squidController.move_to_well('C',3)
-        
+
         # Determine if this is a Squid+ microscope
         self.is_squid_plus = self._is_squid_plus_microscope()
         self.dx = 1
@@ -362,17 +361,17 @@ class MicroscopeHyphaService:
         if self.is_simulation:
             logger.info("No user context provided in simulation mode - allowing access")
             return True
-        
+
         # If no authorized emails are set, allow all authenticated users
         if self.authorized_emails is None:
             return True
-        
+
         # Check if user email is in authorized list
         user_email = user.get("email")
         if not user_email:
             logger.warning("No email found in user context - denying access")
             return False
-        
+
         if user_email in self.authorized_emails:
             return True
         else:
@@ -385,21 +384,21 @@ class MicroscopeHyphaService:
         """
         try:
             from squid_control.control.config import CONFIG
-            
+
             # Check for Squid+ specific configuration settings
             has_filter_wheel = getattr(CONFIG, 'FILTER_CONTROLLER_ENABLE', False)
             has_objective_switcher = getattr(CONFIG, 'USE_XERYON', False)
-            
+
             # If either Squid+ specific feature is enabled, it's a Squid+ microscope
             is_squid_plus = has_filter_wheel or has_objective_switcher
-            
+
             if is_squid_plus:
                 logger.info("🔬 Detected Squid+ microscope - Squid+ specific endpoints will be registered")
             else:
                 logger.info("🔬 Detected original Squid microscope - Squid+ specific endpoints will not be registered")
-                
+
             return is_squid_plus
-            
+
         except Exception as e:
             logger.warning(f"Could not determine microscope type: {e} - assuming original Squid")
             return False
@@ -590,8 +589,8 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    def update_parameters_from_client(self, 
-                                    new_parameters: dict = Field(..., description="Dictionary of parameters to update with key-value pairs (e.g., {'BF_intensity_exposure': [28, 20], 'dx': 0.5})"), 
+    def update_parameters_from_client(self,
+                                    new_parameters: dict = Field(..., description="Dictionary of parameters to update with key-value pairs (e.g., {'BF_intensity_exposure': [28, 20], 'dx': 0.5})"),
                                     context=None):
         """
         Update microscope acquisition parameters for channels, step sizes, and illumination settings.
@@ -636,13 +635,13 @@ class MicroscopeHyphaService:
                 "message": f"Updated {len(updated_params)} parameters successfully",
                 "updated_parameters": updated_params
             }
-            
+
             if failed_params:
                 result["failed_parameters"] = failed_params
                 result["message"] += f", {len(failed_params)} parameters failed to update"
 
             return result
-            
+
         except Exception as e:
             logger.error(f"Failed to update parameters: {e}")
             raise e
@@ -1076,7 +1075,7 @@ class MicroscopeHyphaService:
             # Save using artifact manager (REQUIRED)
             if not self.snapshot_manager:
                 raise Exception("Snapshot manager not available. Ensure AGENT_LENS_WORKSPACE_TOKEN is set.")
-            
+
             # Get current position for metadata
             status = self.get_status()
             metadata = {
@@ -1089,7 +1088,7 @@ class MicroscopeHyphaService:
                 "position_z": status.get("current_z"),
                 "microscope_service_id": self.service_id
             }
-            
+
             # Save using artifact manager
             data_url = await self.snapshot_manager.save_snapshot(
                 microscope_service_id=self.service_id,
@@ -1179,7 +1178,7 @@ class MicroscopeHyphaService:
                     {'channel': 'Fluorescence 488 nm Ex', 'intensity': 27.0, 'exposure_time': 60.0},
                     {'channel': 'Fluorescence 561 nm Ex', 'intensity': 98.0, 'exposure_time': 100.0},
                 ]
-            
+
             if wells_to_scan is None:
                 wells_to_scan = ['A1']
 
@@ -1607,31 +1606,31 @@ class MicroscopeHyphaService:
         velocity_y_mm_per_s: Optional[float] = Field(None, description="Maximum velocity for Y axis in mm/s (default: uses configuration value)")
 
     # ===== Squid+ Specific Input Models =====
-    
+
     class SetFilterWheelPositionInput(BaseModel):
         """Set filter wheel to a specific position."""
         position: int = Field(..., description="Filter position (range: 1-8)", ge=1, le=8)
-    
+
     class SwitchObjectiveInput(BaseModel):
         """Switch to a specific objective."""
         objective_name: str = Field(..., description="Objective name (e.g., '4x', '20x')")
         move_z: bool = Field(True, description="Whether to adjust Z stage for objective change")
-    
+
     class GetFilterWheelPositionInput(BaseModel):
         """Get current filter wheel position."""
-    
+
     class NextFilterPositionInput(BaseModel):
         """Move to next filter position."""
-    
+
     class PreviousFilterPositionInput(BaseModel):
         """Move to previous filter position."""
-    
+
     class GetCurrentObjectiveInput(BaseModel):
         """Get current objective name and position."""
-    
+
     class GetAvailableObjectivesInput(BaseModel):
         """Get available objectives and their positions."""
-    
+
     @schema_function(skip_self=True)
     async def inspect_tool(self, images: List[dict]=Field(..., description="A list of images to be inspected, each dictionary must contain 'http_url' (required) and optionally 'title' (optional)"), query: str=Field(..., description="User query about the images for GPT-4 vision model analysis"), context_description: str=Field(..., description="Context description for the visual inspection task, typically describing that images are taken from the microscope"), context=None):
         """
@@ -1651,7 +1650,7 @@ class MicroscopeHyphaService:
             for image_info_obj in image_infos:
                 if not image_info_obj.url.startswith("http"):
                     raise ValueError("Image URL must start with http or https.")
-            
+
             logger.info(f"Inspecting {len(image_infos)} image(s) with GPT-4 vision model. Query: {query[:100]}")
             response = await aask(image_infos, [context_description, query])
             logger.info("Image inspection completed successfully")
@@ -1756,7 +1755,7 @@ class MicroscopeHyphaService:
             "get_microscope_configuration": self.GetMicroscopeConfigurationInput.model_json_schema(),
             "set_stage_velocity": self.SetStageVelocityInput.model_json_schema(),
         }
-        
+
         # Add Squid+ specific schemas if this is a Squid+ microscope
         if self.is_squid_plus:
             squid_plus_schemas = {
@@ -1769,7 +1768,7 @@ class MicroscopeHyphaService:
                 "get_available_objectives": self.GetAvailableObjectivesInput.model_json_schema(),
             }
             schema.update(squid_plus_schemas)
-        
+
         return schema
 
     async def start_hypha_service(self, server, service_id, run_in_executor=None):
@@ -1784,20 +1783,19 @@ class MicroscopeHyphaService:
         # Always require context for proper authentication and schema generation
         visibility = "public" if self.is_simulation else "protected"
         require_context = True  # Always require context for consistent schema
-        
+
         if self.is_simulation:
             logger.info("Running in simulation mode: service will be public but require context")
         else:
             logger.info("Running in production mode: service will be protected and require context")
-        
+
         # Generate description based on simulation mode and microscope type
         if self.is_simulation:
             description = "A microscope control service for the Squid automated microscope operating in simulation mode. This service provides complete control over stage positioning, multi-channel illumination (brightfield and fluorescence), camera operations, autofocus systems, and well plate navigation. In simulation mode, the service uses virtual Zarr-based sample data to provide realistic microscope behavior without physical hardware, enabling development, testing, and demonstration of advanced microscopy workflows including automated scanning, image stitching, and multi-channel fluorescence imaging."
+        elif self.is_squid_plus:
+            description = "A microscope control service for the Squid+ automated microscope with advanced hardware integration. This service provides real-time control over precision stage positioning, multi-channel illumination (brightfield and fluorescence), high-resolution camera operations, dual autofocus systems (reflection and contrast-based), and automated well plate navigation. The Squid+ system includes motorized filter wheels, objective switchers, and enhanced optics for advanced microscopy applications including automated scanning, image stitching, and multi-channel fluorescence imaging with professional-grade hardware control."
         else:
-            if self.is_squid_plus:
-                description = "A microscope control service for the Squid+ automated microscope with advanced hardware integration. This service provides real-time control over precision stage positioning, multi-channel illumination (brightfield and fluorescence), high-resolution camera operations, dual autofocus systems (reflection and contrast-based), and automated well plate navigation. The Squid+ system includes motorized filter wheels, objective switchers, and enhanced optics for advanced microscopy applications including automated scanning, image stitching, and multi-channel fluorescence imaging with professional-grade hardware control."
-            else:
-                description = "A microscope control service for the Squid automated microscope with real hardware integration. This service provides real-time control over precision stage positioning, multi-channel illumination (brightfield and fluorescence), high-resolution camera operations, dual autofocus systems (reflection and contrast-based), and automated well plate navigation. The system enables advanced microscopy workflows including automated scanning, image stitching, and multi-channel fluorescence imaging with professional-grade hardware control and real-time feedback."
+            description = "A microscope control service for the Squid automated microscope with real hardware integration. This service provides real-time control over precision stage positioning, multi-channel illumination (brightfield and fluorescence), high-resolution camera operations, dual autofocus systems (reflection and contrast-based), and automated well plate navigation. The system enables advanced microscopy workflows including automated scanning, image stitching, and multi-channel fluorescence imaging with professional-grade hardware control and real-time feedback."
 
         service_config = {
             "name": "Microscope Control Service",
@@ -1868,7 +1866,7 @@ class MicroscopeHyphaService:
             "segmentation_cancel": self.segmentation_cancel,
             "segmentation_get_polygons": self.segmentation_get_polygons,
         }
-        
+
         # Conditionally register Squid+ specific endpoints
         if self.is_squid_plus:
             squid_plus_endpoints = {
@@ -1930,7 +1928,7 @@ class MicroscopeHyphaService:
                 "set_stage_velocity": self.set_stage_velocity_schema,
             }
         }
-        
+
         # Add Squid+ specific tools if this is a Squid+ microscope
         if self.is_squid_plus:
             squid_plus_tools = {
@@ -2921,7 +2919,7 @@ class MicroscopeHyphaService:
         return self.set_stage_velocity(config.velocity_x_mm_per_s, config.velocity_y_mm_per_s, context)
 
     # ===== Squid+ Specific Schema Methods =====
-    
+
     def set_filter_wheel_position_schema(self, config: SetFilterWheelPositionInput, context=None):
         """Set filter wheel position with schema validation."""
         # Handle case where config might be an ObjectProxy
@@ -2930,19 +2928,19 @@ class MicroscopeHyphaService:
         else:
             position = config.position
         return self.set_filter_wheel_position(position, context)
-    
+
     def get_filter_wheel_position_schema(self, context=None):
         """Get current filter wheel position with schema validation."""
         return self.get_filter_wheel_position(context)
-    
+
     def next_filter_position_schema(self, context=None):
         """Move to next filter position with schema validation."""
         return self.next_filter_position(context)
-    
+
     def previous_filter_position_schema(self, context=None):
         """Move to previous filter position with schema validation."""
         return self.previous_filter_position(context)
-    
+
     def switch_objective_schema(self, config: SwitchObjectiveInput, context=None):
         """Switch objective with schema validation."""
         # Handle case where config might be an ObjectProxy
@@ -2953,11 +2951,11 @@ class MicroscopeHyphaService:
             objective_name = config.objective_name
             move_z = config.move_z
         return self.switch_objective(objective_name, move_z, context)
-    
+
     def get_current_objective_schema(self, context=None):
         """Get current objective with schema validation."""
         return self.get_current_objective(context)
-    
+
     def get_available_objectives_schema(self, context=None):
         """Get available objectives with schema validation."""
         return self.get_available_objectives(context)
@@ -2999,7 +2997,7 @@ class MicroscopeHyphaService:
             # Set default illumination settings if not provided
             if illumination_settings is None:
                 illumination_settings = [{'channel': 'BF LED matrix full', 'intensity': 50, 'exposure_time': 100}]
-            
+
             # Set default wells to scan if not provided
             if wells_to_scan is None:
                 wells_to_scan = ['A1']
@@ -3279,13 +3277,13 @@ class MicroscopeHyphaService:
         """
         try:
             # Log function entry with all parameters
-            logger.info(f"get_stitched_region called with parameters:")
+            logger.info("get_stitched_region called with parameters:")
             logger.info(f"  center_x_mm={center_x_mm}, center_y_mm={center_y_mm}")
             logger.info(f"  width_mm={width_mm}, height_mm={height_mm}")
             logger.info(f"  well_plate_type='{well_plate_type}', scale_level={scale_level}")
             logger.info(f"  channel_name='{channel_name}', timepoint={timepoint}")
             logger.info(f"  well_padding_mm={well_padding_mm}, output_format='{output_format}'")
-            
+
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 logger.warning("User not authorized to access this service")
@@ -3579,7 +3577,7 @@ class MicroscopeHyphaService:
                     # Extract parameters with defaults
                     center_x_mm = region_params.get("center_x_mm")
                     center_y_mm = region_params.get("center_y_mm")
-                    
+
                     if center_x_mm is None or center_y_mm is None:
                         logger.warning(f"Region {i}: missing required center_x_mm or center_y_mm")
                         results.append(None)
@@ -3761,8 +3759,8 @@ class MicroscopeHyphaService:
                     # Import and create the offline processor
                     from .offline_processing import OfflineProcessor
                     processor = OfflineProcessor(
-                        self.squidController, 
-                        self.artifact_manager, 
+                        self.squidController,
+                        self.artifact_manager,
                         self.service_id
                     )
                     logger.info("OfflineProcessor created successfully in worker thread")
@@ -3770,25 +3768,25 @@ class MicroscopeHyphaService:
                     # Create a new event loop for this thread since offline processing uses async operations
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
-                    
+
                     try:
                         # Run the offline processing in the new event loop
                         logger.info("Calling processor.stitch_and_upload_timelapse in worker thread...")
                         result = loop.run_until_complete(
                             processor.stitch_and_upload_timelapse(
-                                experiment_id, upload_immediately, cleanup_temp_files, 
+                                experiment_id, upload_immediately, cleanup_temp_files,
                                 use_parallel_wells=use_parallel_wells
                             )
                         )
-                        
+
                         logger.info(f"Offline processing completed in worker thread: {result.get('total_datasets', 0)} datasets processed")
                         logger.info(f"Processing mode: {result.get('processing_mode', 'unknown')}")
                         return result
-                        
+
                     finally:
                         # Clean up the event loop
                         loop.close()
-                        
+
                 except Exception as e:
                     logger.error(f"Error in offline processing worker thread: {e}")
                     return {
@@ -3800,10 +3798,10 @@ class MicroscopeHyphaService:
             # Run the processing function in a separate thread using asyncio.to_thread
             logger.info("🚀 Launching offline processing in worker thread...")
             result = await asyncio.to_thread(run_offline_processing)
-            
+
             logger.info(f"🎉 Offline processing thread completed: {result}")
             return result
-            
+
         except Exception as e:
             logger.error(f"Error in offline stitching and upload service method: {e}")
             raise e
@@ -3827,32 +3825,32 @@ class MicroscopeHyphaService:
         try:
             self.scan_state['state'] = 'running'
             self.scan_state['error_message'] = None
-            
+
             logger.info(f"Starting scan with method: {scan_method.__name__}")
-            
+
             # Run the actual scan method
             result = await scan_method(*args, **kwargs)
-            
+
             self.scan_state['state'] = 'completed'
             logger.info(f"Scan completed successfully: {scan_method.__name__}")
             return result
-            
+
         except asyncio.CancelledError:
             self.scan_state['state'] = 'failed'
             self.scan_state['error_message'] = 'Scan was cancelled by user'
             logger.info("Scan was cancelled by user")
             raise
-            
+
         except Exception as e:
             self.scan_state['state'] = 'failed'
             self.scan_state['error_message'] = str(e)
             logger.error(f"Scan failed: {e}", exc_info=True)
-            
+
         finally:
             self.scan_state['scan_task'] = None
 
     @schema_function(skip_self=True)
-    async def scan_start(self, 
+    async def scan_start(self,
                         config: dict = Field(..., description="Scan configuration dictionary containing all scan parameters"),
                         context=None):
         """
@@ -3875,7 +3873,8 @@ class MicroscopeHyphaService:
         - dx, dy (float): Position intervals in mm
         
         For 'full_zarr':
-        - start_x_mm, start_y_mm (float): Starting position in mm
+        - start_x_mm, start_y_mm (float, optional): Starting position in mm (relative to well center).
+          If None, the grid will be automatically centered around the well center (similar to plate_scan behavior).
         - Nx, Ny (int): Grid dimensions
         - dx_mm, dy_mm (float): Position intervals in mm
         - illumination_settings (List[dict]): Illumination settings
@@ -3918,13 +3917,13 @@ class MicroscopeHyphaService:
 
             # Store the scan type
             self.scan_state['saved_data_type'] = saved_data_type
-            
+
             # Extract common parameters with defaults
             action_ID = config.get('action_ID', 'unified_scan')
             do_contrast_autofocus = config.get('do_contrast_autofocus', False)
             do_reflection_af = config.get('do_reflection_af', True)
             well_plate_type = config.get('well_plate_type', '96')
-            
+
             logger.info(f"Starting unified scan with profile: {saved_data_type}")
 
             # Route to appropriate scan method based on profile
@@ -3936,7 +3935,7 @@ class MicroscopeHyphaService:
                 Ny = config.get('Ny', 3)
                 dx = config.get('dx', 0.8)
                 dy = config.get('dy', 0.8)
-                
+
                 scan_coro = self._run_scan_with_state_tracking(
                     self.scan_plate_save_raw_images,
                     well_plate_type=well_plate_type,
@@ -3951,11 +3950,12 @@ class MicroscopeHyphaService:
                     action_ID=action_ID,
                     context=context
                 )
-                
+
             elif saved_data_type == 'full_zarr':
                 # Extract full_zarr specific parameters
-                start_x_mm = config.get('start_x_mm', 20)
-                start_y_mm = config.get('start_y_mm', 20)
+                # start_x_mm and start_y_mm are optional - if not provided, grid will be centered
+                start_x_mm = config.get('start_x_mm', None)  # None = auto-center
+                start_y_mm = config.get('start_y_mm', None)  # None = auto-center
                 Nx = config.get('Nx', 3)
                 Ny = config.get('Ny', 3)
                 dx_mm = config.get('dx_mm', 0.9)
@@ -3966,7 +3966,7 @@ class MicroscopeHyphaService:
                 experiment_name = config.get('experiment_name')
                 uploading = config.get('uploading', False)
                 timepoint = config.get('timepoint', 0)
-                
+
                 scan_coro = self._run_scan_with_state_tracking(
                     self.scan_region_to_zarr,
                     start_x_mm=start_x_mm,
@@ -3987,7 +3987,7 @@ class MicroscopeHyphaService:
                     uploading=uploading,
                     context=context
                 )
-                
+
             elif saved_data_type == 'quick_zarr':
                 # Extract quick_zarr specific parameters
                 well_padding_mm = config.get('well_padding_mm', 1.0)
@@ -4000,7 +4000,7 @@ class MicroscopeHyphaService:
                 velocity_scan_mm_per_s = config.get('velocity_scan_mm_per_s', 7.0)
                 experiment_name = config.get('experiment_name')
                 uploading = config.get('uploading', False)
-                
+
                 scan_coro = self._run_scan_with_state_tracking(
                     self.quick_scan_brightfield_to_zarr,
                     well_plate_type=well_plate_type,
@@ -4022,7 +4022,7 @@ class MicroscopeHyphaService:
 
             # Launch scan in background
             self.scan_state['scan_task'] = asyncio.create_task(scan_coro)
-            
+
             logger.info(f"Scan started in background with profile: {saved_data_type}")
 
             return {
@@ -4094,7 +4094,7 @@ class MicroscopeHyphaService:
             if self.scan_state['scan_task'] and not self.scan_state['scan_task'].done():
                 self.scan_state['scan_task'].cancel()
                 logger.info("Cancelled scan task")
-                
+
                 # Wait a moment for cancellation to propagate
                 try:
                     await asyncio.wait_for(self.scan_state['scan_task'], timeout=1.0)
@@ -4143,39 +4143,39 @@ class MicroscopeHyphaService:
         try:
             self.segmentation_state['state'] = 'running'
             self.segmentation_state['error_message'] = None
-            
+
             logger.info(f"🚀 Starting background segmentation for experiment '{source_experiment}'")
             logger.info(f"Event loop status: running={asyncio.get_event_loop().is_running()}")
-            
+
             # Import microsam_client module
             from squid_control.hypha_tools.microsam_client import (
                 connect_to_microsam,
                 segment_experiment_wells,
             )
-            
+
             # Verify server connection before starting
             if self.remote_server is None:
                 raise Exception("Remote server connection not available")
-            
+
             # Connect to microSAM service using remote_server (agent-lens workspace)
             logger.info("Connecting to microSAM service...")
             logger.info(f"Remote server workspace: {self.remote_server.config.workspace}")
-            
+
             microsam_service = await connect_to_microsam(self.remote_server)
-            
+
             # Define progress callback
             def progress_callback(well_id, completed, total):
                 self.segmentation_state['progress']['completed_wells'] = completed
                 self.segmentation_state['progress']['current_well'] = well_id
                 logger.info(f"Progress: {completed}/{total} wells completed (current: {well_id})")
-            
+
             # Initialize progress tracking
             self.segmentation_state['progress']['total_wells'] = len(wells_to_segment)
             self.segmentation_state['progress']['completed_wells'] = 0
             self.segmentation_state['progress']['channel_configs'] = channel_configs
             self.segmentation_state['progress']['source_experiment'] = source_experiment
             self.segmentation_state['progress']['segmentation_experiment'] = f"{source_experiment}-segmentation"
-            
+
             # Run segmentation with multi-channel support
             results = await segment_experiment_wells(
                 microsam_service=microsam_service,
@@ -4189,26 +4189,26 @@ class MicroscopeHyphaService:
                 well_padding_mm=well_padding_mm,
                 progress_callback=progress_callback
             )
-            
+
             # Update state to completed
             self.segmentation_state['state'] = 'completed'
-            logger.info(f"✅ Segmentation completed successfully!")
+            logger.info("✅ Segmentation completed successfully!")
             logger.info(f"  Successful wells: {results['successful_wells']}/{results['total_wells']}")
-            
+
             return results
-            
+
         except asyncio.CancelledError:
             self.segmentation_state['state'] = 'failed'
             self.segmentation_state['error_message'] = 'Segmentation was cancelled by user'
             logger.info("Segmentation was cancelled by user")
             raise
-            
+
         except Exception as e:
             self.segmentation_state['state'] = 'failed'
             self.segmentation_state['error_message'] = str(e)
             logger.error(f"Segmentation failed: {e}", exc_info=True)
             raise
-            
+
         finally:
             self.segmentation_state['segmentation_task'] = None
 
@@ -4217,7 +4217,7 @@ class MicroscopeHyphaService:
         experiment_name: str = Field(..., description="Source experiment name to process"),
         wells_to_segment: Optional[List[str]] = Field(None, description="List of wells (e.g., ['A1', 'B2']). None = all wells in experiment"),
         channel_configs: List[Dict[str, Any]] = Field(
-            ..., 
+            ...,
             description="Channel configurations for merging. Each dict must have 'channel' (name), and optionally 'min_percentile' (default 1.0), 'max_percentile' (default 99.0), 'weight' (default 1.0). Example: [{'channel': 'BF LED matrix full', 'min_percentile': 2.0, 'max_percentile': 98.0}]"
         ),
         scale_level: int = Field(0, description="Pyramid scale level: 0=full resolution, 1=1/4x, 2=1/16x, etc. Higher scales process faster."),
@@ -4233,25 +4233,25 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             # Check if segmentation already running
             if self.segmentation_state['state'] == 'running':
                 raise Exception("A segmentation is already in progress. Use segmentation_cancel() to stop it first.")
-            
+
             logger.info(f"Segmentation start requested for experiment '{experiment_name}'")
-            
+
             # Validate source experiment exists
             if not hasattr(self.squidController, 'experiment_manager'):
                 raise Exception("Experiment manager not initialized")
-            
+
             experiment_path = self.squidController.experiment_manager.base_path / experiment_name
             if not experiment_path.exists():
                 raise ValueError(f"Source experiment '{experiment_name}' does not exist")
-            
+
             # Auto-detect wells if not specified
             if wells_to_segment is None:
                 logger.info("No wells specified, auto-detecting all wells in experiment...")
-                
+
                 # List all well zarr filesets in the experiment directory
                 detected_wells = []
                 for item in experiment_path.iterdir():
@@ -4262,21 +4262,21 @@ class MicroscopeHyphaService:
                         if match:
                             well_id = f"{match.group(1)}{match.group(2)}"
                             detected_wells.append(well_id)
-                
+
                 if not detected_wells:
                     raise ValueError(f"No wells found in experiment '{experiment_name}'")
-                
+
                 wells_to_segment = sorted(detected_wells)
                 logger.info(f"Auto-detected {len(wells_to_segment)} wells: {wells_to_segment}")
-            
+
             # Validate wells_to_segment is a list
             if not isinstance(wells_to_segment, list) or len(wells_to_segment) == 0:
                 raise ValueError("wells_to_segment must be a non-empty list")
-            
+
             # Validate channel_configs
             if not channel_configs or len(channel_configs) == 0:
                 raise ValueError("channel_configs must contain at least one channel configuration")
-            
+
             for config in channel_configs:
                 if 'channel' not in config:
                     raise ValueError("Each channel config must have 'channel' key")
@@ -4284,16 +4284,16 @@ class MicroscopeHyphaService:
                 config.setdefault('min_percentile', 1.0)
                 config.setdefault('max_percentile', 99.0)
                 config.setdefault('weight', 1.0)
-                
+
                 # Validate percentile ranges
                 if not (0 <= config['min_percentile'] <= 100):
                     raise ValueError(f"min_percentile must be between 0 and 100, got {config['min_percentile']}")
                 if not (0 <= config['max_percentile'] <= 100):
                     raise ValueError(f"max_percentile must be between 0 and 100, got {config['max_percentile']}")
                 if config['min_percentile'] >= config['max_percentile']:
-                    raise ValueError(f"min_percentile must be less than max_percentile")
-            
-            logger.info(f"Segmentation configuration:")
+                    raise ValueError("min_percentile must be less than max_percentile")
+
+            logger.info("Segmentation configuration:")
             logger.info(f"  Source experiment: '{experiment_name}'")
             logger.info(f"  Wells to segment: {wells_to_segment}")
             logger.info(f"  Channels: {len(channel_configs)} channel(s)")
@@ -4301,7 +4301,7 @@ class MicroscopeHyphaService:
                 logger.info(f"    - {config['channel']}: {config['min_percentile']}%-{config['max_percentile']}%, weight={config['weight']}")
             logger.info(f"  Scale level: {scale_level}")
             logger.info(f"  Well plate type: '{well_plate_type}'")
-            
+
             # Launch segmentation in background (always use timepoint=0 for single timepoint experiments)
             self.segmentation_state['segmentation_task'] = asyncio.create_task(
                 self._run_segmentation_background(
@@ -4315,9 +4315,9 @@ class MicroscopeHyphaService:
                     context=context
                 )
             )
-            
-            logger.info(f"✅ Segmentation task launched in background")
-            
+
+            logger.info("✅ Segmentation task launched in background")
+
             return {
                 "success": True,
                 "message": f"Segmentation started for experiment '{experiment_name}'",
@@ -4327,7 +4327,7 @@ class MicroscopeHyphaService:
                 "total_wells": len(wells_to_segment),
                 "wells_to_segment": wells_to_segment
             }
-        
+
         except Exception as e:
             logger.error(f"Failed to start segmentation: {e}", exc_info=True)
             raise e
@@ -4343,14 +4343,14 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             return {
                 "success": True,
                 "state": self.segmentation_state['state'],
                 "error_message": self.segmentation_state['error_message'],
                 "progress": self.segmentation_state['progress']
             }
-        
+
         except Exception as e:
             logger.error(f"Failed to get segmentation status: {e}")
             raise e
@@ -4366,7 +4366,7 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             # Check if segmentation is running
             if self.segmentation_state['state'] != 'running':
                 return {
@@ -4374,33 +4374,33 @@ class MicroscopeHyphaService:
                     "message": f"No segmentation to cancel. Current state: {self.segmentation_state['state']}",
                     "state": self.segmentation_state['state']
                 }
-            
+
             logger.info("Segmentation cancellation requested")
-            
+
             # Cancel the segmentation task
             if self.segmentation_state['segmentation_task'] and not self.segmentation_state['segmentation_task'].done():
                 self.segmentation_state['segmentation_task'].cancel()
                 logger.info("Cancelled segmentation task")
-                
+
                 # Wait a moment for cancellation to propagate
                 try:
                     await asyncio.wait_for(self.segmentation_state['segmentation_task'], timeout=1.0)
                 except (asyncio.CancelledError, asyncio.TimeoutError):
                     pass
-            
+
             # Update state
             self.segmentation_state['state'] = 'failed'
             self.segmentation_state['error_message'] = 'Segmentation cancelled by user'
             self.segmentation_state['segmentation_task'] = None
-            
+
             logger.info("Segmentation cancelled successfully")
-            
+
             return {
                 "success": True,
                 "message": "Segmentation cancelled successfully",
                 "state": self.segmentation_state['state']
             }
-        
+
         except Exception as e:
             logger.error(f"Failed to cancel segmentation: {e}")
             raise e
@@ -4431,21 +4431,21 @@ class MicroscopeHyphaService:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             # Construct segmentation experiment name
             segmentation_experiment = f"{experiment_name}-segmentation"
-            
+
             logger.info(f"Fetching polygons from segmentation experiment: '{segmentation_experiment}'")
             if well_id:
                 logger.info(f"Filtering for well: {well_id}")
-            
+
             # Get path to polygons.json
             if not hasattr(self.squidController, 'experiment_manager'):
                 raise Exception("Experiment manager not initialized")
-            
+
             experiment_path = self.squidController.experiment_manager.base_path / segmentation_experiment
             json_path = experiment_path / "polygons.json"
-            
+
             # Check if file exists
             if not json_path.exists():
                 logger.info(f"No polygons.json found in '{segmentation_experiment}', returning empty list")
@@ -4456,14 +4456,14 @@ class MicroscopeHyphaService:
                     "experiment_name": segmentation_experiment,
                     "message": "No polygon data available (polygons.json not found)"
                 }
-            
+
             # Read polygons from JSON file
             try:
-                with open(json_path, 'r') as f:
+                with open(json_path) as f:
                     data = json.load(f)
-                
+
                 all_polygons = data.get("polygons", [])
-                
+
                 # Filter by well_id if specified
                 if well_id:
                     filtered_polygons = [p for p in all_polygons if p.get("well_id") == well_id]
@@ -4472,18 +4472,18 @@ class MicroscopeHyphaService:
                 else:
                     filtered_polygons = all_polygons
                     logger.info(f"Returning all {len(filtered_polygons)} polygons")
-                
+
                 return {
                     "success": True,
                     "polygons": filtered_polygons,
                     "total_count": len(filtered_polygons),
                     "experiment_name": segmentation_experiment
                 }
-                
+
             except json.JSONDecodeError as json_err:
                 logger.error(f"Failed to parse polygons.json: {json_err}")
                 raise Exception(f"Corrupt polygons.json file: {json_err}")
-            
+
         except Exception as e:
             logger.error(f"Failed to get polygons: {e}", exc_info=True)
             raise e
@@ -4499,7 +4499,7 @@ class MicroscopeHyphaService:
             dict: Status with success flag and message
         """
         logger.warning("stop_scan_and_stitching is deprecated. Use scan_cancel() instead.")
-        
+
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -4507,19 +4507,19 @@ class MicroscopeHyphaService:
 
             # Route to the unified scan_cancel method
             result = await self.scan_cancel(context)
-            
+
             # Update the message to indicate this was called via deprecated endpoint
             if result.get("success"):
                 result["message"] = f"[DEPRECATED] {result['message']} (Use scan_cancel() instead)"
-            
+
             return result
-            
+
         except Exception as e:
             logger.error(f"Failed to stop scan and stitching: {e}")
             raise e
 
     # ===== Squid+ Specific API Methods =====
-    
+
     @schema_function(skip_self=True)
     async def set_filter_wheel_position(
         self,
@@ -4534,10 +4534,10 @@ class MicroscopeHyphaService:
         try:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             if self.squidController.filter_wheel is None:
                 raise Exception("Filter wheel not available on this microscope")
-            
+
             # Handle case where parameters might be passed as a dictionary
             if isinstance(position, dict):
                 # Extract position from dictionary
@@ -4547,9 +4547,9 @@ class MicroscopeHyphaService:
                 # Convert position to int in case it's an ObjectProxy
                 logger.info(f"Received position as: {type(position)} = {position}")
                 position_value = int(position)
-            
+
             success = self.squidController.filter_wheel.set_filter_position(position_value)
-            
+
             if success:
                 logger.info(f"Filter wheel moved to position {position_value}")
                 return {
@@ -4559,11 +4559,11 @@ class MicroscopeHyphaService:
                 }
             else:
                 raise Exception(f"Failed to set filter wheel to position {position_value}")
-                
+
         except Exception as e:
             logger.error(f"Error setting filter wheel position: {e}")
             raise e
-    
+
     @schema_function(skip_self=True)
     async def get_filter_wheel_position(self, context=None):
         """
@@ -4574,20 +4574,20 @@ class MicroscopeHyphaService:
         try:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             if self.squidController.filter_wheel is None:
                 raise Exception("Filter wheel not available on this microscope")
-            
+
             position = self.squidController.filter_wheel.get_filter_position()
             return {
                 "success": True,
                 "position": position
             }
-            
+
         except Exception as e:
             logger.error(f"Error getting filter wheel position: {e}")
             raise e
-    
+
     @schema_function(skip_self=True)
     async def next_filter_position(self, context=None):
         """
@@ -4598,12 +4598,12 @@ class MicroscopeHyphaService:
         try:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             if self.squidController.filter_wheel is None:
                 raise Exception("Filter wheel not available on this microscope")
-            
+
             success = self.squidController.filter_wheel.next_position()
-            
+
             if success:
                 position = self.squidController.filter_wheel.get_filter_position()
                 return {
@@ -4613,11 +4613,11 @@ class MicroscopeHyphaService:
                 }
             else:
                 raise Exception("Failed to move to next filter position")
-                
+
         except Exception as e:
             logger.error(f"Error moving to next filter position: {e}")
             raise e
-    
+
     @schema_function(skip_self=True)
     async def previous_filter_position(self, context=None):
         """
@@ -4628,12 +4628,12 @@ class MicroscopeHyphaService:
         try:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             if self.squidController.filter_wheel is None:
                 raise Exception("Filter wheel not available on this microscope")
-            
+
             success = self.squidController.filter_wheel.previous_position()
-            
+
             if success:
                 position = self.squidController.filter_wheel.get_filter_position()
                 return {
@@ -4643,11 +4643,11 @@ class MicroscopeHyphaService:
                 }
             else:
                 raise Exception("Failed to move to previous filter position")
-                
+
         except Exception as e:
             logger.error(f"Error moving to previous filter position: {e}")
             raise e
-    
+
     @schema_function(skip_self=True)
     async def switch_objective(
         self,
@@ -4663,10 +4663,10 @@ class MicroscopeHyphaService:
         try:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             if self.squidController.objective_switcher is None:
                 raise Exception("Objective switcher not available on this microscope")
-            
+
             # Handle case where parameters might be passed as a dictionary
             if isinstance(objective_name, dict):
                 # Extract parameters from dictionary
@@ -4677,28 +4677,28 @@ class MicroscopeHyphaService:
                 # Convert objective_name to string in case it's an ObjectProxy
                 logger.info(f"Received objective_name as: {type(objective_name)} = {objective_name}")
                 objective_name_str = str(objective_name)
-            
+
             # Validate that we have a valid objective name
             if not objective_name_str or objective_name_str.strip() == '':
                 raise Exception("No objective name provided")
-            
+
             logger.info(f"Looking for objective: '{objective_name_str}'")
-            
+
             # Get available objectives and their positions
             position_names = self.squidController.objective_switcher.get_position_names()
             logger.info(f"Available objectives: {position_names}")
-            
+
             # Find the position for the requested objective
             position = None
             for pos, name in position_names.items():
                 if name.lower() == objective_name_str.lower():
                     position = pos
                     break
-            
+
             if position is None:
                 available_objectives = list(position_names.values())
                 raise Exception(f"Objective '{objective_name_str}' not found. Available objectives: {available_objectives}")
-            
+
             # Move to the found position
             if position == 1:
                 success = self.squidController.objective_switcher.move_to_position_1(move_z=move_z)
@@ -4706,28 +4706,28 @@ class MicroscopeHyphaService:
                 success = self.squidController.objective_switcher.move_to_position_2(move_z=move_z)
             else:
                 raise Exception(f"Invalid objective position: {position}")
-            
+
             if success:
                 logger.info(f"Objective switcher switched to {objective_name_str} (position {position})")
-                
+
                 # Update objective-related parameters after successful switch
                 try:
                     # Update the current objective in objectiveStore
                     self.squidController.objectiveStore.current_objective = objective_name_str
                     logger.info(f"Updated objectiveStore.current_objective to: {objective_name_str}")
-                    
+
                     # Recalculate pixel size and related parameters
                     self.squidController.get_pixel_size()
                     logger.info(f"Recalculated pixel size: {self.squidController.pixel_size_xy} µm")
-                    
+
                     # Log the updated parameters
                     logger.info(f"Objective switch completed - New objective: {objective_name_str}, "
                               f"Pixel size: {self.squidController.pixel_size_xy} µm")
-                    
+
                 except Exception as param_error:
                     logger.warning(f"Failed to update objective parameters: {param_error}")
                     # Don't fail the entire operation if parameter update fails
-                
+
                 return {
                     "success": True,
                     "objective_name": objective_name_str,
@@ -4737,11 +4737,11 @@ class MicroscopeHyphaService:
                 }
             else:
                 raise Exception(f"Failed to switch to objective {objective_name_str}")
-                
+
         except Exception as e:
             logger.error(f"Error switching objective: {e}")
             raise e
-    
+
     @schema_function(skip_self=True)
     async def get_current_objective(self, context=None):
         """
@@ -4752,17 +4752,17 @@ class MicroscopeHyphaService:
         try:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             if self.squidController.objective_switcher is None:
                 raise Exception("Objective switcher not available on this microscope")
-            
+
             position = self.squidController.objective_switcher.get_current_position()
             position_names = self.squidController.objective_switcher.get_position_names()
             objective_name = position_names.get(position, "Unknown") if position else "Not set"
-            
+
             # Get all available objectives
             available_objectives = list(position_names.values())
-            
+
             return {
                 "success": True,
                 "current_objective": objective_name,
@@ -4770,11 +4770,11 @@ class MicroscopeHyphaService:
                 "available_objectives": available_objectives,
                 "message": f"Current objective: {objective_name}"
             }
-            
+
         except Exception as e:
             logger.error(f"Error getting current objective: {e}")
             raise e
-    
+
     @schema_function
     async def set_objective_switcher_speed(
         self,
@@ -4793,12 +4793,12 @@ class MicroscopeHyphaService:
         try:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             if self.squidController.objective_switcher is None:
                 raise Exception("Objective switcher not available on this microscope")
-            
+
             success = self.squidController.objective_switcher.set_speed(speed)
-            
+
             if success:
                 return {
                     "success": True,
@@ -4807,11 +4807,11 @@ class MicroscopeHyphaService:
                 }
             else:
                 raise Exception("Failed to set objective switcher speed")
-                
+
         except Exception as e:
             logger.error(f"Error setting objective switcher speed: {e}")
             raise e
-    
+
     @schema_function(skip_self=True)
     async def get_available_objectives(self, context=None):
         """
@@ -4822,13 +4822,13 @@ class MicroscopeHyphaService:
         try:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-            
+
             if self.squidController.objective_switcher is None:
                 raise Exception("Objective switcher not available on this microscope")
-            
+
             positions = self.squidController.objective_switcher.get_available_positions()
             position_names = self.squidController.objective_switcher.get_position_names()
-            
+
             # Create a more user-friendly response
             available_objectives = []
             for pos in positions:
@@ -4837,7 +4837,7 @@ class MicroscopeHyphaService:
                     "position": pos,
                     "objective_name": objective_name
                 })
-            
+
             return {
                 "success": True,
                 "available_objectives": available_objectives,
@@ -4845,7 +4845,7 @@ class MicroscopeHyphaService:
                 "positions": positions,
                 "message": f"Available objectives: {list(position_names.values())}"
             }
-            
+
         except Exception as e:
             logger.error(f"Error getting available objectives: {e}")
             raise e
