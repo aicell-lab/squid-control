@@ -2505,7 +2505,7 @@ class ExperimentManager:
                     {
                         "active": True,
                         "coefficient": 1.0,
-                        "color": "8000FF",
+                        "color": "0000FF",
                         "family": "linear",
                         "label": "Fluorescence 405 nm Ex",
                         "window": {
@@ -2527,7 +2527,7 @@ class ExperimentManager:
                     {
                         "active": True,
                         "coefficient": 1.0,
-                        "color": "FF0000",
+                        "color": "FF00FF",
                         "family": "linear",
                         "label": "Fluorescence 638 nm Ex",
                         "window": {
@@ -2538,7 +2538,7 @@ class ExperimentManager:
                     {
                         "active": True,
                         "coefficient": 1.0,
-                        "color": "FFFF00",
+                        "color": "FF0000",
                         "family": "linear",
                         "label": "Fluorescence 561 nm Ex",
                         "window": {
@@ -2549,7 +2549,7 @@ class ExperimentManager:
                     {
                         "active": True,
                         "coefficient": 1.0,
-                        "color": "FF00FF",
+                        "color": "00FFFF",
                         "family": "linear",
                         "label": "Fluorescence 730 nm Ex",
                         "window": {
