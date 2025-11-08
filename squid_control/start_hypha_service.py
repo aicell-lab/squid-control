@@ -3276,32 +3276,20 @@ class MicroscopeHyphaService:
         Notes: Automatically spans multiple wells if region crosses boundaries. Multiple channels merge into RGB with channel-specific colors (BF=white, 405nm=blue, 488nm=green, 561nm=yellow, 638nm=red, 730nm=magenta).
         """
         try:
-            # Log function entry with all parameters
-            logger.info("get_stitched_region called with parameters:")
-            logger.info(f"  center_x_mm={center_x_mm}, center_y_mm={center_y_mm}")
-            logger.info(f"  width_mm={width_mm}, height_mm={height_mm}")
-            logger.info(f"  well_plate_type='{well_plate_type}', scale_level={scale_level}")
-            logger.info(f"  channel_name='{channel_name}', timepoint={timepoint}")
-            logger.info(f"  well_padding_mm={well_padding_mm}, output_format='{output_format}'")
-
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 logger.warning("User not authorized to access this service")
                 raise Exception("User not authorized to access this service")
 
             # Parse channel_name string into a list
-            logger.info("Parsing channel names...")
             if isinstance(channel_name, str):
                 # Split by comma and strip whitespace, filter out empty strings
                 channel_list = [ch.strip() for ch in channel_name.split(',') if ch.strip()]
-                logger.info(f"Parsed channel names: '{channel_name}' -> {channel_list}")
             else:
                 # If it's already a list, use it as is
                 channel_list = list(channel_name)
-                logger.info(f"Using channel list: {channel_list}")
 
             # Validate channel names
-            logger.info(f"Validating channel list: {len(channel_list)} channels found")
             if not channel_list:
                 logger.warning("No valid channel names found - returning error")
                 return {
@@ -3321,10 +3309,9 @@ class MicroscopeHyphaService:
                 }
 
             # Get regions for each channel
-            logger.info(f"Retrieving regions for {len(channel_list)} channels...")
             channel_regions = []
             for i, ch_name in enumerate(channel_list):
-                logger.info(f"Processing channel {i+1}/{len(channel_list)}: '{ch_name}'")
+                logger.debug(f"Processing channel {i+1}/{len(channel_list)}: '{ch_name}'")
                 region = self.squidController.get_stitched_region(
                     center_x_mm=center_x_mm,
                     center_y_mm=center_y_mm,
@@ -3342,7 +3329,7 @@ class MicroscopeHyphaService:
                     logger.warning(f"No data available for channel '{ch_name}' at ({center_x_mm:.2f}, {center_y_mm:.2f})")
                     continue
 
-                logger.info(f"Successfully retrieved region for channel '{ch_name}': shape={region.shape if hasattr(region, 'shape') else 'unknown'}")
+                logger.debug(f"Retrieved region for channel '{ch_name}': shape={region.shape if hasattr(region, 'shape') else 'unknown'}")
                 channel_regions.append((ch_name, region))
 
             if not channel_regions:
@@ -3364,15 +3351,13 @@ class MicroscopeHyphaService:
                 }
 
             # Merge channels if multiple channels are specified
-            logger.info(f"Channel merging: {len(channel_regions)} channels to process")
             if len(channel_regions) == 1:
                 # Single channel - return as grayscale
-                logger.info("Single channel detected - returning as grayscale")
                 merged_region = channel_regions[0][1]
                 is_rgb = False
             else:
                 # Multiple channels - merge into RGB
-                logger.info(f"Multiple channels detected - merging {len(channel_regions)} channels into RGB")
+                logger.debug(f"Merging {len(channel_regions)} channels into RGB")
                 merged_region = self._merge_channels_to_rgb(channel_regions)
                 is_rgb = True
 
@@ -3395,21 +3380,16 @@ class MicroscopeHyphaService:
                 }
 
             # Process output format
-            logger.info(f"Processing output format: '{output_format}', merged_region shape: {merged_region.shape if hasattr(merged_region, 'shape') else 'unknown'}")
             if output_format == 'base64':
                 # Convert to base64 encoded PNG
-                logger.info("Converting to base64 PNG format...")
                 import base64
                 import io
 
                 from PIL import Image
 
-                logger.info(f"Original merged_region dtype: {merged_region.dtype}, is_rgb: {is_rgb}")
                 if merged_region.dtype != np.uint8:
-                    logger.info("Converting to uint8 format...")
                     if is_rgb:
                         # RGB image - normalize each channel independently
-                        logger.info("Normalizing RGB channels independently")
                         normalized = np.zeros_like(merged_region, dtype=np.uint8)
                         for c in range(merged_region.shape[2]):
                             channel_data = merged_region[:, :, c]
@@ -3418,22 +3398,17 @@ class MicroscopeHyphaService:
                         merged_region = normalized
                     else:
                         # Grayscale image
-                        logger.info("Normalizing grayscale image")
                         merged_region = (merged_region / merged_region.max() * 255).astype(np.uint8) if merged_region.max() > 0 else merged_region.astype(np.uint8)
 
-                logger.info(f"Creating PIL Image: is_rgb={is_rgb}, shape={merged_region.shape}")
                 if is_rgb:
                     img = Image.fromarray(merged_region, 'RGB')
                 else:
                     img = Image.fromarray(merged_region, 'L')
 
-                logger.info("Encoding image to base64...")
                 buffer = io.BytesIO()
                 img.save(buffer, format='PNG')
                 img_base64 = base64.b64encode(buffer.getvalue()).decode('utf-8')
-                logger.info(f"Base64 encoding complete, length: {len(img_base64)} characters")
-
-                logger.info("Returning base64 PNG result")
+                logger.debug(f"Base64 encoded PNG: {len(img_base64)} chars, shape={merged_region.shape}")
                 return {
                     "success": True,
                     "data": img_base64,
@@ -3455,7 +3430,7 @@ class MicroscopeHyphaService:
                     }
                 }
             else:
-                logger.info("Returning array format result")
+                logger.debug("Returning array format result")
                 return {
                     "success": True,
                     "data": merged_region.tolist(),
@@ -3535,7 +3510,7 @@ class MicroscopeHyphaService:
             rgb_image = np.clip(rgb_image, 0, 1)
             rgb_image = (rgb_image * 255).astype(np.uint8)
 
-            logger.info(f"Successfully merged {len(channel_regions)} channels into RGB image")
+            logger.debug(f"Merged {len(channel_regions)} channels into RGB image")
             return rgb_image
 
         except Exception as e:
