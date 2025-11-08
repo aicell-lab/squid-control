@@ -439,9 +439,11 @@ async def segment_well_region_grid_based(
                         channel_idx_read = canvas.get_zarr_channel_index(channel_name)
 
                         # Get tile region using pixel-based read method for exact alignment
-                        channel_data, bounds = canvas.get_canvas_region_pixels(
+                        # Wrap in asyncio.to_thread to prevent blocking the event loop during Zarr I/O
+                        channel_data, bounds = await asyncio.to_thread(
+                            canvas.get_canvas_region_pixels,
                             tile_center_x_px, tile_center_y_px, request_size_px, request_size_px,
-                            scale=scale_level, channel_idx=channel_idx_read, timepoint=timepoint
+                            scale_level, channel_idx_read, timepoint
                         )
 
                         if channel_data is None:
@@ -546,9 +548,11 @@ async def segment_well_region_grid_based(
 
                     # CRITICAL: Merge overlapping masks instead of overwriting
                     # Read existing mask region using pixel-based read for exact alignment
-                    existing_mask, existing_bounds = seg_canvas.get_canvas_region_pixels(
+                    # Wrap in asyncio.to_thread to prevent blocking the event loop during Zarr I/O
+                    existing_mask, existing_bounds = await asyncio.to_thread(
+                        seg_canvas.get_canvas_region_pixels,
                         tile_center_x_px, tile_center_y_px, request_size_px, request_size_px,
-                        scale=scale_level, channel_idx=channel_idx, timepoint=timepoint
+                        scale_level, channel_idx, timepoint
                     )
 
                     if existing_mask is not None and existing_mask.size > 0:
@@ -977,7 +981,95 @@ async def segment_experiment_wells(
         logger.info(f"📊 Processing well {idx+1}/{len(wells_to_segment)}: {well_id}")
 
         try:
-            # Get or create well canvas in segmentation experiment
+            # CRITICAL: Validate that source well exists and has data before creating segmentation canvas
+            source_canvas_path = experiment_manager.base_path / source_experiment / f"well_{well_id}_{well_plate_type}.zarr"
+            if not source_canvas_path.exists():
+                logger.warning(f"⚠️  Source well canvas does not exist for well {well_id}: {source_canvas_path}")
+                logger.warning(f"   Skipping well {well_id} - no source data available")
+                results['failed_wells'] += 1
+                results['wells_failed'].append(well_id)
+                continue
+
+            # Get source canvas to check if it has data
+            try:
+                source_canvas = experiment_manager.get_well_canvas(
+                    well_row, well_column, well_plate_type, well_padding_mm, source_experiment
+                )
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to open source well canvas for well {well_id}: {e}")
+                logger.warning(f"   Skipping well {well_id}")
+                results['failed_wells'] += 1
+                results['wells_failed'].append(well_id)
+                continue
+
+            # Check if source canvas has data by reading a sample region at scale 4 (high scale = fast check)
+            # Scale 4 is very downsampled, so it's quick to read and gives a good indication if data exists
+            try:
+                # Check if scale 4 exists (some canvases may have fewer scales)
+                max_scale = min(4, len(source_canvas.zarr_arrays) - 1) if hasattr(source_canvas, 'zarr_arrays') and source_canvas.zarr_arrays else 0
+                
+                # Get canvas dimensions at the selected scale
+                if hasattr(source_canvas, 'zarr_arrays') and max_scale in source_canvas.zarr_arrays:
+                    zarr_array = source_canvas.zarr_arrays[max_scale]
+                    canvas_height, canvas_width = zarr_array.shape[3], zarr_array.shape[4]
+                    
+                    # Read a small region from the center at scale 4 (or highest available scale)
+                    # Use a small region (e.g., 100x100 pixels) for fast checking
+                    sample_size = max(50, min(100, canvas_width // 4, canvas_height // 4))  # At least 50px, max 100px
+                    center_x_px = canvas_width // 2
+                    center_y_px = canvas_height // 2
+                    
+                    # Read sample region asynchronously to avoid blocking
+                    sample_region, _ = await asyncio.to_thread(
+                        source_canvas.get_canvas_region_pixels,
+                        center_x_px, center_y_px, sample_size, sample_size,
+                        max_scale, 0, timepoint  # Use channel 0 (BF) and requested timepoint
+                    )
+                    
+                    if sample_region is None:
+                        logger.warning(f"⚠️  Could not read sample region from source well {well_id} - skipping")
+                        results['failed_wells'] += 1
+                        results['wells_failed'].append(well_id)
+                        continue
+                    
+                    # Check if the sample region is empty (all zeros or mostly zeros)
+                    # Consider empty if >95% of pixels are zero (or very close to zero, accounting for noise)
+                    non_zero_pixels = np.sum(sample_region > 10)  # Threshold of 10 to account for noise
+                    total_pixels = sample_region.size
+                    non_zero_percentage = (non_zero_pixels / total_pixels) * 100.0
+                    
+                    if non_zero_percentage < 5.0:
+                        logger.warning(f"⚠️  Source well {well_id} appears to be empty (only {non_zero_percentage:.2f}% non-zero pixels in sample region)")
+                        logger.warning(f"   Skipping well {well_id} - no imaging data available")
+                        results['failed_wells'] += 1
+                        results['wells_failed'].append(well_id)
+                        continue
+                    
+                    logger.info(f"✅ Source well {well_id} validated: {non_zero_percentage:.2f}% non-zero pixels in sample region (has data)")
+                else:
+                    # If zarr arrays not initialized or scale not available, check timepoints
+                    if not hasattr(source_canvas, 'available_timepoints') or not source_canvas.available_timepoints:
+                        logger.warning(f"⚠️  Source well {well_id} has no timepoints - skipping")
+                        results['failed_wells'] += 1
+                        results['wells_failed'].append(well_id)
+                        continue
+                    
+                    if timepoint not in source_canvas.available_timepoints:
+                        logger.warning(f"⚠️  Source well {well_id} does not have timepoint {timepoint} - available: {source_canvas.available_timepoints}")
+                        results['failed_wells'] += 1
+                        results['wells_failed'].append(well_id)
+                        continue
+                    
+                    logger.info(f"✅ Source well {well_id} validated: {len(source_canvas.available_timepoints)} timepoint(s) available")
+                    
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to validate source well {well_id} data: {e}")
+                logger.warning(f"   Skipping well {well_id}")
+                results['failed_wells'] += 1
+                results['wells_failed'].append(well_id)
+                continue
+
+            # Get or create well canvas in segmentation experiment (only if source is valid)
             seg_canvas = experiment_manager.get_well_canvas(
                 well_row, well_column, well_plate_type, well_padding_mm, segmentation_experiment
             )
