@@ -22,7 +22,6 @@ from PIL import Image
 try:
     from .control.camera import TriggerModeSetting
     from .control.config import CONFIG, ChannelMapper
-    from .hypha_tools.chatbot.aask import aask
     from .hypha_tools.snapshot_utils import SnapshotManager
     from .squid_controller import SquidController
 except ImportError:
@@ -35,7 +34,6 @@ except ImportError:
         sys.path.insert(0, project_root)
 
     from .control.config import ChannelMapper
-    from .hypha_tools.chatbot.aask import aask
     from .squid_controller import SquidController
 
 import base64
@@ -48,7 +46,7 @@ import aiohttp
 from aiortc import MediaStreamTrack
 from av import VideoFrame
 from hypha_rpc.utils.schema import schema_function
-from pydantic import BaseModel, Field
+from pydantic import Field
 
 dotenv.load_dotenv()
 ENV_FILE = dotenv.find_dotenv()
@@ -202,7 +200,6 @@ class MicroscopeHyphaService:
         self.current_illumination_channel = None
         self.current_intensity = None
         self.is_illumination_on = False
-        self.chatbot_service_url = None
         self.is_simulation = is_simulation
         self.is_local = is_local
         self.squidController = SquidController(is_simulation=is_simulation)
@@ -413,28 +410,6 @@ class MicroscopeHyphaService:
             result = await microscope_svc.ping()
             if result != "pong":
                 raise RuntimeError(f"Microscope service returned unexpected response: {result}")
-
-            # Shorten chatbot service ID to avoid OpenAI API limits
-            short_service_id = self.service_id[:20] if len(self.service_id) > 20 else self.service_id
-            chatbot_id = f"sq-cb-{'simu' if self.is_simulation else 'real'}-{short_service_id}"
-
-            chatbot_server_url = "https://chat.bioimage.io"
-            try:
-                chatbot_token = os.environ.get("WORKSPACE_TOKEN_CHATBOT")
-                if not chatbot_token:
-                    logger.warning("Chatbot token not found, skipping chatbot health check")
-                else:
-                    chatbot_server = await connect_to_server({
-                        "client_id": f"squid-chatbot-{self.service_id}-{uuid.uuid4()}",
-                        "server_url": chatbot_server_url,
-                        "token": chatbot_token,
-                        "ping_interval": 30
-                    })
-                    chatbot_svc = await asyncio.wait_for(chatbot_server.get_service(chatbot_id), 10)
-                    if chatbot_svc is None:
-                        raise RuntimeError("Chatbot service not found")
-            except Exception as chatbot_error:
-                raise RuntimeError(f"Chatbot service health check failed: {str(chatbot_error)}")
 
             # Check artifact manager connection if available
             if self.artifact_manager is not None:
@@ -1486,23 +1461,6 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to navigate to well: {e}")
             raise e
 
-    def get_chatbot_url(self, context=None):
-        """
-        Get the URL of the chatbot service.
-        Returns: A URL string
-        """
-
-        try:
-            # Check authentication
-            if context and not self.check_permission(context.get("user", {})):
-                raise Exception("User not authorized to access this service")
-
-            logger.info(f"chatbot_service_url: {self.chatbot_service_url}")
-            return self.chatbot_service_url
-        except Exception as e:
-            logger.error(f"Failed to get chatbot URL: {e}")
-            raise e
-
     async def fetch_ice_servers(self):
         """Fetch ICE servers from the coturn service"""
         try:
@@ -1519,118 +1477,6 @@ class MicroscopeHyphaService:
             logger.error(f"Error fetching ICE servers: {e}")
             return None
 
-    class MoveByDistanceInput(BaseModel):
-        """Move the stage by a distance in x, y, z axis."""
-        x: float = Field(0, description="Move the stage along X axis")
-        y: float = Field(0, description="Move the stage along Y axis")
-        z: float = Field(0, description="Move the stage along Z axis")
-
-    class MoveToPositionInput(BaseModel):
-        """Move the stage to a position in x, y, z axis."""
-        x: Optional[float] = Field(None, description="Move the stage to the X coordinate")
-        y: Optional[float] = Field(None, description="Move the stage to the Y coordinate")
-        z: float = Field(3.35, description="Move the stage to the Z coordinate")
-
-    class SetSimulatedSampleDataAliasInput(BaseModel):
-        """Set the alias of simulated sample"""
-        sample_data_alias: str = Field("agent-lens/20250824-example-data-20250824-221822", description="The alias of the sample data")
-
-    class AutoFocusInput(BaseModel):
-        """Reflection based autofocus."""
-        N: int = Field(10, description="Number of discrete focus positions")
-        delta_Z: float = Field(1.524, description="Step size in the Z-axis in micrometers")
-
-    class SnapImageInput(BaseModel):
-        """Snap an image from the camera, and display it in the chatbot."""
-        exposure: int = Field(..., description="Exposure time in milliseconds")
-        channel: int = Field(..., description="Light source (e.g., 0 for Bright Field, Fluorescence channels: 11 for 405 nm, 12 for 488 nm, 13 for 638nm, 14 for 561 nm, 15 for 730 nm)")
-        intensity: int = Field(..., description="Intensity of the illumination source")
-
-    class InspectToolInput(BaseModel):
-        """Inspect the images with GPT4-o's vision model."""
-        images: List[dict] = Field(..., description="A list of images to be inspected, each with a 'http_url' and 'title'")
-        query: str = Field(..., description="User query about the image")
-        context_description: str = Field(..., description="Context for the visual inspection task, inspect images taken from the microscope")
-
-    class NavigateToWellInput(BaseModel):
-        """Navigate to a well position in the well plate."""
-        row: str = Field(..., description="Row number of the well position (e.g., 'A')")
-        col: int = Field(..., description="Column number of the well position")
-        well_plate_type: str = Field('96', description="Type of the well plate (e.g., '6', '12', '24', '96', '384')")
-
-    class MoveToLoadingPositionInput(BaseModel):
-        """Move the stage to the loading position."""
-
-    class SetIlluminationInput(BaseModel):
-        """Set the intensity of light source."""
-        channel: int = Field(..., description="Light source (e.g., 0 for Bright Field, Fluorescence channels: 11 for 405 nm, 12 for 488 nm, 13 for 638nm, 14 for 561 nm, 15 for 730 nm)")
-        intensity: int = Field(..., description="Intensity of the illumination source")
-
-    class SetCameraExposureInput(BaseModel):
-        """Set the exposure time of the camera."""
-        channel: int = Field(..., description="Light source (e.g., 0 for Bright Field, Fluorescence channels: 11 for 405 nm, 12 for 488 nm, 13 for 638nm, 14 for 561 nm, 15 for 730 nm)")
-        exposure_time: int = Field(..., description="Exposure time in milliseconds")
-
-    class DoLaserAutofocusInput(BaseModel):
-        """Do reflection-based autofocus."""
-
-    class SetLaserReferenceInput(BaseModel):
-        """Set the reference of the laser."""
-
-    class GetStatusInput(BaseModel):
-        """Get the current status of the microscope."""
-
-    class HomeStageInput(BaseModel):
-        """Home the stage in z, y, and x axis."""
-
-    class ReturnStageInput(BaseModel):
-        """Return the stage to the initial position."""
-
-    class ImageInfo(BaseModel):
-        """Image information."""
-        url: str = Field(..., description="The URL of the image.")
-        title: Optional[str] = Field(None, description="The title of the image.")
-
-    class GetCurrentWellLocationInput(BaseModel):
-        """Get the current well location based on the stage position."""
-        well_plate_type: str = Field('96', description="Type of the well plate (e.g., '6', '12', '24', '96', '384')")
-
-    class GetMicroscopeConfigurationInput(BaseModel):
-        """Get microscope configuration information in JSON format."""
-        config_section: str = Field('all', description="Configuration section to retrieve ('all', 'camera', 'stage', 'illumination', 'acquisition', 'limits', 'hardware', 'wellplate', 'optics', 'autofocus')")
-        include_defaults: bool = Field(True, description="Whether to include default values from config.py")
-
-    class SetStageVelocityInput(BaseModel):
-        """Set the maximum velocity for X and Y stage axes."""
-        velocity_x_mm_per_s: Optional[float] = Field(None, description="Maximum velocity for X axis in mm/s (default: uses configuration value)")
-        velocity_y_mm_per_s: Optional[float] = Field(None, description="Maximum velocity for Y axis in mm/s (default: uses configuration value)")
-
-    # ===== Squid+ Specific Input Models =====
-
-    class SetFilterWheelPositionInput(BaseModel):
-        """Set filter wheel to a specific position."""
-        position: int = Field(..., description="Filter position (range: 1-8)", ge=1, le=8)
-
-    class SwitchObjectiveInput(BaseModel):
-        """Switch to a specific objective."""
-        objective_name: str = Field(..., description="Objective name (e.g., '4x', '20x')")
-        move_z: bool = Field(True, description="Whether to adjust Z stage for objective change")
-
-    class GetFilterWheelPositionInput(BaseModel):
-        """Get current filter wheel position."""
-
-    class NextFilterPositionInput(BaseModel):
-        """Move to next filter position."""
-
-    class PreviousFilterPositionInput(BaseModel):
-        """Move to previous filter position."""
-
-    class GetCurrentObjectiveInput(BaseModel):
-        """Get current objective name and position."""
-
-    class GetAvailableObjectivesInput(BaseModel):
-        """Get available objectives and their positions."""
-
     @schema_function(skip_self=True)
     async def inspect_tool(self, images: List[dict]=Field(..., description="A list of images to be inspected, each dictionary must contain 'http_url' (required) and optionally 'title' (optional)"), query: str=Field(..., description="User query about the images for GPT-4 vision model analysis"), context_description: str=Field(..., description="Context description for the visual inspection task, typically describing that images are taken from the microscope"), context=None):
         """
@@ -1639,137 +1485,17 @@ class MicroscopeHyphaService:
         Notes: All image URLs must be HTTP/HTTPS accessible. The method validates URLs and processes images through the GPT-4 vision API.
         """
         try:
-            # Check authentication
-            if context and not self.check_permission(context.get("user", {})):
-                raise Exception("User not authorized to access this service")
-
-            image_infos = [
-                self.ImageInfo(url=image_dict['http_url'], title=image_dict.get('title'))
-                for image_dict in images
-            ]
-            for image_info_obj in image_infos:
-                if not image_info_obj.url.startswith("http"):
-                    raise ValueError("Image URL must start with http or https.")
-
-            logger.info(f"Inspecting {len(image_infos)} image(s) with GPT-4 vision model. Query: {query[:100]}")
-            response = await aask(image_infos, [context_description, query])
-            logger.info("Image inspection completed successfully")
-            return response
+            from .hypha_tools.vision_inspection import inspect_images
+            return await inspect_images(
+                images=images,
+                query=query,
+                context_description=context_description,
+                check_permission=self.check_permission,
+                context=context
+            )
         except Exception as e:
             logger.error(f"Failed to inspect images: {e}")
             raise e
-
-    def move_by_distance_schema(self, config: MoveByDistanceInput, context=None):
-        self.get_status()
-        x_pos = self.parameters['current_x']
-        y_pos = self.parameters['current_y']
-        z_pos = self.parameters['current_z']
-        result = self.move_by_distance(config.x, config.y, config.z, context)
-        return result['message']
-
-    def move_to_position_schema(self, config: MoveToPositionInput, context=None):
-        self.get_status()
-        x_pos = self.parameters['current_x']
-        y_pos = self.parameters['current_y']
-        z_pos = self.parameters['current_z']
-        x = config.x if config.x is not None else 0
-        y = config.y if config.y is not None else 0
-        z = config.z if config.z is not None else 0
-        result = self.move_to_position(x, y, z, context)
-        return result['message']
-
-    async def contrast_autofocus_schema(self, config: AutoFocusInput, context=None):
-        await self.contrast_autofocus(context)
-        return "Auto-focus completed."
-
-    async def snap_image_schema(self, config: SnapImageInput, context=None):
-        image_url = await self.snap(config.exposure, config.channel, config.intensity, context)
-        return f"![Image]({image_url})"
-
-    async def navigate_to_well_schema(self, config: NavigateToWellInput, context=None):
-        await self.navigate_to_well(config.row, config.col, config.well_plate_type, context)
-        return f'The stage moved to well position ({config.row},{config.col})'
-
-    async def inspect_tool_schema(self, config: InspectToolInput, context=None):
-        response = await self.inspect_tool(config.images, config.query, config.context_description)
-        return {"result": response}
-
-    async def home_stage_schema(self, context=None):
-        response = await self.home_stage(context)
-        return {"result": response}
-
-    async def return_stage_schema(self, context=None):
-        response = await self.return_stage(context)
-        return {"result": response}
-
-    async def move_to_loading_position_schema(self, config: MoveToLoadingPositionInput, context=None):
-        """Move the stage to the loading position with schema validation."""
-        response = await self.MoveToLoadingPositionInput(context)
-        return {"result": response}
-
-    def set_illumination_schema(self, config: SetIlluminationInput, context=None):
-        response = self.set_illumination(config.channel, config.intensity, context)
-        return {"result": response}
-
-    def set_camera_exposure_schema(self, config: SetCameraExposureInput, context=None):
-        response = self.set_camera_exposure(config.channel, config.exposure_time, context)
-        return {"result": response}
-
-    async def reflection_autofocus_schema(self, context=None):
-        response = await self.reflection_autofocus(context)
-        return {"result": response}
-
-    async def autofocus_set_reflection_reference_schema(self, context=None):
-        response = await self.autofocus_set_reflection_reference(context)
-        return {"result": response}
-
-    def get_status_schema(self, context=None):
-        response = self.get_status(context)
-        return {"result": response}
-
-    def get_current_well_location_schema(self, config: GetCurrentWellLocationInput, context=None):
-        response = self.get_current_well_location(config.well_plate_type, context)
-        return {"result": response}
-
-    def get_microscope_configuration_schema(self, config: GetMicroscopeConfigurationInput, context=None):
-        response = self.get_microscope_configuration(config.config_section, config.include_defaults, context)
-        return {"result": response}
-
-    def get_schema(self, context=None):
-        schema = {
-            "move_by_distance": self.MoveByDistanceInput.model_json_schema(),
-            "move_to_position": self.MoveToPositionInput.model_json_schema(),
-            "home_stage": self.HomeStageInput.model_json_schema(),
-            "return_stage": self.ReturnStageInput.model_json_schema(),
-            "contrast_autofocus": self.AutoFocusInput.model_json_schema(),
-            "snap_image": self.SnapImageInput.model_json_schema(),
-            "inspect_tool": self.InspectToolInput.model_json_schema(),
-            "load_position": self.MoveToLoadingPositionInput.model_json_schema(),
-            "navigate_to_well": self.NavigateToWellInput.model_json_schema(),
-            "set_illumination": self.SetIlluminationInput.model_json_schema(),
-            "set_camera_exposure": self.SetCameraExposureInput.model_json_schema(),
-            "reflection_autofocus": self.DoLaserAutofocusInput.model_json_schema(),
-            "autofocus_set_reflection_reference": self.SetLaserReferenceInput.model_json_schema(),
-            "get_status": self.GetStatusInput.model_json_schema(),
-            "get_current_well_location": self.GetCurrentWellLocationInput.model_json_schema(),
-            "get_microscope_configuration": self.GetMicroscopeConfigurationInput.model_json_schema(),
-            "set_stage_velocity": self.SetStageVelocityInput.model_json_schema(),
-        }
-
-        # Add Squid+ specific schemas if this is a Squid+ microscope
-        if self.is_squid_plus:
-            squid_plus_schemas = {
-                "set_filter_wheel_position": self.SetFilterWheelPositionInput.model_json_schema(),
-                "get_filter_wheel_position": self.GetFilterWheelPositionInput.model_json_schema(),
-                "next_filter_position": self.NextFilterPositionInput.model_json_schema(),
-                "previous_filter_position": self.PreviousFilterPositionInput.model_json_schema(),
-                "switch_objective": self.SwitchObjectiveInput.model_json_schema(),
-                "get_current_objective": self.GetCurrentObjectiveInput.model_json_schema(),
-                "get_available_objectives": self.GetAvailableObjectivesInput.model_json_schema(),
-            }
-            schema.update(squid_plus_schemas)
-
-        return schema
 
     async def start_hypha_service(self, server, service_id, run_in_executor=None):
         self.server = server
@@ -1830,7 +1556,6 @@ class MicroscopeHyphaService:
             "autofocus_set_reflection_reference": self.autofocus_set_reflection_reference,
             "get_status": self.get_status,
             "update_parameters_from_client": self.update_parameters_from_client,
-            "get_chatbot_url": self.get_chatbot_url,
             "adjust_video_frame": self.adjust_video_frame,
             "start_video_buffering": self.start_video_buffering,
             "stop_video_buffering": self.stop_video_buffering,
@@ -1898,53 +1623,6 @@ class MicroscopeHyphaService:
         id = svc.id.split(":")[1]
 
         logger.info(f"You can also test the service via the HTTP proxy: {self.server_url}{server.config.workspace}/services/{id}")
-
-    async def start_chatbot_service(self, server, service_id):
-        chatbot_extension = {
-            "_rintf": True,
-            "id": service_id,
-            "type": "bioimageio-chatbot-extension",
-            "name": "Squid Microscope Control",
-            "description": "You are an AI agent controlling microscope. Automate tasks, adjust imaging parameters, and make decisions based on live visual feedback. Solve all the problems from visual feedback; the user only wants to see good results.",
-            "config": {"visibility": "public", "require_context": True},  # Always require context
-            "get_schema": self.get_schema,
-            "tools": {
-                "move_by_distance": self.move_by_distance_schema,
-                "move_to_position": self.move_to_position_schema,
-                "contrast_autofocus": self.contrast_autofocus_schema,
-                "snap_image": self.snap_image_schema,
-                "home_stage": self.home_stage_schema,
-                "return_stage": self.return_stage_schema,
-                "load_position": self.move_to_loading_position_schema,
-                "navigate_to_well": self.navigate_to_well_schema,
-                "inspect_tool": self.inspect_tool_schema,
-                "set_illumination": self.set_illumination_schema,
-                "set_camera_exposure": self.set_camera_exposure_schema,
-                "reflection_autofocus": self.reflection_autofocus_schema,
-                "autofocus_set_reflection_reference": self.autofocus_set_reflection_reference_schema,
-                "get_status": self.get_status_schema,
-                "get_current_well_location": self.get_current_well_location_schema,
-                "get_microscope_configuration": self.get_microscope_configuration_schema,
-                "set_stage_velocity": self.set_stage_velocity_schema,
-            }
-        }
-
-        # Add Squid+ specific tools if this is a Squid+ microscope
-        if self.is_squid_plus:
-            squid_plus_tools = {
-                "set_filter_wheel_position": self.set_filter_wheel_position_schema,
-                "get_filter_wheel_position": self.get_filter_wheel_position_schema,
-                "next_filter_position": self.next_filter_position_schema,
-                "previous_filter_position": self.previous_filter_position_schema,
-                "switch_objective": self.switch_objective_schema,
-                "get_current_objective": self.get_current_objective_schema,
-                "get_available_objectives": self.get_available_objectives_schema,
-            }
-            chatbot_extension["tools"].update(squid_plus_tools)
-
-        svc = await server.register_service(chatbot_extension)
-        self.chatbot_service_url = f"https://bioimage.io/chat?server=https://chat.bioimage.io&extension={svc.id}&assistant=Skyler"
-        logger.info(f"Extension service registered with id: {svc.id}, you can visit the service at:\n {self.chatbot_service_url}")
 
     async def start_webrtc_service(self, server, webrtc_service_id_arg):
         self.webrtc_service_id = webrtc_service_id_arg
@@ -2127,22 +1805,9 @@ class MicroscopeHyphaService:
 
         if self.is_simulation:
             await self.start_hypha_service(self.server, service_id=self.service_id)
-            # Shorten chatbot service ID to avoid OpenAI API limits
-            short_service_id = self.service_id[:20] if len(self.service_id) > 20 else self.service_id
-            chatbot_id = f"sq-cb-simu-{short_service_id}"
         else:
             await self.start_hypha_service(self.server, service_id=self.service_id)
-            # Shorten chatbot service ID to avoid OpenAI API limits
-            short_service_id = self.service_id[:20] if len(self.service_id) > 20 else self.service_id
-            chatbot_id = f"sq-cb-real-{short_service_id}"
 
-        chatbot_server_url = "https://chat.bioimage.io"
-        try:
-            chatbot_token= os.environ.get("WORKSPACE_TOKEN_CHATBOT")
-        except:
-            chatbot_token = await login({"server_url": chatbot_server_url})
-        chatbot_server = await connect_to_server({"client_id": f"squid-chatbot-{self.service_id}-{uuid.uuid4()}", "server_url": chatbot_server_url, "token": chatbot_token,  "ping_interval": 30})
-        await self.start_chatbot_service(chatbot_server, chatbot_id)
         webrtc_id = f"video-track-{self.service_id}"
         if not self.is_local: # only start webrtc service in remote mode
             await self.start_webrtc_service(self.server, webrtc_id)
@@ -2910,55 +2575,6 @@ class MicroscopeHyphaService:
         except Exception as e:
             logger.error(f"Error uploading experiment dataset: {e}")
             raise e
-
-    def get_microscope_configuration_schema(self, config: GetMicroscopeConfigurationInput, context=None):
-        return self.get_microscope_configuration(config.config_section, config.include_defaults, context)
-
-    def set_stage_velocity_schema(self, config: SetStageVelocityInput, context=None):
-        """Set the maximum velocity for X and Y stage axes with schema validation."""
-        return self.set_stage_velocity(config.velocity_x_mm_per_s, config.velocity_y_mm_per_s, context)
-
-    # ===== Squid+ Specific Schema Methods =====
-
-    def set_filter_wheel_position_schema(self, config: SetFilterWheelPositionInput, context=None):
-        """Set filter wheel position with schema validation."""
-        # Handle case where config might be an ObjectProxy
-        if isinstance(config, dict):
-            position = config.get('position', 1)
-        else:
-            position = config.position
-        return self.set_filter_wheel_position(position, context)
-
-    def get_filter_wheel_position_schema(self, context=None):
-        """Get current filter wheel position with schema validation."""
-        return self.get_filter_wheel_position(context)
-
-    def next_filter_position_schema(self, context=None):
-        """Move to next filter position with schema validation."""
-        return self.next_filter_position(context)
-
-    def previous_filter_position_schema(self, context=None):
-        """Move to previous filter position with schema validation."""
-        return self.previous_filter_position(context)
-
-    def switch_objective_schema(self, config: SwitchObjectiveInput, context=None):
-        """Switch objective with schema validation."""
-        # Handle case where config might be an ObjectProxy
-        if isinstance(config, dict):
-            objective_name = config.get('objective_name', '')
-            move_z = config.get('move_z', True)
-        else:
-            objective_name = config.objective_name
-            move_z = config.move_z
-        return self.switch_objective(objective_name, move_z, context)
-
-    def get_current_objective_schema(self, context=None):
-        """Get current objective with schema validation."""
-        return self.get_current_objective(context)
-
-    def get_available_objectives_schema(self, context=None):
-        """Get available objectives with schema validation."""
-        return self.get_available_objectives(context)
 
     async def scan_region_to_zarr(self, start_x_mm: float = 20, start_y_mm: float = 20, Nx: int = 5, Ny: int = 5, dx_mm: float = 0.9, dy_mm: float = 0.9, illumination_settings: Optional[List[dict]] = None, do_contrast_autofocus: bool = False, do_reflection_af: bool = False, action_ID: str = 'normal_scan_stitching', timepoint: int = 0, experiment_name: Optional[str] = None, wells_to_scan: List[str] = None, well_plate_type: str = '96', well_padding_mm: float = 1.0, uploading: bool = False, context=None):
         """
