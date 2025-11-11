@@ -1495,7 +1495,7 @@ class MicroscopeHyphaService:
         Notes: All image URLs must be HTTP/HTTPS accessible. The method validates URLs and processes images through the GPT-4 vision API.
         """
         try:
-            from .hypha_tools.vision_inspection import inspect_images
+            from squid_control.hypha_tools.vision_inspection import inspect_images
             return await inspect_images(
                 images=images,
                 query=query,
