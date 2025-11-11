@@ -1039,16 +1039,6 @@ class MicroscopeHyphaService:
             await asyncio.sleep(0.1)
 
         try:
-            # Apply settings to hardware
-            self.squidController.camera.set_exposure_time(exposure_time)
-            if self.squidController.liveController.illumination_on:
-                self.squidController.liveController.turn_off_illumination()
-                time.sleep(0.005)
-            self.squidController.liveController.set_illumination(channel, intensity)
-            if not self.squidController.liveController.illumination_on:
-                self.squidController.liveController.turn_on_illumination()
-                time.sleep(0.005)
-
             # Update current channel and parameters
             self.squidController.current_channel = channel
             param_name = self.channel_param_map.get(channel)
