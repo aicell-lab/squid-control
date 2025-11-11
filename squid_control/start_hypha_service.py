@@ -1018,12 +1018,13 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def snap(self, exposure_time: int=Field(100, description="Camera exposure time in milliseconds (range: 1-900)"), channel: int=Field(0, description="Illumination channel: 0=Brightfield, 11=405nm, 12=488nm, 13=638nm, 14=561nm, 15=730nm"), intensity: int=Field(50, description="LED illumination intensity percentage (range: 0-100)"), context=None):
+    async def snap(self, exposure_time: Optional[int]=Field(None, description="Camera exposure time in milliseconds (range: 1-900). If None, uses current microscope setting."), channel: Optional[int]=Field(None, description="Illumination channel: 0=Brightfield, 11=405nm, 12=488nm, 13=638nm, 14=561nm, 15=730nm. If None, uses current microscope channel."), intensity: Optional[int]=Field(None, description="LED illumination intensity percentage (range: 0-100). If None, uses current microscope setting."), context=None):
         """
         Capture a single microscope image and save it to artifact manager with public access.
         Returns: HTTP URL string pointing to the captured 2048x2048 PNG image with public read access.
         Notes: Stops video buffering during acquisition to prevent camera conflicts. Image is automatically cropped and resized.
         Snapshots are stored in daily datasets (snapshots-{service_id}-{date}) in the artifact manager with position metadata.
+        If channel, intensity, or exposure_time are None, the current microscope settings will be used.
         The provided channel, intensity, and exposure_time settings are applied to the microscope and update the current parameters.
         """
 
@@ -1039,9 +1040,33 @@ class MicroscopeHyphaService:
             await asyncio.sleep(0.1)
 
         try:
+            # Get current settings if parameters are None
+            if channel is None:
+                channel = self.squidController.current_channel
+                logger.info(f"Using current channel: {channel}")
+            
+            # Get channel parameter name to access current intensity and exposure
+            param_name = self.channel_param_map.get(channel)
+            if param_name is None:
+                raise Exception(f"Invalid channel: {channel}. Valid channels are: {list(self.channel_param_map.keys())}")
+            
+            # Get current intensity and exposure from channel parameters
+            current_params = getattr(self, param_name, [50, 100])  # Default fallback
+            if not (isinstance(current_params, list) and len(current_params) == 2):
+                logger.warning(f"Parameter {param_name} for channel {channel} was not a list of two items. Using defaults.")
+                current_params = [50, 100]
+            
+            if intensity is None:
+                intensity = current_params[0]
+                logger.info(f"Using current intensity: {intensity}")
+            
+            if exposure_time is None:
+                # Get exposure time from channel parameters (second element is exposure_time)
+                exposure_time = current_params[1]
+                logger.info(f"Using current exposure_time: {exposure_time}")
+
             # Update current channel and parameters
             self.squidController.current_channel = channel
-            param_name = self.channel_param_map.get(channel)
             if param_name:
                 setattr(self, param_name, [intensity, exposure_time])
 
