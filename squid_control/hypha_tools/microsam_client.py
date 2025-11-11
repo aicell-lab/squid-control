@@ -394,187 +394,135 @@ def convert_polygons_to_well_relative_mm(
     return converted_objects
 
 
-def _polygon_area(polygon: List[List[float]]) -> float:
+def _bbox_iom(bbox1: List[float], bbox2: List[float]) -> float:
     """
-    Calculate polygon area using the shoelace formula.
+    Calculate Intersection over Minimum (IoM) of two bounding boxes.
+    
+    IoM = intersection / min(area1, area2)
+    
+    This is better than IoU for detecting duplicates when objects have very different sizes.
+    For example, if a small object is inside a large object, IoM = 1.0 (perfect match),
+    whereas IoU would be very low.
     
     Args:
-        polygon: List of [x, y] points
+        bbox1: Bounding box [x_min, y_min, x_max, y_max]
+        bbox2: Bounding box [x_min, y_min, x_max, y_max]
     
     Returns:
-        Polygon area (signed, positive for counter-clockwise)
+        IoM value between 0.0 and 1.0 (1.0 = smaller object is completely inside larger)
     """
-    if len(polygon) < 3:
+    if len(bbox1) != 4 or len(bbox2) != 4:
         return 0.0
     
-    area = 0.0
-    n = len(polygon)
-    for i in range(n):
-        j = (i + 1) % n
-        area += polygon[i][0] * polygon[j][1]
-        area -= polygon[j][0] * polygon[i][1]
-    return abs(area) / 2.0
-
-
-def _polygon_intersection_area(poly1: List[List[float]], poly2: List[List[float]]) -> float:
-    """
-    Calculate intersection area between two polygons using bounding box approximation.
+    x1_min, y1_min, x1_max, y1_max = bbox1
+    x2_min, y2_min, x2_max, y2_max = bbox2
     
-    For more accurate intersection, shapely would be needed, but for deduplication purposes,
-    we use a simplified approach based on bounding box overlap and polygon area ratio.
+    # Calculate intersection
+    x_overlap = max(0, min(x1_max, x2_max) - max(x1_min, x2_min))
+    y_overlap = max(0, min(y1_max, y2_max) - max(y1_min, y2_min))
+    intersection = x_overlap * y_overlap
     
-    Args:
-        poly1: First polygon as list of [x, y] points in mm
-        poly2: Second polygon as list of [x, y] points in mm
-    
-    Returns:
-        Approximate intersection area in square millimeters
-    """
-    try:
-        # Calculate bounding boxes
-        poly1_points = np.array(poly1)
-        poly2_points = np.array(poly2)
-        
-        x1_min, y1_min = poly1_points.min(axis=0)
-        x1_max, y1_max = poly1_points.max(axis=0)
-        x2_min, y2_min = poly2_points.min(axis=0)
-        x2_max, y2_max = poly2_points.max(axis=0)
-        
-        # Calculate bbox intersection
-        x_overlap = max(0, min(x1_max, x2_max) - max(x1_min, x2_min))
-        y_overlap = max(0, min(y1_max, y2_max) - max(y1_min, y2_min))
-        bbox_intersection = x_overlap * y_overlap
-        
-        # If bboxes don't overlap, polygons don't overlap
-        if bbox_intersection == 0:
-            return 0.0
-        
-        # Use minimum of the two polygon areas as upper bound for intersection
-        area1 = _polygon_area(poly1)
-        area2 = _polygon_area(poly2)
-        min_area = min(area1, area2)
-        
-        # Approximate intersection as bbox intersection scaled by area ratio
-        # This is a heuristic - for exact intersection, shapely would be needed
-        bbox1_area = (x1_max - x1_min) * (y1_max - y1_min)
-        bbox2_area = (x2_max - x2_min) * (y2_max - y2_min)
-        
-        if bbox1_area > 0 and bbox2_area > 0:
-            # Scale bbox intersection by the ratio of polygon area to bbox area
-            area_ratio1 = area1 / bbox1_area if bbox1_area > 0 else 0
-            area_ratio2 = area2 / bbox2_area if bbox2_area > 0 else 0
-            avg_area_ratio = (area_ratio1 + area_ratio2) / 2.0
-            intersection_estimate = bbox_intersection * avg_area_ratio
-            return min(intersection_estimate, min_area)  # Cap at minimum area
-        else:
-            return 0.0
-    
-    except Exception as e:
-        logger.debug(f"Error calculating polygon intersection: {e}")
+    if intersection == 0:
         return 0.0
+    
+    # Calculate areas
+    area1 = (x1_max - x1_min) * (y1_max - y1_min)
+    area2 = (x2_max - x2_min) * (y2_max - y2_min)
+    min_area = min(area1, area2)
+    
+    if min_area <= 0:
+        return 0.0
+    
+    return intersection / min_area
 
 
-def deduplicate_polygons(polygon_objects: List[Dict[str, Any]], iou_threshold: float = 0.8) -> List[Dict[str, Any]]:
+def deduplicate_polygons(polygon_objects: List[Dict[str, Any]], iom_threshold: float = 0.7) -> List[Dict[str, Any]]:
     """
-    Remove duplicate polygons from overlapping tiles using intersection-over-union (IoU) detection.
+    Remove duplicate polygons from overlapping tiles using bounding box IoM (Intersection over Minimum) detection.
+    
+    Uses IoM instead of IoU to handle objects with very different sizes. IoM measures how much of the
+    smaller object overlaps with the larger one, making it ideal for detecting duplicates when a small
+    object is inside a large object (IoM = 1.0) or when objects have similar sizes (IoM ≈ IoU).
     
     Args:
         polygon_objects: List of polygon objects with format:
-            [{"id": 1, "polygons": [[[x_mm, y_mm], ...]], "bbox": [...]}, ...]
-        iou_threshold: IoU threshold for considering polygons as duplicates (default: 0.8)
+            [{"id": 1, "polygons": [[[x_mm, y_mm], ...]], "bbox": [x_min, y_min, x_max, y_max]}, ...]
+        iom_threshold: Bounding box IoM threshold for considering polygons as duplicates (default: 0.7)
+                       IoM = intersection / min(area1, area2)
+                       A threshold of 0.7 means 70% of the smaller object must overlap to be considered a duplicate.
     
     Returns:
-        Deduplicated list of polygon objects, keeping the polygon with largest area when duplicates found.
+        Deduplicated list of polygon objects, keeping objects with larger bbox area when duplicates found.
     """
     if not polygon_objects:
         return []
     
-    # Flatten all polygons from all objects into a single list with metadata
-    all_polygons = []
+    # Prepare objects with bbox area for sorting
+    objects_with_area = []
     for obj_idx, obj in enumerate(polygon_objects):
         obj_id = obj.get("id", obj_idx)
-        if "polygons" in obj:
-            for poly_idx, polygon in enumerate(obj["polygons"]):
-                if len(polygon) >= 3:  # Valid polygon needs at least 3 points
-                    area = _polygon_area(polygon)
-                    all_polygons.append({
-                        "object_id": obj_id,
-                        "polygon": polygon,
-                        "area": area,
-                        "original_obj": obj,
-                        "polygon_idx": poly_idx
-                    })
+        bbox = obj.get("bbox", [])
+        
+        # Calculate bbox area for sorting
+        if len(bbox) == 4:
+            bbox_area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+        else:
+            bbox_area = 0.0
+        
+        objects_with_area.append({
+            "object_id": obj_id,
+            "original_obj": obj,
+            "bbox": bbox,
+            "bbox_area": bbox_area
+        })
     
-    if not all_polygons:
+    if not objects_with_area:
         return []
     
-    # Sort by area (largest first) to prefer keeping larger polygons
-    all_polygons.sort(key=lambda x: x["area"], reverse=True)
+    # Sort by bbox area (largest first) to prefer keeping larger objects
+    objects_with_area.sort(key=lambda x: x["bbox_area"], reverse=True)
     
-    # Deduplicate: for each polygon, check if it overlaps significantly with any kept polygon
-    kept_polygons = []
-    kept_objects_map = {}  # Map from object_id to list of kept polygons
+    # Deduplicate: for each object, check if its bbox overlaps significantly with any kept object
+    kept_objects = []
     
-    for poly_data in all_polygons:
+    for obj_data in objects_with_area:
         is_duplicate = False
+        bbox = obj_data["bbox"]
         
-        # Check against all kept polygons
-        for kept_poly_data in kept_polygons:
-            # Quick bbox check first (if available)
-            kept_obj = kept_poly_data["original_obj"]
-            current_obj = poly_data["original_obj"]
+        if len(bbox) != 4:
+            # Invalid bbox, skip
+            continue
+        
+        # Check against all kept objects
+        for kept_obj_data in kept_objects:
+            kept_bbox = kept_obj_data["bbox"]
             
-            # Calculate IoU using polygon intersection
-            intersection = _polygon_intersection_area(
-                poly_data["polygon"],
-                kept_poly_data["polygon"]
-            )
+            if len(kept_bbox) != 4:
+                continue
             
-            if intersection > 0:
-                # Calculate union area
-                union = poly_data["area"] + kept_poly_data["area"] - intersection
-                if union > 0:
-                    iou = intersection / union
-                    
-                    if iou > iou_threshold:
-                        # Duplicate found - keep the one with larger area (already sorted)
-                        is_duplicate = True
-                        break
+            # Calculate bbox IoM (Intersection over Minimum)
+            iom = _bbox_iom(bbox, kept_bbox)
+            
+            if iom > iom_threshold:
+                # Duplicate found - keep the one with larger area (already sorted)
+                is_duplicate = True
+                break
         
         if not is_duplicate:
-            kept_polygons.append(poly_data)
-            obj_id = poly_data["object_id"]
-            if obj_id not in kept_objects_map:
-                kept_objects_map[obj_id] = []
-            kept_objects_map[obj_id].append(poly_data)
+            kept_objects.append(obj_data)
     
-    # Reconstruct polygon objects from kept polygons
+    # Reconstruct polygon objects from kept objects
     deduplicated_objects = []
-    seen_object_ids = set()
+    for obj_data in kept_objects:
+        original_obj = obj_data["original_obj"]
+        deduplicated_objects.append(original_obj)
     
-    for poly_data in kept_polygons:
-        obj_id = poly_data["object_id"]
-        if obj_id not in seen_object_ids:
-            seen_object_ids.add(obj_id)
-            original_obj = poly_data["original_obj"]
-            
-            # Collect all polygons for this object
-            object_polygons = []
-            for kept_poly in kept_polygons:
-                if kept_poly["object_id"] == obj_id:
-                    object_polygons.append(kept_poly["polygon"])
-            
-            # Create new object with all polygons
-            new_obj = {
-                "id": obj_id,
-                "polygons": object_polygons,
-                "bbox": original_obj.get("bbox", [])
-            }
-            deduplicated_objects.append(new_obj)
+    total_polygons_before = sum(len(obj.get('polygons', [])) for obj in polygon_objects)
+    total_polygons_after = sum(len(obj.get('polygons', [])) for obj in deduplicated_objects)
     
     logger.info(
-        f"Deduplication: {len(polygon_objects)} objects ({sum(len(obj.get('polygons', [])) for obj in polygon_objects)} polygons) -> "
-        f"{len(deduplicated_objects)} objects ({sum(len(obj.get('polygons', [])) for obj in deduplicated_objects)} polygons)"
+        f"Deduplication (bbox IoM={iom_threshold}): {len(polygon_objects)} objects ({total_polygons_before} polygons) -> "
+        f"{len(deduplicated_objects)} objects ({total_polygons_after} polygons)"
     )
     
     return deduplicated_objects
@@ -866,7 +814,7 @@ async def segment_well_region_grid_based(
         await asyncio.sleep(0)
         
         if stats['polygons']:
-            logger.info(f"🔄 Deduplicating {len(stats['polygons'])} polygon objects from well {well_id} (IoU threshold: 0.8)")
+            logger.info(f"🔄 Deduplicating {len(stats['polygons'])} polygon objects from well {well_id} (bbox IoM threshold: 0.7)")
             logger.info(f"   Total polygons before deduplication: {total_polygons_before_dedup}")
             
             # Run deduplication in a thread to avoid blocking the event loop
@@ -874,7 +822,7 @@ async def segment_well_region_grid_based(
             stats['polygons'] = await asyncio.to_thread(
                 deduplicate_polygons, 
                 stats['polygons'], 
-                0.8  # iou_threshold
+                0.7  # bbox IoM threshold (Intersection over Minimum) - 70% overlap required
             )
             
             total_polygons_after_dedup = sum(len(obj.get('polygons', [])) for obj in stats['polygons'])
