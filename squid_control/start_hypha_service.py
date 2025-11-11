@@ -1022,8 +1022,9 @@ class MicroscopeHyphaService:
         """
         Capture a single microscope image and save it to artifact manager with public access.
         Returns: HTTP URL string pointing to the captured 2048x2048 PNG image with public read access.
-        Notes: Stops video buffering during acquisition to prevent camera conflicts. Image is automatically cropped and resized. 
+        Notes: Stops video buffering during acquisition to prevent camera conflicts. Image is automatically cropped and resized.
         Snapshots are stored in daily datasets (snapshots-{service_id}-{date}) in the artifact manager with position metadata.
+        The provided channel, intensity, and exposure_time settings are applied to the microscope and update the current parameters.
         """
 
         # Check authentication
@@ -1038,6 +1039,23 @@ class MicroscopeHyphaService:
             await asyncio.sleep(0.1)
 
         try:
+            # Apply settings to hardware
+            self.squidController.camera.set_exposure_time(exposure_time)
+            if self.squidController.liveController.illumination_on:
+                self.squidController.liveController.turn_off_illumination()
+                time.sleep(0.005)
+            self.squidController.liveController.set_illumination(channel, intensity)
+            if not self.squidController.liveController.illumination_on:
+                self.squidController.liveController.turn_on_illumination()
+                time.sleep(0.005)
+
+            # Update current channel and parameters
+            self.squidController.current_channel = channel
+            param_name = self.channel_param_map.get(channel)
+            if param_name:
+                setattr(self, param_name, [intensity, exposure_time])
+
+            # Capture image
             gray_img = await self.squidController.snap_image(channel, intensity, exposure_time)
             logger.info('The image is snapped')
             # Image is already uint8 from snap_image method
@@ -1071,14 +1089,6 @@ class MicroscopeHyphaService:
                 metadata=metadata
             )
             logger.info(f'The image is snapped and saved to artifact manager as {data_url}')
-
-            # Update the current illumination channel and intensity
-            self.squidController.current_channel = channel
-            param_name = self.channel_param_map.get(channel)
-            if param_name:
-                setattr(self, param_name, [intensity, exposure_time])
-            else:
-                logger.warning(f"Unknown channel {channel} in snap, parameters not updated for intensity/exposure attributes.")
 
             return data_url
         except Exception as e:
