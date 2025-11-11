@@ -3790,7 +3790,6 @@ class MicroscopeHyphaService:
             self.segmentation_state['progress']['completed_wells'] = 0
             self.segmentation_state['progress']['channel_configs'] = channel_configs
             self.segmentation_state['progress']['source_experiment'] = source_experiment
-            self.segmentation_state['progress']['segmentation_experiment'] = f"{source_experiment}-segmentation"
 
             # Run segmentation with multi-channel support
             results = await segment_experiment_wells(
@@ -3836,14 +3835,14 @@ class MicroscopeHyphaService:
             ...,
             description="Channel configurations for merging. Each dict must have 'channel' (name), and optionally 'min_percentile' (default 1.0), 'max_percentile' (default 99.0), 'weight' (default 1.0). Example: [{'channel': 'BF LED matrix full', 'min_percentile': 2.0, 'max_percentile': 98.0}]"
         ),
-        scale_level: int = Field(0, description="Pyramid scale level: 0=full resolution, 1=1/4x, 2=1/16x, etc. Higher scales process faster."),
+        scale_level: int = Field(1, description="Pyramid scale level: 0=full resolution, 1=1/4x, 2=1/16x, etc. Higher scales process faster."),
         well_plate_type: str = Field("96", description="Well plate format: '6', '12', '24', '96', or '384'"),
         well_padding_mm: float = Field(1.0, description="Well boundary padding in millimeters"),
         context=None):
         """
         Launch multi-channel segmentation with color-mapped merging using microSAM BioEngine service.
-        Returns: Dictionary with success status, segmentation experiment name, state, and total wells count.
-        Notes: Segmentation executes asynchronously. Results saved to '{experiment_name}-segmentation' folder. Use segmentation_get_status() to monitor progress and segmentation_cancel() to abort.
+        Returns: Dictionary with success status, source experiment name, state, and total wells count.
+        Notes: Segmentation executes asynchronously. Polygon results saved to '{experiment_name}/polygons.json'. Use segmentation_get_status() to monitor progress and segmentation_cancel() to abort.
         """
         try:
             # Check authentication
@@ -3938,7 +3937,6 @@ class MicroscopeHyphaService:
                 "success": True,
                 "message": f"Segmentation started for experiment '{experiment_name}'",
                 "source_experiment": experiment_name,
-                "segmentation_experiment": f"{experiment_name}-segmentation",
                 "state": "running",
                 "total_wells": len(wells_to_segment),
                 "wells_to_segment": wells_to_segment
@@ -4023,14 +4021,13 @@ class MicroscopeHyphaService:
 
     async def segmentation_get_polygons(self, experiment_name: str, well_id: str = None, context=None):
         """
-        Retrieve polygon annotations from a completed segmentation experiment.
+        Retrieve polygon annotations from a completed segmentation.
         
-        This endpoint reads polygon data from the polygons.json file in the segmentation
-        experiment folder. Polygons are extracted from segmentation masks in WKT format
-        with well-relative millimeter coordinates.
+        This endpoint reads polygon data from the polygons.json file in the source
+        experiment folder. Polygons are in WKT format with well-relative millimeter coordinates.
         
         Args:
-            experiment_name: Name of the source experiment (not the segmentation experiment)
+            experiment_name: Name of the source experiment
             well_id: Optional well identifier to filter results (e.g., "A1", "B2")
             context: Request context for authentication
         
@@ -4039,7 +4036,7 @@ class MicroscopeHyphaService:
             - success: Boolean indicating if operation succeeded
             - polygons: List of polygon objects with "well_id" and "polygon_wkt" fields
             - total_count: Total number of polygons returned
-            - experiment_name: Name of the segmentation experiment
+            - experiment_name: Name of the source experiment
         
         Note: This endpoint does NOT use @schema_function decorator as requested.
         """
@@ -4048,28 +4045,25 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            # Construct segmentation experiment name
-            segmentation_experiment = f"{experiment_name}-segmentation"
-
-            logger.info(f"Fetching polygons from segmentation experiment: '{segmentation_experiment}'")
+            logger.info(f"Fetching polygons from experiment: '{experiment_name}'")
             if well_id:
                 logger.info(f"Filtering for well: {well_id}")
 
-            # Get path to polygons.json
+            # Get path to polygons.json in source experiment
             if not hasattr(self.squidController, 'experiment_manager'):
                 raise Exception("Experiment manager not initialized")
 
-            experiment_path = self.squidController.experiment_manager.base_path / segmentation_experiment
+            experiment_path = self.squidController.experiment_manager.base_path / experiment_name
             json_path = experiment_path / "polygons.json"
 
             # Check if file exists
             if not json_path.exists():
-                logger.info(f"No polygons.json found in '{segmentation_experiment}', returning empty list")
+                logger.info(f"No polygons.json found in '{experiment_name}', returning empty list")
                 return {
                     "success": True,
                     "polygons": [],
                     "total_count": 0,
-                    "experiment_name": segmentation_experiment,
+                    "experiment_name": experiment_name,
                     "message": "No polygon data available (polygons.json not found)"
                 }
 
@@ -4093,7 +4087,7 @@ class MicroscopeHyphaService:
                     "success": True,
                     "polygons": filtered_polygons,
                     "total_count": len(filtered_polygons),
-                    "experiment_name": segmentation_experiment
+                    "experiment_name": experiment_name
                 }
 
             except json.JSONDecodeError as json_err:

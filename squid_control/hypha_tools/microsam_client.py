@@ -210,8 +210,7 @@ async def connect_to_microsam(server):
 
 async def segment_image(microsam_service, image_array: np.ndarray,
                        min_contrast_percentile: float = 1.0,
-                       max_contrast_percentile: float = 99.0,
-                       resize: float = 0.5) -> np.ndarray:
+                       max_contrast_percentile: float = 99.0) -> List[Dict[str, Any]]:
     """
     Segment a single image using the microSAM service with contrast adjustment.
     
@@ -220,100 +219,365 @@ async def segment_image(microsam_service, image_array: np.ndarray,
         image_array: Image array in (H, W) for grayscale or (H, W, 3) for RGB
         min_contrast_percentile: Lower percentile for contrast (default: 1.0)
         max_contrast_percentile: Upper percentile for contrast (default: 99.0)
-        resize: Resize factor before segmentation (default: 0.5 = 1/2 resolution).
-                Use 1.0 for no resize, 0.25 for 1/4 resolution, etc.
     
     Returns:
-        Binary segmentation mask as uint8 array (H, W): 0 = background, 255 = segmented pixels
+        List of polygon objects with format:
+        [{"id": 1, "polygons": [[[x1, y1], [x2, y2], ...]], "bbox": [x_min, y_min, x_max, y_max]}, ...]
+        Polygon coordinates are in image pixel coordinates (top-left origin).
     
     Note:
         For multi-channel inputs, use merge_channels_with_colors() first.
-        Images are downsampled by resize factor, then upsampled back to original dimensions.
+        All processing uses scale1 data without resizing.
     """
-    logger.info(f"Segmenting image: {image_array.shape}, contrast: {min_contrast_percentile}%-{max_contrast_percentile}%, resize: {resize}")
+    logger.info(f"Segmenting image: {image_array.shape}, contrast: {min_contrast_percentile}%-{max_contrast_percentile}%")
 
     # Apply contrast adjustment
     adjusted_image = apply_contrast_adjustment(
         image_array, min_contrast_percentile, max_contrast_percentile
     )
 
-    # Store original dimensions and conditionally resize
-    original_height, original_width = adjusted_image.shape[:2]
-    if resize != 1.0:
-        new_width = int(original_width * resize)
-        new_height = int(original_height * resize)
-        image_to_encode = cv2.resize(
-            adjusted_image,
-            (new_width, new_height),
-            interpolation=cv2.INTER_AREA
-        )
-        logger.info(f"Resized to {new_width}x{new_height} (factor: {resize}) for segmentation")
-    else:
-        image_to_encode = adjusted_image
-
     # Compress to PNG
-    png_bytes = encode_image_to_png(image_to_encode)
+    png_bytes = encode_image_to_png(adjusted_image)
     compressed_size_mb = len(png_bytes) / (1024 * 1024)
     logger.info(f"Compressed to {compressed_size_mb:.2f} MB PNG")
 
-    del image_to_encode
+    del adjusted_image
 
     # Encode PNG bytes to base64 for safe JSON transmission
     png_base64 = base64.b64encode(png_bytes).decode('utf-8')
 
-    # Send to microSAM
-    segmentation_result_b64 = await microsam_service.segment_all(
+    # Send to microSAM - now returns polygons directly
+    segmentation_result = await microsam_service.segment_all(
         image_or_embedding=png_base64,
         embedding=False
     )
 
     try:
-        # Decode result
-        if isinstance(segmentation_result_b64, str):
-            segmentation_png_bytes = base64.b64decode(segmentation_result_b64)
-            nparr = np.frombuffer(segmentation_png_bytes, np.uint8)
-            segmentation_result = cv2.imdecode(nparr, cv2.IMREAD_GRAYSCALE)
-            if segmentation_result is None:
-                raise ValueError("Failed to decode segmentation result from PNG")
+        # Parse JSON response - micro-SAM now returns list of polygon objects
+        if isinstance(segmentation_result, str):
+            polygon_objects = json.loads(segmentation_result)
+        elif isinstance(segmentation_result, list):
+            polygon_objects = segmentation_result
         else:
-            segmentation_result = segmentation_result_b64
+            raise ValueError(f"Unexpected segmentation result type: {type(segmentation_result)}")
 
-        # Normalize to binary mask
-        if segmentation_result.dtype != np.uint8:
-            segmentation_result = segmentation_result.astype(np.uint8)
-        segmentation_result = np.where(segmentation_result > 0, 255, 0).astype(np.uint8)
-
-        # Resize back to original dimensions if needed
-        if resize != 1.0 and (segmentation_result.shape[:2] != (original_height, original_width)):
-            segmentation_result = cv2.resize(
-                segmentation_result,
-                (original_width, original_height),
-                interpolation=cv2.INTER_NEAREST
-            )
-            logger.info(f"Resized mask back to {original_width}x{original_height}")
-
-        # Calculate statistics about the binary mask
-        segmented_pixels = np.sum(segmentation_result == 255)
-        total_pixels = segmentation_result.size
-        segmented_percentage = (segmented_pixels / total_pixels) * 100.0
-
-        # Count connected components as approximate object count
-        # Use cv2.findContours to count distinct objects
-        contours, _ = cv2.findContours(
-            segmentation_result, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-        num_objects = len(contours)
+        # Calculate statistics
+        num_objects = len(polygon_objects)
+        total_polygons = sum(len(obj.get('polygons', [])) for obj in polygon_objects)
 
         logger.info(
-            f"🔬 Binary mask stats: {segmented_pixels}/{total_pixels} pixels segmented "
-            f"({segmented_percentage:.2f}%), ~{num_objects} objects detected"
+            f"🔬 Segmentation complete: {num_objects} object(s) detected, "
+            f"{total_polygons} total polygon(s)"
         )
+        
+        if num_objects > 0:
+            avg_polygons_per_object = total_polygons / num_objects
+            logger.debug(f"   Average polygons per object: {avg_polygons_per_object:.2f}")
 
-        return segmentation_result
+        return polygon_objects
 
+    except json.JSONDecodeError as e:
+        logger.error(f"❌ Failed to parse JSON response from micro-SAM: {e}")
+        raise Exception(f"microSAM segmentation failed: Invalid JSON response: {e}")
     except Exception as e:
         logger.error(f"❌ Segmentation failed: {e}", exc_info=True)
         raise Exception(f"microSAM segmentation failed: {e}")
+
+
+def convert_polygons_to_well_relative_mm(
+    polygon_objects: List[Dict[str, Any]],
+    tile_center_x: float,
+    tile_center_y: float,
+    image_width: int,
+    image_height: int,
+    pixel_size_xy_um: float,
+    scale_level: int
+) -> List[Dict[str, Any]]:
+    """
+    Convert polygon coordinates from image-relative pixels (top-left origin) to well-relative millimeters.
+    
+    Args:
+        polygon_objects: List of polygon objects from segment_image() with format:
+            [{"id": 1, "polygons": [[[x1, y1], [x2, y2], ...]], "bbox": [...]}, ...]
+        tile_center_x: Tile center X coordinate in well-relative millimeters (relative to well center at 0,0)
+        tile_center_y: Tile center Y coordinate in well-relative millimeters (relative to well center at 0,0)
+        image_width: Image width in pixels
+        image_height: Image height in pixels
+        pixel_size_xy_um: Pixel size in micrometers at scale 0
+        scale_level: Scale level (0=full resolution, 1=1/4x, etc.)
+    
+    Returns:
+        List of polygon objects with coordinates converted to well-relative millimeters (relative to well center).
+        Format: [{"id": 1, "polygons": [[[x_mm, y_mm], ...]], "bbox": [...]}, ...]
+        
+    Note:
+        The tile_center coordinates must be well-relative (not absolute stage coordinates).
+        If you have absolute stage coordinates, convert them first:
+        tile_center_x_well_relative = tile_center_x_absolute - well_center_x_absolute
+    """
+    # Calculate scale factor and pixel size at current scale
+    scale_factor = 4 ** scale_level
+    scaled_pixel_size_um = pixel_size_xy_um * scale_factor
+    pixel_size_mm = scaled_pixel_size_um / 1000.0
+    
+    # Image center in pixels (for offset calculation)
+    image_center_x = image_width / 2.0
+    image_center_y = image_height / 2.0
+    
+    converted_objects = []
+    
+    for obj in polygon_objects:
+        converted_obj = {
+            "id": obj.get("id", 0),
+            "polygons": [],
+            "bbox": obj.get("bbox", [])
+        }
+        
+        # Convert all polygons for this object
+        if "polygons" in obj:
+            for polygon in obj["polygons"]:
+                converted_polygon = []
+                for point in polygon:
+                    # Point is [x, y] in image pixel coordinates (top-left origin)
+                    x_px, y_px = point[0], point[1]
+                    
+                    # Convert to offset from image center
+                    offset_x_px = x_px - image_center_x
+                    offset_y_px = y_px - image_center_y
+                    
+                    # Convert pixel offset to millimeters
+                    offset_x_mm = offset_x_px * pixel_size_mm
+                    offset_y_mm = offset_y_px * pixel_size_mm
+                    
+                    # Add tile center to get well-relative coordinates
+                    well_relative_x = tile_center_x + offset_x_mm
+                    well_relative_y = tile_center_y + offset_y_mm
+                    
+                    # Round to 8 decimal places for ~0.01 micrometer precision
+                    # (0.01 μm = 0.00001 mm, so 8 decimals gives us 0.00000001 mm = 0.00001 μm precision)
+                    converted_polygon.append([round(well_relative_x, 8), round(well_relative_y, 8)])
+                
+                converted_obj["polygons"].append(converted_polygon)
+        
+        # Convert bounding box if present (bbox format: [x_min, y_min, x_max, y_max])
+        if "bbox" in obj and len(obj["bbox"]) == 4:
+            bbox = obj["bbox"]
+            # Convert bbox corners from image pixels to well-relative mm
+            bbox_points = [
+                [bbox[0], bbox[1]],  # x_min, y_min
+                [bbox[2], bbox[1]],  # x_max, y_min
+                [bbox[2], bbox[3]],  # x_max, y_max
+                [bbox[0], bbox[3]]   # x_min, y_max
+            ]
+            
+            converted_bbox_points = []
+            for point in bbox_points:
+                x_px, y_px = point[0], point[1]
+                offset_x_px = x_px - image_center_x
+                offset_y_px = y_px - image_center_y
+                offset_x_mm = offset_x_px * pixel_size_mm
+                offset_y_mm = offset_y_px * pixel_size_mm
+                well_relative_x = tile_center_x + offset_x_mm
+                well_relative_y = tile_center_y + offset_y_mm
+                converted_bbox_points.append([round(well_relative_x, 8), round(well_relative_y, 8)])
+            
+            # Calculate new bbox from converted points with 8 decimal precision (~0.01 μm)
+            x_coords = [p[0] for p in converted_bbox_points]
+            y_coords = [p[1] for p in converted_bbox_points]
+            converted_obj["bbox"] = [
+                round(min(x_coords), 8), round(min(y_coords), 8),
+                round(max(x_coords), 8), round(max(y_coords), 8)
+            ]
+        
+        converted_objects.append(converted_obj)
+    
+    return converted_objects
+
+
+def _polygon_area(polygon: List[List[float]]) -> float:
+    """
+    Calculate polygon area using the shoelace formula.
+    
+    Args:
+        polygon: List of [x, y] points
+    
+    Returns:
+        Polygon area (signed, positive for counter-clockwise)
+    """
+    if len(polygon) < 3:
+        return 0.0
+    
+    area = 0.0
+    n = len(polygon)
+    for i in range(n):
+        j = (i + 1) % n
+        area += polygon[i][0] * polygon[j][1]
+        area -= polygon[j][0] * polygon[i][1]
+    return abs(area) / 2.0
+
+
+def _polygon_intersection_area(poly1: List[List[float]], poly2: List[List[float]]) -> float:
+    """
+    Calculate intersection area between two polygons using bounding box approximation.
+    
+    For more accurate intersection, shapely would be needed, but for deduplication purposes,
+    we use a simplified approach based on bounding box overlap and polygon area ratio.
+    
+    Args:
+        poly1: First polygon as list of [x, y] points in mm
+        poly2: Second polygon as list of [x, y] points in mm
+    
+    Returns:
+        Approximate intersection area in square millimeters
+    """
+    try:
+        # Calculate bounding boxes
+        poly1_points = np.array(poly1)
+        poly2_points = np.array(poly2)
+        
+        x1_min, y1_min = poly1_points.min(axis=0)
+        x1_max, y1_max = poly1_points.max(axis=0)
+        x2_min, y2_min = poly2_points.min(axis=0)
+        x2_max, y2_max = poly2_points.max(axis=0)
+        
+        # Calculate bbox intersection
+        x_overlap = max(0, min(x1_max, x2_max) - max(x1_min, x2_min))
+        y_overlap = max(0, min(y1_max, y2_max) - max(y1_min, y2_min))
+        bbox_intersection = x_overlap * y_overlap
+        
+        # If bboxes don't overlap, polygons don't overlap
+        if bbox_intersection == 0:
+            return 0.0
+        
+        # Use minimum of the two polygon areas as upper bound for intersection
+        area1 = _polygon_area(poly1)
+        area2 = _polygon_area(poly2)
+        min_area = min(area1, area2)
+        
+        # Approximate intersection as bbox intersection scaled by area ratio
+        # This is a heuristic - for exact intersection, shapely would be needed
+        bbox1_area = (x1_max - x1_min) * (y1_max - y1_min)
+        bbox2_area = (x2_max - x2_min) * (y2_max - y2_min)
+        
+        if bbox1_area > 0 and bbox2_area > 0:
+            # Scale bbox intersection by the ratio of polygon area to bbox area
+            area_ratio1 = area1 / bbox1_area if bbox1_area > 0 else 0
+            area_ratio2 = area2 / bbox2_area if bbox2_area > 0 else 0
+            avg_area_ratio = (area_ratio1 + area_ratio2) / 2.0
+            intersection_estimate = bbox_intersection * avg_area_ratio
+            return min(intersection_estimate, min_area)  # Cap at minimum area
+        else:
+            return 0.0
+    
+    except Exception as e:
+        logger.debug(f"Error calculating polygon intersection: {e}")
+        return 0.0
+
+
+def deduplicate_polygons(polygon_objects: List[Dict[str, Any]], iou_threshold: float = 0.8) -> List[Dict[str, Any]]:
+    """
+    Remove duplicate polygons from overlapping tiles using intersection-over-union (IoU) detection.
+    
+    Args:
+        polygon_objects: List of polygon objects with format:
+            [{"id": 1, "polygons": [[[x_mm, y_mm], ...]], "bbox": [...]}, ...]
+        iou_threshold: IoU threshold for considering polygons as duplicates (default: 0.8)
+    
+    Returns:
+        Deduplicated list of polygon objects, keeping the polygon with largest area when duplicates found.
+    """
+    if not polygon_objects:
+        return []
+    
+    # Flatten all polygons from all objects into a single list with metadata
+    all_polygons = []
+    for obj_idx, obj in enumerate(polygon_objects):
+        obj_id = obj.get("id", obj_idx)
+        if "polygons" in obj:
+            for poly_idx, polygon in enumerate(obj["polygons"]):
+                if len(polygon) >= 3:  # Valid polygon needs at least 3 points
+                    area = _polygon_area(polygon)
+                    all_polygons.append({
+                        "object_id": obj_id,
+                        "polygon": polygon,
+                        "area": area,
+                        "original_obj": obj,
+                        "polygon_idx": poly_idx
+                    })
+    
+    if not all_polygons:
+        return []
+    
+    # Sort by area (largest first) to prefer keeping larger polygons
+    all_polygons.sort(key=lambda x: x["area"], reverse=True)
+    
+    # Deduplicate: for each polygon, check if it overlaps significantly with any kept polygon
+    kept_polygons = []
+    kept_objects_map = {}  # Map from object_id to list of kept polygons
+    
+    for poly_data in all_polygons:
+        is_duplicate = False
+        
+        # Check against all kept polygons
+        for kept_poly_data in kept_polygons:
+            # Quick bbox check first (if available)
+            kept_obj = kept_poly_data["original_obj"]
+            current_obj = poly_data["original_obj"]
+            
+            # Calculate IoU using polygon intersection
+            intersection = _polygon_intersection_area(
+                poly_data["polygon"],
+                kept_poly_data["polygon"]
+            )
+            
+            if intersection > 0:
+                # Calculate union area
+                union = poly_data["area"] + kept_poly_data["area"] - intersection
+                if union > 0:
+                    iou = intersection / union
+                    
+                    if iou > iou_threshold:
+                        # Duplicate found - keep the one with larger area (already sorted)
+                        is_duplicate = True
+                        break
+        
+        if not is_duplicate:
+            kept_polygons.append(poly_data)
+            obj_id = poly_data["object_id"]
+            if obj_id not in kept_objects_map:
+                kept_objects_map[obj_id] = []
+            kept_objects_map[obj_id].append(poly_data)
+    
+    # Reconstruct polygon objects from kept polygons
+    deduplicated_objects = []
+    seen_object_ids = set()
+    
+    for poly_data in kept_polygons:
+        obj_id = poly_data["object_id"]
+        if obj_id not in seen_object_ids:
+            seen_object_ids.add(obj_id)
+            original_obj = poly_data["original_obj"]
+            
+            # Collect all polygons for this object
+            object_polygons = []
+            for kept_poly in kept_polygons:
+                if kept_poly["object_id"] == obj_id:
+                    object_polygons.append(kept_poly["polygon"])
+            
+            # Create new object with all polygons
+            new_obj = {
+                "id": obj_id,
+                "polygons": object_polygons,
+                "bbox": original_obj.get("bbox", [])
+            }
+            deduplicated_objects.append(new_obj)
+    
+    logger.info(
+        f"Deduplication: {len(polygon_objects)} objects ({sum(len(obj.get('polygons', [])) for obj in polygon_objects)} polygons) -> "
+        f"{len(deduplicated_objects)} objects ({sum(len(obj.get('polygons', [])) for obj in deduplicated_objects)} polygons)"
+    )
+    
+    return deduplicated_objects
 
 
 async def segment_well_region_grid_based(
@@ -327,16 +591,13 @@ async def segment_well_region_grid_based(
     timepoint: int,
     well_plate_type: str,
     well_padding_mm: float,
-    seg_canvas,
-    segmentation_channel: str,
-    channel_idx: int,
     tile_progress_callback: Optional[Callable[[str, int, int, int, int], None]] = None,
     well_index: Optional[int] = None,
     total_wells: Optional[int] = None
 ) -> Dict[str, Any]:
     """
     Segment well region by processing it as a 9x9 grid to reduce memory usage.
-    Each grid tile is processed separately: load channels, merge, segment, and write to zarr.
+    Each grid tile is processed separately: load channels, merge, segment, and collect polygons.
     
     Args:
         microsam_service: Connected microSAM service
@@ -349,13 +610,17 @@ async def segment_well_region_grid_based(
         timepoint: Timepoint index
         well_plate_type: Well plate format ('96', '384', etc.)
         well_padding_mm: Well padding in millimeters
-        seg_canvas: Segmentation canvas for writing results
-        segmentation_channel: Channel name for segmentation masks
-        channel_idx: Channel index in segmentation canvas
         tile_progress_callback: Optional callback(well_id, tile_idx, total_tiles, completed_wells, total_wells)
     
     Returns:
-        Dictionary with processing statistics (tiles_processed, tiles_failed, etc.)
+        Dictionary with processing statistics and collected polygons:
+        {
+            'well_id': str,
+            'tiles_processed': int,
+            'tiles_failed': int,
+            'tiles_skipped': int,
+            'polygons': List[Dict] - deduplicated polygons in well-relative mm coordinates
+        }
     """
     well_id = f"{well_row}{well_column}"
     logger.info(f"📍 Processing well {well_id} with {len(channel_configs)} channels using 9x9 grid")
@@ -367,7 +632,8 @@ async def segment_well_region_grid_based(
         'well_id': well_id,
         'tiles_processed': 0,
         'tiles_failed': 0,
-        'tiles_skipped': 0
+        'tiles_skipped': 0,
+        'polygons': []  # Accumulate polygons from all tiles
     }
 
     try:
@@ -510,8 +776,8 @@ async def segment_well_region_grid_based(
                         del gray_image
                         continue
 
-                    # Segment this tile - segmentation should preserve exact dimensions
-                    tile_segmentation = await segment_image(
+                    # Segment this tile - now returns polygons directly
+                    tile_polygon_objects = await segment_image(
                         microsam_service, merged_image,
                         min_contrast_percentile=0.0,
                         max_contrast_percentile=100.0  # No additional contrast
@@ -524,88 +790,50 @@ async def segment_well_region_grid_based(
                     # Free merged image after segmentation
                     del merged_image
 
-                    if tile_segmentation is None:
-                        logger.warning(f"  Tile {tile_idx} segmentation returned None, skipping")
-                        stats['tiles_failed'] += 1
+                    if not tile_polygon_objects:
+                        logger.info(f"  Tile {tile_idx}: ⚠️  Segmentation returned no polygons, skipping tile")
+                        stats['tiles_skipped'] += 1
                         continue
 
-                    # CRITICAL: Ensure segmentation mask dimensions match read region exactly
-                    # If segmentation changed dimensions, resize to match read bounds
-                    seg_height, seg_width = tile_segmentation.shape[:2]
-                    expected_height = read_bounds['y_end'] - read_bounds['y_start']
-                    expected_width = read_bounds['x_end'] - read_bounds['x_start']
+                    # Count total polygons across all objects
+                    total_polygons_before_conversion = sum(len(obj.get('polygons', [])) for obj in tile_polygon_objects)
+                    logger.info(f"  Tile {tile_idx}: Polygon objects contain {total_polygons_before_conversion} total polygon(s) across {len(tile_polygon_objects)} object(s)")
 
-                    if seg_height != expected_height or seg_width != expected_width:
-                        logger.debug(
-                            f"  Tile {tile_idx}: Resizing segmentation from {seg_height}x{seg_width} "
-                            f"to match read bounds {expected_height}x{expected_width}"
-                        )
-                        tile_segmentation = cv2.resize(
-                            tile_segmentation,
-                            (expected_width, expected_height),  # (width, height)
-                            interpolation=cv2.INTER_NEAREST  # Preserve binary mask values
-                        )
+                    # Get image dimensions for coordinate conversion
+                    image_height = read_bounds['y_end'] - read_bounds['y_start']
+                    image_width = read_bounds['x_end'] - read_bounds['x_start']
 
-                    # CRITICAL: Merge overlapping masks instead of overwriting
-                    # Read existing mask region using pixel-based read for exact alignment
-                    # Wrap in asyncio.to_thread to prevent blocking the event loop during Zarr I/O
-                    existing_mask, existing_bounds = await asyncio.to_thread(
-                        seg_canvas.get_canvas_region_pixels,
-                        tile_center_x_px, tile_center_y_px, request_size_px, request_size_px,
-                        scale_level, channel_idx, timepoint
+                    # Convert absolute stage coordinates to well-relative coordinates
+                    # (WellZarrCanvas uses absolute coords, but we want to store polygons as well-relative)
+                    tile_center_x_well_relative = tile_center_x - center_x
+                    tile_center_y_well_relative = tile_center_y - center_y
+                    
+                    logger.info(f"  Tile {tile_idx}: Converting polygon coordinates from image pixels to well-relative mm")
+                    logger.info(f"  Tile {tile_idx}:   Image dimensions: {image_width}x{image_height}px")
+                    logger.info(f"  Tile {tile_idx}:   Tile center (absolute): ({tile_center_x:.3f}, {tile_center_y:.3f})mm")
+                    logger.info(f"  Tile {tile_idx}:   Tile center (well-relative): ({tile_center_x_well_relative:.3f}, {tile_center_y_well_relative:.3f})mm")
+                    logger.info(f"  Tile {tile_idx}:   Well center (absolute): ({center_x:.3f}, {center_y:.3f})mm")
+                    logger.info(f"  Tile {tile_idx}:   Pixel size: {canvas.pixel_size_xy_um}µm at scale0, scale_level={scale_level}")
+
+                    # Convert polygon coordinates from image pixels to well-relative mm
+                    converted_polygons = convert_polygons_to_well_relative_mm(
+                        polygon_objects=tile_polygon_objects,
+                        tile_center_x=tile_center_x_well_relative,
+                        tile_center_y=tile_center_y_well_relative,
+                        image_width=image_width,
+                        image_height=image_height,
+                        pixel_size_xy_um=canvas.pixel_size_xy_um,
+                        scale_level=scale_level
                     )
 
-                    if existing_mask is not None and existing_mask.size > 0:
-                        # Ensure existing mask matches the new mask dimensions
-                        if existing_mask.shape != tile_segmentation.shape:
-                            # Resize existing mask to match if dimensions differ
-                            logger.debug(
-                                f"  Tile {tile_idx}: Resizing existing mask from {existing_mask.shape} "
-                                f"to match new mask {tile_segmentation.shape} for merging"
-                            )
-                            existing_mask = cv2.resize(
-                                existing_mask,
-                                (tile_segmentation.shape[1], tile_segmentation.shape[0]),
-                                interpolation=cv2.INTER_NEAREST
-                            )
-
-                        # Merge masks using maximum (union operation for binary masks)
-                        # max(0, 0) = 0 (background), max(0, 255) = 255 (segmented), max(255, 255) = 255
-                        tile_segmentation = np.maximum(tile_segmentation, existing_mask).astype(np.uint8)
-
-                        logger.debug(
-                            f"  Tile {tile_idx}: Merged with existing mask "
-                            f"({np.sum(existing_mask > 0)} existing segmented pixels)"
-                        )
-
-                    # Yield to event loop before zarr write (potentially slow operation)
-                    await asyncio.sleep(0)
-
-                    # Write merged tile segmentation mask using pixel-based write with EXACT same bounds
-                    # This ensures perfect alignment - no preprocessing, no coordinate conversion errors
-                    logger.info(f"  Tile {tile_idx}: Attempting to write segmentation mask (shape={tile_segmentation.shape}, "
-                               f"dtype={tile_segmentation.dtype}) to pixel bounds x=[{read_bounds['x_start']}:{read_bounds['x_end']}], "
-                               f"y=[{read_bounds['y_start']}:{read_bounds['y_end']}]")
-
-                    seg_canvas.add_image_sync_pixels(
-                        image=tile_segmentation,
-                        x_start_px=read_bounds['x_start'],  # Exact pixel bounds from read operation
-                        y_start_px=read_bounds['y_start'],  # Exact pixel bounds from read operation
-                        channel_idx=channel_idx,
-                        z_idx=0,
-                        timepoint=timepoint,
-                        scale=scale_level
-                    )
+                    # Accumulate polygons from this tile
+                    total_polygons_after_conversion = sum(len(obj.get('polygons', [])) for obj in converted_polygons)
+                    stats['polygons'].extend(converted_polygons)
 
                     logger.info(
-                        f"  Tile {tile_idx}: ✅ Completed write of segmentation mask (shape={tile_segmentation.shape}) "
-                        f"to pixel bounds x=[{read_bounds['x_start']}:{read_bounds['x_end']}], "
-                        f"y=[{read_bounds['y_start']}:{read_bounds['y_end']}] "
-                        f"- exact same bounds as source image read"
+                        f"  Tile {tile_idx}: ✅ Coordinate conversion complete - {len(converted_polygons)} polygon object(s) "
+                        f"({total_polygons_after_conversion} total polygons) converted to well-relative mm coordinates"
                     )
-
-                    # Free segmentation result after writing
-                    del tile_segmentation
 
                     stats['tiles_processed'] += 1
 
@@ -625,30 +853,36 @@ async def segment_well_region_grid_based(
                     stats['tiles_failed'] += 1
                     continue
 
-        logger.info(f"✅ Well {well_id} grid segmentation complete: {stats['tiles_processed']} tiles processed, {stats['tiles_failed']} failed, {stats['tiles_skipped']} skipped")
+        total_polygons_before_dedup = sum(len(obj.get('polygons', [])) for obj in stats['polygons'])
+        logger.info(f"✅ Well {well_id} grid segmentation complete:")
+        logger.info(f"   Tiles processed: {stats['tiles_processed']}/{total_tiles}")
+        logger.info(f"   Tiles failed: {stats['tiles_failed']}/{total_tiles}")
+        logger.info(f"   Tiles skipped: {stats['tiles_skipped']}/{total_tiles}")
+        logger.info(f"   Polygon objects collected: {len(stats['polygons'])}")
+        logger.info(f"   Total polygons collected: {total_polygons_before_dedup}")
 
-        # Launch background polygon extraction if well segmentation was successful
-        if stats['tiles_processed'] > 0:
-            try:
-                # Get segmentation experiment name from seg_canvas fileset_name
-                # fileset_name format: "well_A1_96"
-                segmentation_experiment = str(seg_canvas.base_path.name)
-
-                logger.info(f"🚀 Launching background polygon extraction for well {well_id}")
-
-                # Launch in background thread to avoid blocking segmentation
-                thread = threading.Thread(
-                    target=process_well_polygons_background,
-                    args=(experiment_manager, segmentation_experiment, well_row, well_column,
-                          well_plate_type, well_padding_mm, 1, timepoint),
-                    daemon=True  # Daemon thread won't block program exit
-                )
-                thread.start()
-
-                logger.info(f"Background polygon extraction thread started for well {well_id}")
-
-            except Exception as e:
-                logger.error(f"Failed to launch polygon extraction thread for well {well_id}: {e}")
+        # Deduplicate polygons from overlapping tiles
+        # Yield to event loop before deduplication to prevent blocking
+        await asyncio.sleep(0)
+        
+        if stats['polygons']:
+            logger.info(f"🔄 Deduplicating {len(stats['polygons'])} polygon objects from well {well_id} (IoU threshold: 0.8)")
+            logger.info(f"   Total polygons before deduplication: {total_polygons_before_dedup}")
+            
+            # Run deduplication in a thread to avoid blocking the event loop
+            # This prevents WebSocket keepalive timeouts during long deduplication
+            stats['polygons'] = await asyncio.to_thread(
+                deduplicate_polygons, 
+                stats['polygons'], 
+                0.8  # iou_threshold
+            )
+            
+            total_polygons_after_dedup = sum(len(obj.get('polygons', [])) for obj in stats['polygons'])
+            logger.info(f"✅ Deduplication complete: {len(stats['polygons'])} unique polygon objects remaining")
+            logger.info(f"   Total polygons after deduplication: {total_polygons_after_dedup}")
+            logger.info(f"   Polygons removed: {total_polygons_before_dedup - total_polygons_after_dedup}")
+        else:
+            logger.warning(f"⚠️  No polygons collected from well {well_id}")
 
         return stats
 
@@ -692,89 +926,59 @@ def pixel_to_well_relative_mm(pixel_coords: np.ndarray, canvas_info: Dict,
     return np.column_stack([relative_x_mm, relative_y_mm])
 
 
-def extract_polygons_from_segmentation_mask(mask: np.ndarray, well_id: str,
-                                            canvas_info: Dict, pixel_size_xy_um: float,
-                                            scale: int = 1, min_area_px: int = 100) -> List[Dict[str, str]]:
+
+
+def _convert_polygon_objects_to_wkt(polygon_objects: List[Dict[str, Any]], well_id: str) -> List[Dict[str, str]]:
     """
-    Extract polygon contours from a binary segmentation mask.
+    Convert polygon objects to WKT format for JSON storage.
     
     Args:
-        mask: Binary segmentation mask (uint8, 0 or 255)
+        polygon_objects: List of polygon objects with format:
+            [{"id": 1, "polygons": [[[x_mm, y_mm], ...]], "bbox": [...]}, ...]
         well_id: Well identifier (e.g., "A1")
-        canvas_info: Dictionary from WellZarrCanvas.get_well_info()
-        pixel_size_xy_um: Pixel size in micrometers at scale 0
-        scale: Scale level used (1 = 1/4 resolution)
-        min_area_px: Minimum contour area in pixels to keep (filters noise)
     
     Returns:
-        List of polygon dictionaries with format:
-        [{"well_id": "A1", "polygon_wkt": "POLYGON((x1 y1, x2 y2, ...))"}]
+        List of polygon dictionaries with WKT format:
+        [{"well_id": "A1", "polygon_wkt": "POLYGON((x1 y1, x2 y2, ...))"}, ...]
     """
-    if mask is None or mask.size == 0:
-        logger.warning(f"Empty mask for well {well_id}")
-        return []
-
-    # Find contours using RETR_EXTERNAL to get only outer boundaries (no holes)
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    if not contours:
-        logger.info(f"No contours found in well {well_id}")
-        return []
-
-    polygons = []
-
-    for contour in contours:
-        # Filter small contours (likely noise)
-        area = cv2.contourArea(contour)
-        if area < min_area_px:
-            continue
-
-        # Simplify polygon to reduce point count (memory optimization)
-        # Epsilon = 0.001mm in pixels at current scale
-        epsilon_mm = 0.001
-        scale_factor = 4 ** scale
-        epsilon_px = (epsilon_mm * 1000.0) / (pixel_size_xy_um * scale_factor)
-        approx = cv2.approxPolyDP(contour, epsilon_px, closed=True)
-
-        # Need at least 3 points for a polygon
-        if len(approx) < 3:
-            continue
-
-        # Reshape from (N, 1, 2) to (N, 2)
-        points = approx.reshape(-1, 2)
-
-        # Convert pixel coordinates to well-relative millimeters
-        points_mm = pixel_to_well_relative_mm(points, canvas_info, pixel_size_xy_um, scale)
-
-        # Format as WKT POLYGON string with 5 decimal places
-        # WKT format: POLYGON((x1 y1, x2 y2, x3 y3, ..., x1 y1))
-        # Note: First and last points must be the same (closed polygon)
-        point_strings = [f"{x:.5f} {y:.5f}" for x, y in points_mm]
-
-        # Ensure polygon is closed (first point == last point)
-        if not np.allclose(points_mm[0], points_mm[-1], atol=1e-6):
-            point_strings.append(f"{points_mm[0][0]:.5f} {points_mm[0][1]:.5f}")
-
-        wkt = f"POLYGON(({', '.join(point_strings)}))"
-
-        polygons.append({
-            "well_id": well_id,
-            "polygon_wkt": wkt
-        })
-
-    logger.info(f"Extracted {len(polygons)} polygons from well {well_id} "
-               f"(from {len(contours)} total contours, min_area={min_area_px}px)")
-
-    return polygons
+    wkt_polygons = []
+    
+    for obj in polygon_objects:
+        obj_id = obj.get("id", 0)
+        if "polygons" in obj:
+            for polygon in obj["polygons"]:
+                if len(polygon) < 3:
+                    continue  # Skip invalid polygons
+                
+                # Format as WKT POLYGON string with 5 decimal places
+                # WKT format: POLYGON((x1 y1, x2 y2, x3 y3, ..., x1 y1))
+                point_strings = [f"{x:.5f} {y:.5f}" for x, y in polygon]
+                
+                # Ensure polygon is closed (first point == last point)
+                if not (len(polygon) > 0 and 
+                        abs(polygon[0][0] - polygon[-1][0]) < 1e-6 and 
+                        abs(polygon[0][1] - polygon[-1][1]) < 1e-6):
+                    point_strings.append(f"{polygon[0][0]:.5f} {polygon[0][1]:.5f}")
+                
+                wkt = f"POLYGON(({', '.join(point_strings)}))"
+                
+                wkt_polygons.append({
+                    "well_id": well_id,
+                    "polygon_wkt": wkt,
+                    "object_id": obj_id
+                })
+    
+    return wkt_polygons
 
 
-def append_polygons_to_json(json_path: Path, new_polygons: List[Dict[str, str]]):
+def append_polygons_to_json(json_path: Path, new_polygons: List[Dict[str, Any]]):
     """
     Thread-safe append of polygons to JSON file.
     
     Args:
         json_path: Path to polygons.json file
-        new_polygons: List of polygon dictionaries to append
+        new_polygons: List of polygon objects or WKT-formatted polygons to append.
+                     If polygon objects (with "polygons" key), they will be converted to WKT format.
     """
     if not new_polygons:
         return
@@ -792,8 +996,20 @@ def append_polygons_to_json(json_path: Path, new_polygons: List[Dict[str, str]])
             else:
                 data = {"polygons": []}
 
-            # Append new polygons
-            data["polygons"].extend(new_polygons)
+            # Convert polygon objects to WKT format if needed
+            # Check if first polygon has "polygons" key (polygon object) or "polygon_wkt" key (WKT format)
+            if new_polygons and "polygons" in new_polygons[0]:
+                # Extract well_id from first polygon object (assume all have same well_id)
+                # If well_id not in object, try to get it from the object structure
+                well_id = new_polygons[0].get("well_id")
+                if not well_id:
+                    # Try to extract from nested structure or use default
+                    well_id = "unknown"
+                wkt_polygons = _convert_polygon_objects_to_wkt(new_polygons, well_id)
+                data["polygons"].extend(wkt_polygons)
+            else:
+                # Already in WKT format
+                data["polygons"].extend(new_polygons)
 
             # Write back
             with open(json_path, 'w') as f:
@@ -804,82 +1020,6 @@ def append_polygons_to_json(json_path: Path, new_polygons: List[Dict[str, str]])
 
         except Exception as e:
             logger.error(f"Failed to append polygons to JSON: {e}", exc_info=True)
-
-
-def process_well_polygons_background(experiment_manager, segmentation_experiment: str,
-                                     well_row: str, well_column: int, well_plate_type: str,
-                                     well_padding_mm: float, scale: int = 1, timepoint: int = 0):
-    """
-    Background thread function to extract polygons from a completed well's segmentation mask.
-    
-    Args:
-        experiment_manager: ExperimentManager instance
-        segmentation_experiment: Name of segmentation experiment
-        well_row: Well row (e.g., 'A')
-        well_column: Well column (e.g., 1)
-        well_plate_type: Well plate format
-        well_padding_mm: Well padding in mm
-        scale: Scale level to read from (default 1)
-        timepoint: Timepoint index (default 0)
-    """
-    well_id = f"{well_row}{well_column}"
-
-    try:
-        logger.info(f"🔄 Starting background polygon extraction for well {well_id}")
-
-        # Get segmentation canvas
-        seg_canvas = experiment_manager.get_well_canvas(
-            well_row, well_column, well_plate_type, well_padding_mm, segmentation_experiment
-        )
-
-        # Get well info for coordinate conversion
-        well_info = seg_canvas.get_well_info()
-
-        # Get segmentation channel (BF LED matrix full = index 0)
-        segmentation_channel = "BF LED matrix full"
-        channel_idx = seg_canvas.get_zarr_channel_index(segmentation_channel)
-
-        # Read the full segmentation mask at scale 1
-        with seg_canvas.zarr_lock:
-            if scale not in seg_canvas.zarr_arrays:
-                logger.error(f"Scale {scale} not available in segmentation canvas")
-                return
-
-            zarr_array = seg_canvas.zarr_arrays[scale]
-
-            # Read full mask for this well: [timepoint, channel, z=0, :, :]
-            mask = zarr_array[timepoint, channel_idx, 0, :, :]
-
-        logger.info(f"Read segmentation mask for well {well_id}: shape={mask.shape}, "
-                   f"dtype={mask.dtype}, non-zero pixels={np.sum(mask > 0)}")
-
-        # Extract polygons from mask
-        polygons = extract_polygons_from_segmentation_mask(
-            mask=mask,
-            well_id=well_id,
-            canvas_info=well_info,
-            pixel_size_xy_um=seg_canvas.pixel_size_xy_um,
-            scale=scale,
-            min_area_px=100  # Filter small noise
-        )
-
-        # Free memory
-        del mask
-
-        if not polygons:
-            logger.info(f"No polygons extracted for well {well_id}")
-            return
-
-        # Append to JSON file
-        experiment_path = experiment_manager.base_path / segmentation_experiment
-        json_path = experiment_path / "polygons.json"
-
-        append_polygons_to_json(json_path, polygons)
-
-        logger.info(f"✅ Completed polygon extraction for well {well_id}: {len(polygons)} polygons")
-
-    except Exception as e:
-        logger.error(f"Failed to process polygons for well {well_id}: {e}", exc_info=True)
 
 
 async def segment_experiment_wells(
@@ -918,30 +1058,15 @@ async def segment_experiment_wells(
     for config in channel_configs:
         logger.info(f"  {config['channel']}: {config.get('min_percentile', 1.0)}%-{config.get('max_percentile', 99.0)}%")
 
-    # Create segmentation experiment name
-    segmentation_experiment = f"{source_experiment}-segmentation"
-    logger.info(f"Target segmentation experiment: '{segmentation_experiment}'")
-
-    # Create segmentation experiment if it doesn't exist
-    try:
-        experiment_manager.create_experiment(segmentation_experiment)
-        logger.info(f"✅ Created segmentation experiment: '{segmentation_experiment}'")
-    except ValueError:
-        # Experiment already exists
-        logger.info(f"Segmentation experiment '{segmentation_experiment}' already exists, using existing")
-
-    # Set segmentation experiment as active for writing
-    experiment_manager.set_active_experiment(segmentation_experiment)
-
-    # Initialize/clean up polygons.json file
-    experiment_path = experiment_manager.base_path / segmentation_experiment
+    # Store polygons.json directly in the source experiment folder (no separate segmentation experiment)
+    experiment_path = experiment_manager.base_path / source_experiment
     json_path = experiment_path / "polygons.json"
 
-    # Delete existing polygons.json if present
+    # Delete existing polygons.json if present (to start fresh)
     if json_path.exists():
         try:
             json_path.unlink()
-            logger.info(f"Deleted existing polygons.json from '{segmentation_experiment}'")
+            logger.info(f"Deleted existing polygons.json from '{source_experiment}'")
         except Exception as e:
             logger.warning(f"Failed to delete existing polygons.json: {e}")
 
@@ -949,13 +1074,12 @@ async def segment_experiment_wells(
     try:
         with open(json_path, 'w') as f:
             json.dump({"polygons": []}, f, indent=2)
-        logger.info(f"Created empty polygons.json in '{segmentation_experiment}'")
+        logger.info(f"Created empty polygons.json in '{source_experiment}'")
     except Exception as create_err:
         logger.warning(f"Failed to create polygons.json: {create_err}")
 
     results = {
         'source_experiment': source_experiment,
-        'segmentation_experiment': segmentation_experiment,
         'total_wells': len(wells_to_segment),
         'successful_wells': 0,
         'failed_wells': 0,
@@ -1069,35 +1193,21 @@ async def segment_experiment_wells(
                 results['wells_failed'].append(well_id)
                 continue
 
-            # Get or create well canvas in segmentation experiment (only if source is valid)
-            seg_canvas = experiment_manager.get_well_canvas(
-                well_row, well_column, well_plate_type, well_padding_mm, segmentation_experiment
-            )
-
-            # Use "BF LED matrix full" channel for segmentation masks to maintain OME-Zarr format consistency
-            segmentation_channel = "BF LED matrix full"
-
-            # Get channel index for brightfield channel (should be 0 in standard OME-Zarr format)
-            if segmentation_channel not in seg_canvas.channel_to_zarr_index:
-                logger.error(f"Channel '{segmentation_channel}' not found in segmentation canvas!")
-                logger.error(f"Available channels: {list(seg_canvas.channel_to_zarr_index.keys())}")
-                raise ValueError(f"Channel '{segmentation_channel}' not available in segmentation canvas")
-
-            channel_idx = seg_canvas.channel_to_zarr_index[segmentation_channel]
-            logger.info(f"Using channel '{segmentation_channel}' at index {channel_idx} for segmentation masks")
-
             # Create tile progress callback if main progress callback exists
+            # Note: This callback is only called at intervals (every 10 tiles or completion)
+            # to avoid spamming the progress callback. We don't call the main progress callback
+            # from tile callback to avoid duplicate calls - only call it once at well completion.
             def make_tile_callback(well_idx, total_wells):
                 def tile_callback(well_id_inner, tile_idx, total_tiles, completed_wells, total_wells_inner):
-                    # Report progress every 10 tiles or at completion
-                    if tile_idx % 10 == 0 or tile_idx == total_tiles:
-                        if progress_callback:
-                            progress_callback(well_id_inner, completed_wells, total_wells_inner)
+                    # Don't call main progress callback from tile callback
+                    # Progress will be reported once at well completion instead
+                    # This prevents duplicate/repeated progress callbacks
+                    pass
                 return tile_callback
 
-            tile_callback = make_tile_callback(idx, len(wells_to_segment)) if progress_callback else None
+            tile_callback = None  # Disable tile-level progress callbacks to avoid spam
 
-            # Segment the well region using grid-based approach
+            # Segment the well region using grid-based approach (now returns polygons directly)
             tile_stats = await segment_well_region_grid_based(
                 microsam_service=microsam_service,
                 experiment_manager=experiment_manager,
@@ -1109,9 +1219,6 @@ async def segment_experiment_wells(
                 timepoint=timepoint,
                 well_plate_type=well_plate_type,
                 well_padding_mm=well_padding_mm,
-                seg_canvas=seg_canvas,
-                segmentation_channel=segmentation_channel,
-                channel_idx=channel_idx,
                 tile_progress_callback=tile_callback,
                 well_index=idx,
                 total_wells=len(wells_to_segment)
@@ -1124,15 +1231,35 @@ async def segment_experiment_wells(
                 results['wells_failed'].append(well_id)
                 continue
 
-            logger.info(f"✅ Saved segmentation for well {well_id} to '{segmentation_experiment}' "
+            # Store polygons directly to JSON file
+            if tile_stats.get('polygons'):
+                total_polygons = sum(len(obj.get('polygons', [])) for obj in tile_stats['polygons'])
+                logger.info(f"💾 Storing polygons for well {well_id}: {len(tile_stats['polygons'])} object(s), {total_polygons} total polygon(s)")
+                
+                # Add well_id to each polygon object for WKT conversion
+                for polygon_obj in tile_stats['polygons']:
+                    polygon_obj['well_id'] = well_id
+                
+                # Append polygons to JSON file (run in thread to avoid blocking)
+                await asyncio.to_thread(append_polygons_to_json, json_path, tile_stats['polygons'])
+                logger.info(f"✅ Saved {len(tile_stats['polygons'])} polygon object(s) ({total_polygons} total polygons) for well {well_id} to '{source_experiment}/polygons.json'")
+            else:
+                logger.warning(f"⚠️  No polygons collected for well {well_id} - nothing to store")
+
+            logger.info(f"✅ Completed segmentation for well {well_id} "
                        f"({tile_stats['tiles_processed']} tiles processed, {tile_stats['tiles_failed']} failed, {tile_stats['tiles_skipped']} skipped)")
 
             results['successful_wells'] += 1
             results['wells_processed'].append(well_id)
 
-            # Call progress callback
+            # Call progress callback once at well completion (not during tile processing)
+            # Yield to event loop first to ensure any pending operations complete
+            await asyncio.sleep(0)
             if progress_callback:
-                progress_callback(well_id, idx + 1, len(wells_to_segment))
+                try:
+                    progress_callback(well_id, idx + 1, len(wells_to_segment))
+                except Exception as callback_error:
+                    logger.warning(f"Progress callback error after well {well_id} completion: {callback_error}")
 
         except Exception as e:
             logger.error(f"Failed to process well {well_id}: {e}", exc_info=True)
