@@ -1623,6 +1623,7 @@ class MicroscopeHyphaService:
             "segmentation_get_status": self.segmentation_get_status,
             "segmentation_cancel": self.segmentation_cancel,
             "segmentation_get_polygons": self.segmentation_get_polygons,
+            "search_cells_in_well": self.search_cells_in_well,
         }
 
         # Conditionally register Squid+ specific endpoints
@@ -2696,10 +2697,14 @@ class MicroscopeHyphaService:
                     'max_percentile': 99.0
                 } for illum in (illumination_settings or [{'channel': 'BF LED matrix full'}])]
                 
+                # Convert wells_to_scan from tuples to strings for segmentation
+                # e.g., [('B', 2)] -> ['B2']
+                wells_to_segment_str = [f"{row}{col}" for row, col in wells_to_scan] if wells_to_scan else []
+                
                 segmentation_task = asyncio.create_task(
                     self._run_segmentation_background(
                         source_experiment=actual_experiment_name,
-                        wells_to_segment=wells_to_scan,
+                        wells_to_segment=wells_to_segment_str,
                         channel_configs=channel_configs,
                         scale_level=1,
                         timepoint=timepoint,
@@ -4113,6 +4118,219 @@ class MicroscopeHyphaService:
         except Exception as e:
             logger.error(f"Failed to get polygons: {e}", exc_info=True)
             raise e
+
+    async def search_cells_in_well(
+        self,
+        well: str,
+        target_uuid: str,
+        limit_expected: int,
+        Nx: int = 1,
+        Ny: int = 1,
+        dx_mm: float = 0.8,
+        dy_mm: float = 0.8,
+        selected_channel_name: Optional[str] = None,
+        experiment_name: Optional[str] = None,
+        well_plate_type: str = '96',
+        context=None
+    ):
+        """
+        Scan a well region, segment, upload to Weaviate (without reset), and search for similar cells by UUID.
+        
+        This endpoint performs a complete workflow:
+        0. Move to well center and perform reflection-based autofocus
+        1. Scan the specified well region
+        2. Segment the scanned images
+        3. Extract cells, generate embeddings, and upload to Weaviate (appending to existing data)
+        4. Search for cells similar to the target UUID
+        5. Check if the number of similar results matches the expected limit
+        
+        Args:
+            well: Well identifier (e.g., 'A1', 'B2')
+            target_uuid: UUID of the target cell to search for similar cells
+            limit_expected: Expected number of similar cells to find
+            Nx: Number of scan positions in X direction (default: 1)
+            Ny: Number of scan positions in Y direction (default: 1)
+            dx_mm: Distance between positions in X (mm, default: 0.8)
+            dy_mm: Distance between positions in Y (mm, default: 0.8)
+            selected_channel_name: Channel name for imaging (default: 'BF LED matrix full')
+            experiment_name: Experiment name (default: active experiment)
+            well_plate_type: Well plate type ('6', '12', '24', '96', '384')
+            
+        Returns:
+            dict: {
+                'success': bool,
+                'match': bool,  # True if found_count matches limit_expected
+                'found_count': int,  # Number of similar cells found
+                'limit_expected': int,
+                'error': str (if failed)
+            }
+        """
+        try:
+            logger.info(f"🔍 Starting cell search in well {well} for UUID {target_uuid}")
+            logger.info(f"   Scan region: Nx={Nx}, Ny={Ny}, dx={dx_mm}mm, dy={dy_mm}mm")
+            logger.info(f"   Expected to find {limit_expected} similar cells")
+            
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+            
+            # Use current experiment or default
+            actual_experiment_name = experiment_name or self.squidController.experiment_manager.current_experiment_name or 'default'
+            
+            # Parse well ID (e.g., 'B2' -> row='B', col=2)
+            well_row = well[0].upper()
+            well_col = int(well[1:])
+            
+            # Calculate scan start position RELATIVE to well center
+            # scan_region_to_zarr expects relative coordinates, not absolute
+            total_width_mm = (Nx - 1) * dx_mm if Nx > 1 else 0
+            total_height_mm = (Ny - 1) * dy_mm if Ny > 1 else 0
+            start_x_mm = -total_width_mm / 2  # Relative to well center
+            start_y_mm = -total_height_mm / 2  # Relative to well center
+            
+            logger.info(f"   Scanning well {well} with {Nx}x{Ny} grid")
+            logger.info(f"   Grid start (relative to well center): ({start_x_mm:.2f}, {start_y_mm:.2f}) mm")
+            
+            # Step 0: Move to well center and perform reflection autofocus
+            logger.info(f"📍 Step 0/4: Moving to well {well} center and performing reflection autofocus...")
+            await self.squidController.move_to_well_center_for_autofocus(well_row, well_col, well_plate_type)
+            logger.info(f"✅ Moved to well {well} center")
+            
+            await self.squidController.reflection_autofocus()
+            logger.info(f"✅ Reflection autofocus completed")
+            
+            # Convert channel name to illumination_settings format with current intensity/exposure
+            from squid_control.control.config import ChannelMapper
+            
+            channel_name = selected_channel_name or 'BF LED matrix full'
+            
+            # Get channel ID from channel name
+            channel_map = ChannelMapper.get_human_to_id_map()
+            channel_id = channel_map.get(channel_name)
+            if channel_id is None:
+                raise Exception(f"Invalid channel name: {channel_name}. Valid channels: {list(channel_map.keys())}")
+            
+            # Get current intensity and exposure from microscope settings
+            param_name = self.channel_param_map.get(channel_id)
+            if param_name:
+                current_params = getattr(self, param_name, [50, 100])  # Default: intensity=50, exposure=100ms
+                if not (isinstance(current_params, list) and len(current_params) == 2):
+                    logger.warning(f"Parameter {param_name} for channel {channel_id} was not a list of two items. Using defaults.")
+                    current_params = [50, 100]
+                intensity, exposure_time = current_params
+            else:
+                # Fallback defaults if parameter not found
+                intensity, exposure_time = 50, 100
+                logger.warning(f"No parameter mapping found for channel {channel_id}, using defaults: intensity={intensity}, exposure={exposure_time}ms")
+            
+            illumination_settings = [{
+                'channel': channel_name,
+                'intensity': intensity,
+                'exposure_time': exposure_time
+            }]
+            
+            logger.info(f"   Using channel: {channel_name} (ID: {channel_id}), intensity: {intensity}, exposure: {exposure_time}ms")
+            
+            # Step 1: Scan the well region
+            logger.info("📸 Step 1/5: Scanning well region...")
+            # Convert well ID to tuple format: 'B2' -> ('B', 2)
+            wells_to_scan_tuple = [(well_row, well_col)]
+            
+            scan_result = await self.scan_region_to_zarr(
+                start_x_mm=start_x_mm,
+                start_y_mm=start_y_mm,
+                Nx=Nx,
+                Ny=Ny,
+                dx_mm=dx_mm,
+                dy_mm=dy_mm,
+                illumination_settings=illumination_settings,
+                experiment_name=actual_experiment_name,
+                wells_to_scan=wells_to_scan_tuple,
+                well_plate_type=well_plate_type,
+                uploading=False,
+                reset_application=False,  # Don't reset - append to existing data
+                context=context
+            )
+            
+            if not scan_result.get('success'):
+                raise Exception(f"Scan failed: {scan_result.get('error')}")
+            
+            logger.info(f"✅ Scan completed for well {well}")
+            
+            # Step 2: Wait for segmentation to complete
+            logger.info("🔬 Step 2/5: Waiting for segmentation and upload to complete...")
+            segmentation_result = scan_result.get('segmentation_result', {})
+            
+            if not segmentation_result.get('success'):
+                raise Exception(f"Segmentation failed: {segmentation_result.get('error')}")
+            
+            # Wait for segmentation task to complete
+            max_wait = 300  # 5 minutes timeout
+            wait_interval = 2  # Check every 2 seconds
+            elapsed = 0
+            
+            while self.segmentation_state.get('state') == 'running' and elapsed < max_wait:
+                await asyncio.sleep(wait_interval)
+                elapsed += wait_interval
+                
+                # Log progress
+                progress = self.segmentation_state.get('progress', {})
+                current_stage = progress.get('current_stage', 'processing')
+                logger.info(f"   Progress: {current_stage}")
+            
+            if self.segmentation_state.get('state') == 'running':
+                raise Exception("Segmentation timeout after 5 minutes")
+            
+            if self.segmentation_state.get('state') != 'completed':
+                raise Exception("Segmentation did not complete successfully")
+            
+            logger.info("✅ Segmentation and upload completed")
+            
+            # Step 3: Search for similar cells using UUID
+            logger.info(f"🔍 Step 3/5: Searching for cells similar to UUID {target_uuid}...")
+            
+            from squid_control.hypha_tools.weaviate_client import search_similar_by_uuid
+            
+            search_result = await search_similar_by_uuid(
+                object_uuid=target_uuid,
+                application_id=actual_experiment_name,
+                limit=100,  # Get more results to ensure we capture all similar cells
+                base_url="https://hypha.aicell.io/agent-lens/apps/agent-lens"
+            )
+            
+            if not search_result.get('success'):
+                raise Exception(f"Search failed: {search_result.get('error')}")
+            
+            similar_results = search_result.get('results', [])
+            found_count = len(similar_results)
+            
+            logger.info(f"   Found {found_count} similar cells")
+            
+            # Step 4: Check if count matches expectation
+            logger.info("✅ Step 4/5: Comparing results...")
+            match = (found_count == limit_expected)
+            
+            if match:
+                logger.info(f"✅ SUCCESS: Found exactly {found_count} similar cells (expected: {limit_expected})")
+            else:
+                logger.warning(f"⚠️ MISMATCH: Found {found_count} similar cells (expected: {limit_expected})")
+            
+            return {
+                'success': True,
+                'match': match,
+                'found_count': found_count,
+                'limit_expected': limit_expected
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to search cells in well: {e}", exc_info=True)
+            return {
+                'success': False,
+                'match': False,
+                'found_count': 0,
+                'limit_expected': limit_expected,
+                'error': str(e)
+            }
 
     async def stop_scan_and_stitching(self, context=None):
         """

@@ -279,16 +279,18 @@ async def search_similar_by_uuid(
     """
     url = f"{base_url}/similarity/search/text"
     
-    # Prepare query with uuid: prefix
-    query_text = f"uuid: {object_uuid}"
+    # Prepare query with uuid: prefix (no space after colon)
+    query_text = f"uuid:{object_uuid}"
     
-    # Prepare query parameters
+    # Prepare query parameters (FastAPI POST with query params)
     params = {
         "query_text": query_text,
         "limit": limit
     }
     if application_id:
         params["application_id"] = application_id
+    
+    logger.info(f"Searching for UUID: {object_uuid} with query: {query_text}")
     
     try:
         async with aiohttp.ClientSession() as session:
