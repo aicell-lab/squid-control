@@ -1114,12 +1114,13 @@ async def segment_experiment_wells(
                         continue
                     
                     # Check if the sample region is empty (all zeros or mostly zeros)
-                    # Consider empty if >95% of pixels are zero (or very close to zero, accounting for noise)
+                    # Consider empty if >99% of pixels are zero (or very close to zero, accounting for noise)
+                    # Lowered threshold from 5.0% to 1.0% to be more lenient with single image scans
                     non_zero_pixels = np.sum(sample_region > 10)  # Threshold of 10 to account for noise
                     total_pixels = sample_region.size
                     non_zero_percentage = (non_zero_pixels / total_pixels) * 100.0
                     
-                    if non_zero_percentage < 5.0:
+                    if non_zero_percentage < 1.0:
                         logger.warning(f"⚠️  Source well {well_id} appears to be empty (only {non_zero_percentage:.2f}% non-zero pixels in sample region)")
                         logger.warning(f"   Skipping well {well_id} - no imaging data available")
                         results['failed_wells'] += 1

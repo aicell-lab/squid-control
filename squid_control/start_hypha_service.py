@@ -4193,11 +4193,17 @@ class MicroscopeHyphaService:
             
             # Step 0: Move to well center and perform reflection autofocus
             logger.info(f"📍 Step 0/4: Moving to well {well} center and performing reflection autofocus...")
-            await self.squidController.move_to_well_center_for_autofocus(well_row, well_col, well_plate_type)
-            logger.info(f"✅ Moved to well {well} center")
+            try:
+                await self.squidController.move_to_well_center_for_autofocus(well_row, well_col, well_plate_type)
+                logger.info(f"✅ Moved to well {well} center")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to move to well {well} center: {e}. Continuing anyway...")
             
-            await self.squidController.reflection_autofocus()
-            logger.info(f"✅ Reflection autofocus completed")
+            try:
+                await self.squidController.reflection_autofocus()
+                logger.info(f"✅ Reflection autofocus completed")
+            except Exception as e:
+                logger.warning(f"⚠️ Reflection autofocus failed: {e}. Continuing with scan anyway...")
             
             # Convert channel name to illumination_settings format with current intensity/exposure
             from squid_control.control.config import ChannelMapper
