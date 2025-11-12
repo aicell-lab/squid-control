@@ -4119,6 +4119,7 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to get polygons: {e}", exc_info=True)
             raise e
 
+    @schema_function(skip_self=True)
     async def search_cells_in_well(
         self,
         well: str,
@@ -4128,7 +4129,7 @@ class MicroscopeHyphaService:
         Ny: int = 1,
         dx_mm: float = 0.8,
         dy_mm: float = 0.8,
-        selected_channel_name: Optional[str] = None,
+        selected_channels: Optional[int] = Field(None, description="Illumination channel: 0=Brightfield, 11=405nm, 12=488nm, 13=638nm, 14=561nm, 15=730nm. If None, uses current microscope channel."),
         experiment_name: Optional[str] = None,
         well_plate_type: str = '96',
         context=None
@@ -4152,7 +4153,7 @@ class MicroscopeHyphaService:
             Ny: Number of scan positions in Y direction (default: 1)
             dx_mm: Distance between positions in X (mm, default: 0.8)
             dy_mm: Distance between positions in Y (mm, default: 0.8)
-            selected_channel_name: Channel name for imaging (default: 'BF LED matrix full')
+            selected_channels: Channel ID for imaging (0=Brightfield, 11=405nm, 12=488nm, 13=638nm, 14=561nm, 15=730nm). If None, uses current microscope channel.
             experiment_name: Experiment name (default: active experiment)
             well_plate_type: Well plate type ('6', '12', '24', '96', '384')
             
@@ -4205,29 +4206,31 @@ class MicroscopeHyphaService:
             except Exception as e:
                 logger.warning(f"⚠️ Reflection autofocus failed: {e}. Continuing with scan anyway...")
             
-            # Convert channel name to illumination_settings format with current intensity/exposure
+            # Get channel ID (use current channel if None, like snap() does)
             from squid_control.control.config import ChannelMapper
             
-            channel_name = selected_channel_name or 'BF LED matrix full'
-            
-            # Get channel ID from channel name
-            channel_map = ChannelMapper.get_human_to_id_map()
-            channel_id = channel_map.get(channel_name)
-            if channel_id is None:
-                raise Exception(f"Invalid channel name: {channel_name}. Valid channels: {list(channel_map.keys())}")
-            
-            # Get current intensity and exposure from microscope settings
-            param_name = self.channel_param_map.get(channel_id)
-            if param_name:
-                current_params = getattr(self, param_name, [50, 100])  # Default: intensity=50, exposure=100ms
-                if not (isinstance(current_params, list) and len(current_params) == 2):
-                    logger.warning(f"Parameter {param_name} for channel {channel_id} was not a list of two items. Using defaults.")
-                    current_params = [50, 100]
-                intensity, exposure_time = current_params
+            if selected_channels is None:
+                channel_id = self.squidController.current_channel
+                logger.info(f"Using current channel: {channel_id}")
             else:
-                # Fallback defaults if parameter not found
-                intensity, exposure_time = 50, 100
-                logger.warning(f"No parameter mapping found for channel {channel_id}, using defaults: intensity={intensity}, exposure={exposure_time}ms")
+                channel_id = selected_channels
+            
+            # Get channel parameter name to access current intensity and exposure
+            param_name = self.channel_param_map.get(channel_id)
+            if param_name is None:
+                raise Exception(f"Invalid channel: {channel_id}. Valid channels are: {list(self.channel_param_map.keys())}")
+            
+            # Get current intensity and exposure from channel parameters
+            current_params = getattr(self, param_name, [50, 100])  # Default fallback
+            if not (isinstance(current_params, list) and len(current_params) == 2):
+                logger.warning(f"Parameter {param_name} for channel {channel_id} was not a list of two items. Using defaults.")
+                current_params = [50, 100]
+            
+            intensity, exposure_time = current_params
+            
+            # Get channel name from channel ID for illumination_settings
+            channel_info = ChannelMapper.get_channel_info(channel_id)
+            channel_name = channel_info.human_name
             
             illumination_settings = [{
                 'channel': channel_name,
