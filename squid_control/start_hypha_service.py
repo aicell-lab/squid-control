@@ -293,7 +293,16 @@ class MicroscopeHyphaService:
                 'current_well': None,
                 'source_channel': None,
                 'source_experiment': None,
-                'segmentation_experiment': None
+                'segmentation_experiment': None,
+                # Similarity search tracking
+                'similarity_search_enabled': False,
+                'similarity_search_status': 'idle',  # idle, extracting, embedding, uploading, completed, failed
+                'total_polygons': 0,
+                'extracted_count': 0,
+                'embedding_count': 0,
+                'uploaded_count': 0,
+                'failed_count': 0,
+                'current_stage': None  # e.g., "Extracting images", "Generating embeddings", etc.
             }
         }
 
@@ -3785,11 +3794,31 @@ class MicroscopeHyphaService:
                 self.segmentation_state['progress']['current_well'] = well_id
                 logger.info(f"Progress: {completed}/{total} wells completed (current: {well_id})")
 
+            # Define similarity search progress callback
+            def similarity_search_callback(message, current, total):
+                self.segmentation_state['progress']['current_stage'] = message
+                # Update specific counts based on stage
+                if 'Extracting' in message or 'Loaded' in message:
+                    self.segmentation_state['progress']['similarity_search_status'] = 'extracting'
+                    self.segmentation_state['progress']['total_polygons'] = total
+                    self.segmentation_state['progress']['extracted_count'] = current
+                elif 'embedding' in message.lower():
+                    self.segmentation_state['progress']['similarity_search_status'] = 'embedding'
+                    self.segmentation_state['progress']['embedding_count'] = current
+                elif 'Uploading' in message or 'Setting up' in message:
+                    self.segmentation_state['progress']['similarity_search_status'] = 'uploading'
+                    self.segmentation_state['progress']['uploaded_count'] = current
+                elif 'Complete' in message:
+                    self.segmentation_state['progress']['similarity_search_status'] = 'completed'
+                    self.segmentation_state['progress']['uploaded_count'] = current
+                logger.info(f"Similarity search: {message} ({current}/{total})")
+
             # Initialize progress tracking
             self.segmentation_state['progress']['total_wells'] = len(wells_to_segment)
             self.segmentation_state['progress']['completed_wells'] = 0
             self.segmentation_state['progress']['channel_configs'] = channel_configs
             self.segmentation_state['progress']['source_experiment'] = source_experiment
+            self.segmentation_state['progress']['similarity_search_enabled'] = True
 
             # Run segmentation with multi-channel support
             results = await segment_experiment_wells(
@@ -3802,13 +3831,37 @@ class MicroscopeHyphaService:
                 timepoint=timepoint,
                 well_plate_type=well_plate_type,
                 well_padding_mm=well_padding_mm,
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
+                enable_similarity_search=True,
+                similarity_search_callback=similarity_search_callback
             )
 
+            # Update state with similarity search results
+            if 'similarity_search_results' in results:
+                sim_results = results['similarity_search_results']
+                self.segmentation_state['progress']['total_polygons'] = sim_results.get('total_polygons', 0)
+                self.segmentation_state['progress']['extracted_count'] = sim_results.get('extracted_count', 0)
+                self.segmentation_state['progress']['embedding_count'] = sim_results.get('embedding_success_count', 0)
+                self.segmentation_state['progress']['uploaded_count'] = sim_results.get('uploaded_count', 0)
+                self.segmentation_state['progress']['failed_count'] = sim_results.get('failed_count', 0)
+                
+                if sim_results.get('success'):
+                    self.segmentation_state['progress']['similarity_search_status'] = 'completed'
+                else:
+                    self.segmentation_state['progress']['similarity_search_status'] = 'failed'
+            
             # Update state to completed
             self.segmentation_state['state'] = 'completed'
             logger.info("✅ Segmentation completed successfully!")
             logger.info(f"  Successful wells: {results['successful_wells']}/{results['total_wells']}")
+            
+            # Log similarity search results if available
+            if 'similarity_search_results' in results:
+                sim_results = results['similarity_search_results']
+                if sim_results.get('success'):
+                    logger.info(f"  Similarity search: {sim_results['uploaded_count']} cells uploaded to Weaviate")
+                else:
+                    logger.warning(f"  Similarity search: Failed with {sim_results.get('failed_count', 0)} errors")
 
             return results
 

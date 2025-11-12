@@ -980,10 +980,14 @@ async def segment_experiment_wells(
     timepoint: int,
     well_plate_type: str,
     well_padding_mm: float,
-    progress_callback: Optional[Callable[[str, int, int], None]] = None
+    progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    enable_similarity_search: bool = True,
+    similarity_search_callback: Optional[Callable[[str, int, int], None]] = None
 ) -> Dict[str, Any]:
     """
     Segment multiple wells from an experiment with multi-channel merging.
+    
+    Automatically processes segmentation results for similarity search if enabled.
     
     Args:
         microsam_service: Connected microSAM service
@@ -996,9 +1000,13 @@ async def segment_experiment_wells(
         well_plate_type: Well plate format
         well_padding_mm: Well padding in mm
         progress_callback: Optional callback function(well_id, completed, total)
+        enable_similarity_search: Automatically process for similarity search (default: True)
+        similarity_search_callback: Optional callback for similarity search progress(message, current, total)
     
     Returns:
-        results: Dictionary with segmentation results and statistics
+        results: Dictionary with segmentation results and statistics, including:
+            - Standard segmentation results
+            - 'similarity_search_results': Dict with extraction/upload results (if enabled)
     """
     logger.info(f"🚀 Starting batch segmentation of {len(wells_to_segment)} wells")
     logger.info(f"Source experiment: '{source_experiment}'")
@@ -1219,5 +1227,336 @@ async def segment_experiment_wells(
     logger.info(f"  Failed: {results['failed_wells']}/{results['total_wells']}")
     logger.info(f"  Channels used: {len(channel_configs)}")
 
+    # Automatically process for similarity search if enabled
+    if enable_similarity_search and results['successful_wells'] > 0:
+        logger.info("🔄 Starting automatic similarity search processing...")
+        try:
+            similarity_results = await process_segmentation_for_similarity_search(
+                experiment_manager=experiment_manager,
+                source_experiment=source_experiment,
+                channel_configs=channel_configs,
+                progress_callback=similarity_search_callback,
+                batch_size=64
+            )
+            results['similarity_search_results'] = similarity_results
+            
+            if similarity_results['success']:
+                logger.info(f"✅ Similarity search processing complete: "
+                          f"{similarity_results['uploaded_count']} cells uploaded to Weaviate")
+            else:
+                logger.warning(f"⚠️  Similarity search processing had issues: "
+                             f"{similarity_results.get('failed_count', 0)} failed, "
+                             f"errors: {similarity_results.get('errors', [])}")
+        except Exception as e:
+            logger.error(f"❌ Similarity search processing failed: {e}", exc_info=True)
+            results['similarity_search_results'] = {
+                'success': False,
+                'error': str(e)
+            }
+    elif enable_similarity_search:
+        logger.info("⚠️  Skipping similarity search processing: no successful wells")
+        results['similarity_search_results'] = {
+            'success': False,
+            'error': 'No successful wells to process'
+        }
+
+    return results
+
+
+async def process_segmentation_for_similarity_search(
+    experiment_manager,
+    source_experiment: str,
+    channel_configs: List[Dict],
+    progress_callback: Optional[Callable[[str, int, int], None]] = None,
+    batch_size: int = 32,
+    agent_lens_base_url: str = "https://hypha.aicell.io/agent-lens/apps/agent-lens"
+) -> Dict[str, Any]:
+    """
+    Post-process segmentation results for similarity search.
+    
+    Orchestrates the complete pipeline:
+    1. Load polygons from JSON file
+    2. Extract cell images from zarr using polygons
+    3. Generate embeddings using agent-lens
+    4. Setup Weaviate application (delete old, create new)
+    5. Batch upload to Weaviate
+    
+    Args:
+        experiment_manager: ExperimentManager instance
+        source_experiment: Source experiment name
+        channel_configs: List of channel configurations (same as used for segmentation)
+        progress_callback: Optional callback(status_message, current, total)
+        batch_size: Batch size for embedding generation and upload (default: 32)
+        agent_lens_base_url: Base URL for agent-lens service
+    
+    Returns:
+        Dict with results:
+            {
+                'success': bool,
+                'total_polygons': int,
+                'extracted_count': int,
+                'embedding_success_count': int,
+                'uploaded_count': int,
+                'failed_count': int,
+                'errors': List[str]
+            }
+    """
+    from datetime import datetime
+    
+    from squid_control.hypha_tools.cell_extractor import (
+        extract_cell_image_from_experiment,
+        generate_cell_preview
+    )
+    from squid_control.hypha_tools.embedding_generator import generate_embeddings_batch
+    from squid_control.hypha_tools.weaviate_client import (
+        batch_upload_to_weaviate,
+        setup_weaviate_application
+    )
+    
+    logger.info(f"🚀 Starting similarity search processing for experiment: {source_experiment}")
+    
+    results = {
+        'success': False,
+        'total_polygons': 0,
+        'extracted_count': 0,
+        'embedding_success_count': 0,
+        'uploaded_count': 0,
+        'failed_count': 0,
+        'errors': []
+    }
+    
+    try:
+        # Step 1: Load polygons from JSON
+        json_path = experiment_manager.base_path / source_experiment / "polygons.json"
+        if not json_path.exists():
+            error_msg = f"Polygons file not found: {json_path}"
+            logger.error(error_msg)
+            results['errors'].append(error_msg)
+            return results
+        
+        logger.info(f"📂 Loading polygons from: {json_path}")
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+        
+        # Extract polygons array from JSON structure
+        if isinstance(data, dict) and 'polygons' in data:
+            all_polygons = data['polygons']
+        elif isinstance(data, list):
+            # Legacy format: direct list
+            all_polygons = data
+        else:
+            raise ValueError(f"Invalid polygons.json format: expected dict with 'polygons' key or list")
+        
+        results['total_polygons'] = len(all_polygons)
+        logger.info(f"Loaded {results['total_polygons']} polygon objects")
+        
+        if results['total_polygons'] == 0:
+            logger.warning("No polygons to process")
+            results['success'] = True
+            return results
+        
+        if progress_callback:
+            progress_callback(f"Loaded {results['total_polygons']} polygons", 0, results['total_polygons'])
+        
+        # Step 2: Extract cell images and prepare data
+        logger.info("🖼️  Extracting cell images from zarr...")
+        extracted_images = []
+        extracted_metadata = []
+        
+        for idx, polygon_obj in enumerate(all_polygons):
+            try:
+                polygon_wkt = polygon_obj.get('polygon_wkt')
+                well_id = polygon_obj.get('well_id')
+                
+                if not polygon_wkt or not well_id:
+                    logger.warning(f"Polygon {idx}: Missing polygon_wkt or well_id, skipping")
+                    results['failed_count'] += 1
+                    continue
+                
+                # Extract cell image (scale 0 = full resolution)
+                cell_image, metadata = extract_cell_image_from_experiment(
+                    experiment_manager=experiment_manager,
+                    experiment_name=source_experiment,
+                    well_id=well_id,
+                    polygon_wkt=polygon_wkt,
+                    channel_configs=channel_configs,
+                    well_plate_type="96",  # Default, could be made configurable
+                    timepoint=0,
+                    scale=0
+                )
+                
+                extracted_images.append(cell_image)
+                extracted_metadata.append({
+                    'polygon_obj': polygon_obj,
+                    'well_id': well_id,
+                    'extraction_metadata': metadata
+                })
+                results['extracted_count'] += 1
+                
+                if (idx + 1) % 100 == 0:
+                    logger.info(f"  Extracted {idx + 1}/{results['total_polygons']} cell images")
+                    if progress_callback:
+                        progress_callback(f"Extracting images", idx + 1, results['total_polygons'])
+                
+            except Exception as e:
+                logger.warning(f"Polygon {idx}: Failed to extract image: {e}")
+                results['failed_count'] += 1
+                results['errors'].append(f"Extract polygon {idx}: {str(e)}")
+        
+        logger.info(f"✅ Extracted {results['extracted_count']}/{results['total_polygons']} cell images")
+        
+        if results['extracted_count'] == 0:
+            error_msg = "No cell images extracted successfully"
+            logger.error(error_msg)
+            results['errors'].append(error_msg)
+            return results
+        
+        # Step 3: Generate embeddings
+        logger.info(f"🧠 Generating embeddings for {results['extracted_count']} images...")
+        if progress_callback:
+            progress_callback(f"Generating embeddings", 0, results['extracted_count'])
+        
+        # Create progress callback wrapper for embedding generation
+        def embedding_progress_callback(current, total):
+            if progress_callback:
+                progress_callback(f"Generating embeddings", current, total)
+        
+        embeddings = await generate_embeddings_batch(
+            images=extracted_images,
+            batch_size=batch_size,
+            retry_attempts=2,
+            base_url=agent_lens_base_url,
+            progress_callback=embedding_progress_callback
+        )
+        
+        results['embedding_success_count'] = sum(1 for e in embeddings if e is not None)
+        logger.info(f"✅ Generated {results['embedding_success_count']}/{results['extracted_count']} embeddings")
+        
+        if results['embedding_success_count'] == 0:
+            error_msg = "No embeddings generated successfully"
+            logger.error(error_msg)
+            results['errors'].append(error_msg)
+            return results
+        
+        # Step 4: Setup Weaviate application
+        logger.info("🔧 Setting up Weaviate application...")
+        if progress_callback:
+            progress_callback("Setting up Weaviate", 0, 1)
+        
+        setup_result = await setup_weaviate_application(
+            application_id=source_experiment,
+            description=f"Segmentation results from {source_experiment}",
+            base_url=agent_lens_base_url
+        )
+        
+        if not setup_result['success']:
+            error_msg = f"Failed to setup Weaviate application: {setup_result.get('error')}"
+            logger.error(error_msg)
+            results['errors'].append(error_msg)
+            return results
+        
+        logger.info("✅ Weaviate application ready")
+        
+        # Step 5: Prepare objects and upload to Weaviate
+        logger.info("📤 Preparing objects for upload...")
+        upload_objects = []
+        timestamp = datetime.utcnow().isoformat() + "Z"
+        
+        for idx, (metadata, embedding, image) in enumerate(zip(extracted_metadata, embeddings, extracted_images)):
+            if embedding is None:
+                logger.warning(f"Cell {idx}: No embedding, skipping upload")
+                continue
+            
+            polygon_obj = metadata['polygon_obj']
+            well_id = metadata['well_id']
+            
+            # Generate annotation ID
+            annotation_id = f"{source_experiment}_cell_{idx}"
+            
+            # Generate preview image
+            try:
+                preview_base64 = generate_cell_preview(image, size=50)
+            except Exception as e:
+                logger.warning(f"Cell {idx}: Failed to generate preview: {e}")
+                preview_base64 = None
+            
+            # Prepare metadata
+            upload_metadata = {
+                'annotation_id': annotation_id,
+                'well_id': well_id,
+                'annotation_type': 'polygon',
+                'timestamp': timestamp,
+                'polygon_wkt': polygon_obj.get('polygon_wkt'),
+                'source': 'segmentation',
+                'bbox': polygon_obj.get('bbox'),
+                'channel_info': [config['channel'] for config in channel_configs]
+            }
+            
+            # Prepare upload object
+            upload_obj = {
+                'image_id': annotation_id,
+                'description': f"Segmented cell from well {well_id}",
+                'metadata': upload_metadata,
+                'dataset_id': source_experiment,
+                'vector': embedding
+            }
+            
+            if preview_base64:
+                upload_obj['preview_image'] = preview_base64
+            
+            upload_objects.append(upload_obj)
+        
+        logger.info(f"Prepared {len(upload_objects)} objects for upload")
+        
+        # Upload in batches
+        logger.info(f"📤 Uploading {len(upload_objects)} objects to Weaviate...")
+        uploaded_total = 0
+        
+        for batch_start in range(0, len(upload_objects), batch_size):
+            batch_end = min(batch_start + batch_size, len(upload_objects))
+            batch_objects = upload_objects[batch_start:batch_end]
+            
+            if progress_callback:
+                progress_callback(f"Uploading batch", batch_start, len(upload_objects))
+            
+            upload_result = await batch_upload_to_weaviate(
+                objects=batch_objects,
+                application_id=source_experiment,
+                base_url=agent_lens_base_url,
+                retry_attempts=2
+            )
+            
+            if upload_result['success']:
+                uploaded_total += upload_result['uploaded_count']
+                logger.info(f"  Uploaded batch {batch_start//batch_size + 1}: "
+                          f"{upload_result['uploaded_count']} objects")
+            else:
+                error_msg = f"Batch {batch_start}-{batch_end-1} upload failed: {upload_result.get('error')}"
+                logger.warning(error_msg)
+                results['errors'].append(error_msg)
+        
+        results['uploaded_count'] = uploaded_total
+        logger.info(f"✅ Uploaded {results['uploaded_count']}/{len(upload_objects)} objects to Weaviate")
+        
+        # Final status
+        if results['uploaded_count'] > 0:
+            results['success'] = True
+            logger.info(f"🎉 Similarity search processing complete!")
+            logger.info(f"  Total polygons: {results['total_polygons']}")
+            logger.info(f"  Extracted: {results['extracted_count']}")
+            logger.info(f"  Embeddings: {results['embedding_success_count']}")
+            logger.info(f"  Uploaded: {results['uploaded_count']}")
+            logger.info(f"  Failed: {results['failed_count']}")
+        else:
+            logger.error("No objects uploaded to Weaviate")
+        
+        if progress_callback:
+            progress_callback("Complete", results['uploaded_count'], results['total_polygons'])
+        
+    except Exception as e:
+        error_msg = f"Fatal error in similarity search processing: {e}"
+        logger.error(error_msg, exc_info=True)
+        results['errors'].append(error_msg)
+    
     return results
 
