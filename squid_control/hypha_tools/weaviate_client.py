@@ -226,25 +226,27 @@ async def setup_weaviate_application(
     application_id: str,
     description: str = "",
     collection_name: str = WEAVIATE_COLLECTION_NAME,
-    base_url: str = AGENT_LENS_BASE_URL
+    base_url: str = AGENT_LENS_BASE_URL,
+    reset_application: bool = True
 ) -> Dict[str, Any]:
     """
-    Complete setup workflow: delete existing, create new, and set current application.
+    Complete setup workflow: optionally delete existing, create new, and set current application.
     
     Args:
         application_id: Unique identifier for the application
         description: Optional description
         collection_name: Weaviate collection name
         base_url: Base URL for agent-lens service
+        reset_application: If True, delete existing application before creating (default: True)
     
     Returns:
         Dict with 'success' (bool) and optional 'error' (str)
     """
-    # Step 1: Delete existing application
-    delete_result = await delete_weaviate_application(application_id, collection_name, base_url)
-    if not delete_result['success']:
-        # Non-critical - continue anyway
-        logger.warning(f"Delete failed but continuing: {delete_result.get('error')}")
+    # Step 1: Delete existing application if reset requested
+    if reset_application:
+        delete_result = await delete_weaviate_application(application_id, collection_name, base_url)
+        if not delete_result['success']:
+            logger.warning(f"Delete failed but continuing: {delete_result.get('error')}")
     
     # Step 2: Create new application
     create_result = await create_weaviate_application(application_id, description, collection_name, base_url)
@@ -255,4 +257,71 @@ async def setup_weaviate_application(
     await set_current_weaviate_application(application_id, base_url)
     
     return {'success': True}
+
+
+async def search_similar_by_uuid(
+    object_uuid: str,
+    application_id: Optional[str] = None,
+    limit: int = 10,
+    base_url: str = AGENT_LENS_BASE_URL
+) -> Dict[str, Any]:
+    """
+    Search for similar images by UUID.
+    
+    Args:
+        object_uuid: UUID of the object to search for similar items
+        application_id: Application ID (optional, uses current active if not provided)
+        limit: Maximum number of results to return (default: 10)
+        base_url: Base URL for agent-lens service
+    
+    Returns:
+        Dict with 'success' (bool), 'results' (list), 'count' (int), and optional 'error' (str)
+    """
+    url = f"{base_url}/similarity/search/text"
+    
+    # Prepare query with uuid: prefix
+    query_text = f"uuid: {object_uuid}"
+    
+    # Prepare query parameters
+    params = {
+        "query_text": query_text,
+        "limit": limit
+    }
+    if application_id:
+        params["application_id"] = application_id
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url,
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=30)
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    logger.info(f"UUID search successful: {result.get('count', 0)} results")
+                    return {
+                        'success': True,
+                        'results': result.get('results', []),
+                        'count': result.get('count', 0),
+                        'query_type': 'uuid',
+                        'uuid': object_uuid
+                    }
+                else:
+                    error_text = await response.text()
+                    logger.error(f"UUID search failed: {response.status} - {error_text}")
+                    return {
+                        'success': False,
+                        'error': f"HTTP {response.status}: {error_text}",
+                        'results': [],
+                        'count': 0
+                    }
+    except Exception as e:
+        logger.error(f"Error in UUID search: {e}", exc_info=True)
+        return {
+            'success': False,
+            'error': str(e),
+            'results': [],
+            'count': 0
+        }
 

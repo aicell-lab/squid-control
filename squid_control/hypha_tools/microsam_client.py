@@ -982,7 +982,8 @@ async def segment_experiment_wells(
     well_padding_mm: float,
     progress_callback: Optional[Callable[[str, int, int], None]] = None,
     enable_similarity_search: bool = True,
-    similarity_search_callback: Optional[Callable[[str, int, int], None]] = None
+    similarity_search_callback: Optional[Callable[[str, int, int], None]] = None,
+    reset_application: bool = True
 ) -> Dict[str, Any]:
     """
     Segment multiple wells from an experiment with multi-channel merging.
@@ -1236,7 +1237,8 @@ async def segment_experiment_wells(
                 source_experiment=source_experiment,
                 channel_configs=channel_configs,
                 progress_callback=similarity_search_callback,
-                batch_size=64
+                batch_size=64,
+                reset_application=reset_application
             )
             results['similarity_search_results'] = similarity_results
             
@@ -1269,7 +1271,8 @@ async def process_segmentation_for_similarity_search(
     channel_configs: List[Dict],
     progress_callback: Optional[Callable[[str, int, int], None]] = None,
     batch_size: int = 32,
-    agent_lens_base_url: str = "https://hypha.aicell.io/agent-lens/apps/agent-lens"
+    agent_lens_base_url: str = "https://hypha.aicell.io/agent-lens/apps/agent-lens",
+    reset_application: bool = True
 ) -> Dict[str, Any]:
     """
     Post-process segmentation results for similarity search.
@@ -1446,7 +1449,8 @@ async def process_segmentation_for_similarity_search(
         setup_result = await setup_weaviate_application(
             application_id=source_experiment,
             description=f"Segmentation results from {source_experiment}",
-            base_url=agent_lens_base_url
+            base_url=agent_lens_base_url,
+            reset_application=reset_application
         )
         
         if not setup_result['success']:

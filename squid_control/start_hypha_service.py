@@ -1607,7 +1607,6 @@ class MicroscopeHyphaService:
             "scan_region_to_zarr": self.scan_region_to_zarr,
             "quick_scan_brightfield_to_zarr": self.quick_scan_brightfield_to_zarr,
             "get_stitched_region": self.get_stitched_region,
-            "get_stitched_regions_batch": self.get_stitched_regions_batch,
             # Experiment management functions (replaces zarr fileset management)
             "create_experiment": self.create_experiment,
             "list_experiments": self.list_experiments,
@@ -2610,12 +2609,12 @@ class MicroscopeHyphaService:
             logger.error(f"Error uploading experiment dataset: {e}")
             raise e
 
-    async def scan_region_to_zarr(self, start_x_mm: float = 20, start_y_mm: float = 20, Nx: int = 5, Ny: int = 5, dx_mm: float = 0.9, dy_mm: float = 0.9, illumination_settings: Optional[List[dict]] = None, do_contrast_autofocus: bool = False, do_reflection_af: bool = False, action_ID: str = 'normal_scan_stitching', timepoint: int = 0, experiment_name: Optional[str] = None, wells_to_scan: List[str] = None, well_plate_type: str = '96', well_padding_mm: float = 1.0, uploading: bool = False, context=None):
+    async def scan_region_to_zarr(self, start_x_mm: float = 20, start_y_mm: float = 20, Nx: int = 5, Ny: int = 5, dx_mm: float = 0.9, dy_mm: float = 0.9, illumination_settings: Optional[List[dict]] = None, do_contrast_autofocus: bool = False, do_reflection_af: bool = False, action_ID: str = 'normal_scan_stitching', timepoint: int = 0, experiment_name: Optional[str] = None, wells_to_scan: List[str] = None, well_plate_type: str = '96', well_padding_mm: float = 1.0, uploading: bool = False, reset_application: bool = True, context=None):
         """
         DEPRECATED: Use scan_start() with saved_data_type='full_zarr' instead.
         
-        Perform a region scan with live stitching to OME-Zarr canvas using well-based approach.
-        The images are saved to well-specific zarr canvases within an experiment folder.
+        Perform region scan with live stitching to OME-Zarr. Automatically triggers
+        segmentation and similarity search (cell extraction, embeddings, Weaviate upload) after scan.
         
         Args:
             start_x_mm: Starting X position in millimeters
@@ -2634,9 +2633,10 @@ class MicroscopeHyphaService:
             well_plate_type: Well plate type ('6', '12', '24', '96', '384')
             well_padding_mm: Padding around well in mm
             uploading: Enable upload after scanning is complete
+            reset_application: Reset Weaviate application before upload (default: True)
             
         Returns:
-            dict: Status of the scan
+            dict: Status of the scan, including segmentation_result with segmentation status
         """
         logger.warning("DEPRECATED: scan_region_to_zarr is deprecated and will be removed in a future release. Use scan_start() with saved_data_type='full_zarr' instead.")
         try:
@@ -2685,13 +2685,44 @@ class MicroscopeHyphaService:
                 well_padding_mm=well_padding_mm
             )
 
+            actual_experiment_name = experiment_name or self.squidController.experiment_manager.current_experiment_name
+            
+            # Auto-trigger segmentation after scan
+            segmentation_result = None
+            try:
+                channel_configs = [{
+                    'channel': illum.get('channel', 'BF LED matrix full'),
+                    'min_percentile': 1.0,
+                    'max_percentile': 99.0
+                } for illum in (illumination_settings or [{'channel': 'BF LED matrix full'}])]
+                
+                segmentation_task = asyncio.create_task(
+                    self._run_segmentation_background(
+                        source_experiment=actual_experiment_name,
+                        wells_to_segment=wells_to_scan,
+                        channel_configs=channel_configs,
+                        scale_level=1,
+                        timepoint=timepoint,
+                        well_plate_type=well_plate_type,
+                        well_padding_mm=well_padding_mm,
+                        reset_application=reset_application,
+                        context=context
+                    )
+                )
+                self.segmentation_state['segmentation_task'] = segmentation_task
+                self.segmentation_state['state'] = 'running'
+                segmentation_result = {"success": True, "experiment_name": actual_experiment_name}
+            except Exception as e:
+                logger.error(f"Auto-segmentation failed: {e}", exc_info=True)
+                segmentation_result = {"success": False, "error": str(e)}
+            
             # Upload the experiment if uploading is enabled
             upload_result = None
             if uploading:
                 try:
                     logger.info("Uploading experiment after normal scan completion")
                     upload_result = await self.upload_zarr_dataset(
-                        experiment_name=experiment_name or self.squidController.experiment_manager.current_experiment_name,
+                        experiment_name=actual_experiment_name,
                         description=f"Normal scan with stitching - {action_ID}",
                         include_acquisition_settings=True
                     )
@@ -2708,9 +2739,10 @@ class MicroscopeHyphaService:
                     "grid_size": {"nx": Nx, "ny": Ny},
                     "step_size": {"dx_mm": dx_mm, "dy_mm": dy_mm},
                     "total_area_mm2": (Nx * dx_mm) * (Ny * dy_mm),
-                    "experiment_name": self.squidController.experiment_manager.current_experiment_name,  # Include the actual experiment used
+                    "experiment_name": actual_experiment_name,
                     "wells_scanned": wells_to_scan
                 },
+                "segmentation_result": segmentation_result,
                 "upload_result": upload_result
             }
         except Exception as e:
@@ -3166,76 +3198,6 @@ class MicroscopeHyphaService:
         except Exception as e:
             logger.error(f"Error merging channels to RGB: {e}")
             return None
-
-    def get_stitched_regions_batch(self, regions: list, context=None):
-        """
-        Get multiple stitched regions in a single call to reduce WebSocket overhead.
-        
-        Args:
-            regions: List of region parameter dictionaries. Each dict must contain:
-                - center_x_mm: float (required)
-                - center_y_mm: float (required)
-                - width_mm: float (default: 5.0)
-                - height_mm: float (default: 5.0)
-                - well_plate_type: str (default: '96')
-                - scale_level: int (default: 0)
-                - channel_name: str (default: 'BF LED matrix full')
-                - experiment_name: str (default: None)
-            context: Request context for authentication
-            
-        Returns:
-            Dictionary with success status, results list, and count.
-            Each result follows the same structure as get_stitched_region response, or None if failed.
-        """
-        try:
-            # Check authentication
-            if context and not self.check_permission(context.get("user", {})):
-                logger.warning("User not authorized to access this service")
-                raise Exception("User not authorized to access this service")
-
-            if not isinstance(regions, list):
-                raise ValueError("regions must be a list of dictionaries")
-
-            results = []
-            for i, region_params in enumerate(regions):
-                try:
-                    # Extract parameters with defaults
-                    center_x_mm = region_params.get("center_x_mm")
-                    center_y_mm = region_params.get("center_y_mm")
-
-                    if center_x_mm is None or center_y_mm is None:
-                        logger.warning(f"Region {i}: missing required center_x_mm or center_y_mm")
-                        results.append(None)
-                        continue
-
-                    # Call existing get_stitched_region with extracted parameters
-                    result = self.get_stitched_region(
-                        center_x_mm=center_x_mm,
-                        center_y_mm=center_y_mm,
-                        width_mm=region_params.get("width_mm", 5.0),
-                        height_mm=region_params.get("height_mm", 5.0),
-                        well_plate_type=region_params.get("well_plate_type", "96"),
-                        scale_level=region_params.get("scale_level", 0),
-                        channel_name=region_params.get("channel_name", "BF LED matrix full"),
-                        timepoint=region_params.get("timepoint", 0),
-                        well_padding_mm=region_params.get("well_padding_mm", 1.0),
-                        experiment_name=region_params.get("experiment_name", None),
-                        context=context
-                    )
-                    results.append(result)
-                except Exception as e:
-                    logger.error(f"Error processing region {i}: {e}", exc_info=True)
-                    results.append(None)
-
-            return {
-                "success": True,
-                "results": results,
-                "count": len(results)
-            }
-
-        except Exception as e:
-            logger.error(f"Failed to get stitched regions batch: {e}", exc_info=True)
-            raise e
 
     @schema_function(skip_self=True)
     async def create_experiment(self, experiment_name: str = Field(..., description="Unique name for the new experiment folder"), context=None):
@@ -3746,7 +3708,7 @@ class MicroscopeHyphaService:
     # ===== Segmentation API Methods =====
 
     async def _run_segmentation_background(self, source_experiment, wells_to_segment, channel_configs,
-                                          scale_level, timepoint, well_plate_type, well_padding_mm, context):
+                                          scale_level, timepoint, well_plate_type, well_padding_mm, reset_application=True, context=None):
         """
         Internal method for background segmentation processing with multi-channel support.
         
@@ -3833,7 +3795,8 @@ class MicroscopeHyphaService:
                 well_padding_mm=well_padding_mm,
                 progress_callback=progress_callback,
                 enable_similarity_search=True,
-                similarity_search_callback=similarity_search_callback
+                similarity_search_callback=similarity_search_callback,
+                reset_application=reset_application
             )
 
             # Update state with similarity search results
