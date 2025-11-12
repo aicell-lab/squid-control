@@ -4303,7 +4303,7 @@ class MicroscopeHyphaService:
             search_result = await search_similar_by_uuid(
                 object_uuid=target_uuid,
                 application_id=actual_experiment_name,
-                limit=100,  # Get more results to ensure we capture all similar cells
+                limit=limit_expected,
                 base_url="https://hypha.aicell.io/agent-lens/apps/agent-lens"
             )
             
