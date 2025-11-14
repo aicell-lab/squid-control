@@ -1514,7 +1514,7 @@ class MicroscopeHyphaService:
     @schema_function(skip_self=True)
     async def inspect_tool(self, images: List[dict]=Field(..., description="A list of images to be inspected, each dictionary must contain 'http_url' (required) and optionally 'title' (optional)"), query: str=Field(..., description="User query about the images for GPT-4 vision model analysis"), context_description: str=Field(..., description="Context description for the visual inspection task, typically describing that images are taken from the microscope"), context=None):
         """
-        Inspect images using GPT-4's vision model (GPT-4o) for analysis and description.
+        Inspect images using GPT-4's vision model (GPT-5.1) for analysis and description.
         Returns: String response from the vision model containing image analysis based on the query.
         Notes: All image URLs must be HTTP/HTTPS accessible. The method validates URLs and processes images through the GPT-4 vision API.
         """

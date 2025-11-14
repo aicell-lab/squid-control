@@ -25,7 +25,7 @@ async def inspect_images(
     context=None
 ) -> str:
     """
-    Inspect images using GPT-4's vision model (GPT-4o) for analysis and description.
+    Inspect images using GPT-4's vision model (GPT-5.1) for analysis and description.
     
     Args:
         images: List of dictionaries, each containing 'http_url' (required) and optionally 'title'
