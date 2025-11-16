@@ -149,7 +149,7 @@ class ChannelMapper:
             example_image="Fluorescence_405_nm_Ex.bmp",
             param_name="F405_intensity_exposure",
             description="405nm fluorescence excitation",
-            color="8000FF"  # Blue-violet
+            color="0000FF"  # Blue (matches DAPI emission, standard blue)
         ),
         12: ChannelInfo(
             channel_id=12,
@@ -167,7 +167,7 @@ class ChannelMapper:
             example_image="Fluorescence_638_nm_Ex.bmp",
             param_name="F638_intensity_exposure",
             description="638nm fluorescence excitation",
-            color="FF0000"  # Red
+            color="FF00FF"  # Magenta (matches Cy5 emission, standard far-red/magenta)
         ),
         14: ChannelInfo(
             channel_id=14,
@@ -176,7 +176,7 @@ class ChannelMapper:
             example_image="Fluorescence_561_nm_Ex.bmp",
             param_name="F561_intensity_exposure",
             description="561nm fluorescence excitation",
-            color="FFFF00"  # Yellow
+            color="FF0000"  # Red (matches TRITC/mCherry emission, standard red)
         ),
         15: ChannelInfo(
             channel_id=15,
@@ -185,7 +185,7 @@ class ChannelMapper:
             example_image="Fluorescence_730_nm_Ex.bmp",
             param_name="F730_intensity_exposure",
             description="730nm fluorescence excitation",
-            color="FF00FF"  # Magenta
+            color="00FFFF"  # Cyan (far-red/NIR, distinct from 638nm magenta, color-blind friendly)
         ),
     }
 

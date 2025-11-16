@@ -1796,7 +1796,7 @@ async def test_well_canvas_management(sim_controller_fixture):
         
         # Test fluorescence channels
         fluorescence_channels = channels[1:]
-        expected_colors = ["8000FF", "00FF00", "FF0000", "FFFF00", "FF00FF"]
+        expected_colors = ["0000FF", "00FF00", "FF00FF", "FF0000", "00FFFF"]
         expected_labels = [
             "Fluorescence 405 nm Ex",
             "Fluorescence 488 nm Ex", 

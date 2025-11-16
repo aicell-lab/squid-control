@@ -76,7 +76,7 @@ class SquidController:
             # Check main squid_control directory first
             squid_plus_config_main = os.path.join(os.path.dirname(path), 'configuration_Squid+.ini')
             hcs_config_main = os.path.join(os.path.dirname(path), 'configuration_HCS_v2.ini')
-            
+
             if os.path.exists(squid_plus_config_main):
                 config_path = squid_plus_config_main
                 print("🔬 Detected Squid+ microscope - using Squid+ configuration")
@@ -88,7 +88,7 @@ class SquidController:
                 config_dir = os.path.join(os.path.dirname(path), 'config')
                 squid_plus_config = os.path.join(config_dir, 'configuration_Squid+.ini')
                 hcs_config = os.path.join(config_dir, 'configuration_HCS_v2.ini')
-                
+
                 if os.path.exists(squid_plus_config):
                     config_path = squid_plus_config
                     print("🔬 Detected Squid+ microscope - using Squid+ configuration from config directory")
@@ -106,11 +106,11 @@ class SquidController:
         # Create objects after configuration is loaded to use updated CONFIG values
         self.objectiveStore = core.ObjectiveStore()
         print(f"ObjectiveStore initialized with default objective: {self.objectiveStore.current_objective}")
-        
+
         # Get camera modules - use separate camera types for main and focus cameras
         focus_camera_type = getattr(CONFIG, 'FOCUS_CAMERA_TYPE', CONFIG.CAMERA_TYPE)
         camera, camera_fc = get_camera(CONFIG.CAMERA_TYPE, focus_camera_type)
-        
+
         # Initialize Squid+ specific hardware (will be initialized later after microcontroller setup)
         self.filter_wheel = None
         self.objective_switcher = None
@@ -139,7 +139,7 @@ class SquidController:
                     sn_camera_focus = camera_fc.get_sn_by_model(
                         CONFIG.FOCUS_CAMERA_MODEL
                     )
-                    
+
                     # Open main camera
                     self.camera = camera.Camera(
                         sn=sn_camera_main,
@@ -147,7 +147,7 @@ class SquidController:
                         flip_image=CONFIG.FLIP_IMAGE,
                     )
                     self.camera.open()
-                    
+
                     # Open focus camera only if it was found
                     if sn_camera_focus is not None:
                         print(f"Found focus camera: {CONFIG.FOCUS_CAMERA_MODEL} (SN: {sn_camera_focus})")
@@ -155,8 +155,8 @@ class SquidController:
                         self.camera_focus.open()
                     else:
                         print(f"⚠️  Focus camera not found: {CONFIG.FOCUS_CAMERA_MODEL}")
-                        print(f"   Laser autofocus will not be available.")
-                        print(f"   Using simulated focus camera instead.")
+                        print("   Laser autofocus will not be available.")
+                        print("   Using simulated focus camera instead.")
                         self.camera_focus = camera_fc.Camera_Simulation()
                         self.camera_focus.open()
                 else:
@@ -436,13 +436,13 @@ class SquidController:
             objective = self.objectiveStore.objectives_dict[object_dict_key]
             magnification =  float(objective['magnification'])
             objective_tube_lens_mm = float(objective['tube_lens_f_mm'])
-            
+
             # Get binning factor from camera config
             # binning_factor_default: 1 = no binning (full res), 2 = 2x2 binning (half res), etc.
             binning_factor = getattr(CONFIG.CAMERA_CONFIG, 'BINNING_FACTOR_DEFAULT', 1)
             # Ensure binning_factor is at least 1 to avoid division by zero
             binning_factor = max(1, binning_factor)
-            
+
             print(f"Using objective: {object_dict_key}")
             print(f"CONFIG.DEFAULT_OBJECTIVE: {CONFIG.DEFAULT_OBJECTIVE}")
             print(f"Tube lens: {tube_lens_mm} mm, Objective tube lens: {objective_tube_lens_mm} mm, Pixel size: {pixel_size_um} µm, Magnification: {magnification}, Binning factor: {binning_factor}")
@@ -452,14 +452,14 @@ class SquidController:
 
         # Calculate base pixel size without binning
         self.pixel_size_xy = pixel_size_um / (magnification / (objective_tube_lens_mm / tube_lens_mm))
-        
+
         # Apply binning factor to get effective pixel size
         # Binning increases effective pixel size (reduces resolution)
         self.pixel_size_xy = self.pixel_size_xy * binning_factor
-        
+
         # Apply any additional adjustment factor if needed
         self.pixel_size_xy = self.pixel_size_xy * CONFIG.PIXEL_SIZE_ADJUSTMENT_FACTOR
-        
+
         print(f"Pixel size: {self.pixel_size_xy} µm (binning factor: {binning_factor}, adjustment factor: {CONFIG.PIXEL_SIZE_ADJUSTMENT_FACTOR})")
 
 
@@ -953,13 +953,13 @@ class SquidController:
     async def snap_image(self, channel=0, intensity=100, exposure_time=100, full_frame=False):
         # Check if illumination was already on before we start
         illumination_was_already_on = self.liveController.illumination_on
-        
+
         # Turn off illumination if it's on to ensure clean state
         if illumination_was_already_on:
             self.liveController.turn_off_illumination()
             while self.microcontroller.is_busy():
                 await asyncio.sleep(0.005)
-        
+
         # Set up camera and illumination for the photo
         self.camera.set_exposure_time(exposure_time)
         self.liveController.set_illumination(channel, intensity)
@@ -1066,7 +1066,7 @@ class SquidController:
                 # Return a placeholder image instead of None to prevent crashes
                 return np.zeros((self.camera.Height, self.camera.Width), dtype=np.uint8)
             gray_img = rotate_and_flip_image(gray_img, self.camera.rotate_image_angle, self.camera.flip_image)
-            
+
             # Ensure the image is uint8 before returning
             if gray_img.dtype != np.uint8:
                 if gray_img.dtype == np.uint16:
@@ -1074,7 +1074,7 @@ class SquidController:
                     gray_img = (gray_img / 256).astype(np.uint8)
                 else:
                     gray_img = gray_img.astype(np.uint8)
-            
+
             return gray_img
         except Exception as e:
             print(f"Error in get_camera_frame: {e}")
@@ -1207,7 +1207,7 @@ class SquidController:
                 "velocity_y_mm_per_s": velocity_y_mm_per_s
             }
 
-    async def scan_region_to_zarr(self, start_x_mm, start_y_mm, Nx, Ny, dx_mm, dy_mm,
+    async def scan_region_to_zarr(self, start_x_mm=None, start_y_mm=None, Nx=3, Ny=3, dx_mm=0.8, dy_mm=0.8,
                                         illumination_settings=None, do_contrast_autofocus=False,
                                         do_reflection_af=False, action_ID='normal_scan_stitching',
                                         timepoint=0, experiment_name=None, wells_to_scan=None,
@@ -1217,8 +1217,10 @@ class SquidController:
         Scans specified wells one by one, creating individual zarr canvases for each well.
         
         Args:
-            start_x_mm (float): Starting X position in mm (relative to well center)
-            start_y_mm (float): Starting Y position in mm (relative to well center)
+            start_x_mm (float, optional): Starting X position in mm (relative to well center).
+                If None, the grid will be centered around the well center (similar to plate_scan behavior).
+            start_y_mm (float, optional): Starting Y position in mm (relative to well center).
+                If None, the grid will be centered around the well center (similar to plate_scan behavior).
             Nx (int): Number of positions in X
             Ny (int): Number of positions in Y
             dx_mm (float): Interval between positions in X (mm)
@@ -1299,6 +1301,18 @@ class SquidController:
                 # Get well center coordinates for relative positioning
                 well_center_x = canvas.well_center_x
                 well_center_y = canvas.well_center_y
+
+                # Calculate start positions if not provided (center the grid around well center)
+                # This matches the behavior of plate_scan which centers the grid automatically
+                if start_x_mm is None:
+                    # Center the grid: total width = (Nx - 1) * dx_mm, so start at -width/2
+                    start_x_mm = -(Nx - 1) * dx_mm / 2.0
+                    logger.info(f"start_x_mm not provided, centering grid: start_x_mm = {start_x_mm:.3f} mm")
+
+                if start_y_mm is None:
+                    # Center the grid: total height = (Ny - 1) * dy_mm, so start at -height/2
+                    start_y_mm = -(Ny - 1) * dy_mm / 2.0
+                    logger.info(f"start_y_mm not provided, centering grid: start_y_mm = {start_y_mm:.3f} mm")
 
                 try:
                     # Scan pattern: snake pattern for efficiency
@@ -2086,9 +2100,9 @@ class SquidController:
             if target_experiment is None:
                 logger.error("No experiment specified and no current experiment set")
                 return None
-            
+
             logger.info(f"Getting stitched region from experiment '{target_experiment}'")
-            
+
             # Calculate the bounding box of the requested region
             half_width = width_mm / 2.0
             half_height = height_mm / 2.0
@@ -2222,7 +2236,7 @@ class SquidController:
                 intersection_center_x_px, intersection_center_y_px = canvas.stage_to_pixel_coords(
                     intersection_center_x, intersection_center_y, scale_level
                 )
-                
+
                 # Calculate pixel dimensions for the intersection region
                 scale_factor = 4 ** scale_level
                 intersection_width_px = int(intersection_width * 1000 / canvas.pixel_size_xy_um / scale_factor)
@@ -2256,7 +2270,7 @@ class SquidController:
 
             # Get first canvas to determine pixel size for output image (use canvas pixel size for consistency)
             first_canvas = self.experiment_manager.get_well_canvas(
-                well_regions[0]['well_row'], well_regions[0]['well_column'], 
+                well_regions[0]['well_row'], well_regions[0]['well_column'],
                 well_plate_type, well_padding_mm, target_experiment
             )
             canvas_pixel_size_um = first_canvas.pixel_size_xy_um
@@ -2295,7 +2309,7 @@ class SquidController:
                 intersection_center_x_px, intersection_center_y_px = canvas.stage_to_pixel_coords(
                     intersection_center_x, intersection_center_y, scale_level
                 )
-                
+
                 # Calculate pixel dimensions for the intersection region
                 intersection_width_px = int(intersection_width * 1000 / canvas.pixel_size_xy_um / scale_factor)
                 intersection_height_px = int(intersection_height * 1000 / canvas.pixel_size_xy_um / scale_factor)
@@ -2354,13 +2368,13 @@ class SquidController:
                     # Ensure we don't exceed the actual region size
                     crop_height = min(well_height, well_region.shape[0])
                     crop_width = min(well_width, well_region.shape[1])
-                    
+
                     cropped_well_region = well_region[:crop_height, :crop_width]
-                    
+
                     # Adjust end coordinates to match cropped size
                     end_x_px = start_x_px + crop_width
                     end_y_px = start_y_px + crop_height
-                    
+
                     output_image[start_y_px:end_y_px, start_x_px:end_x_px] = cropped_well_region
 
                     logger.info(f"Placed region from well {well_row}{well_column} at ({start_x_px}, {start_y_px}) "
@@ -2824,11 +2838,11 @@ class SquidController:
         # Read frame from camera
         self.camera.send_trigger()
         gray_img = self.camera.read_frame()
-        
+
         if gray_img is not None:
             # Apply rotation and flip first (same as snap_image)
             gray_img = rotate_and_flip_image(gray_img, self.camera.rotate_image_angle, self.camera.flip_image)
-            
+
             # In simulation mode, resize small images to expected camera resolution (same as snap_image)
             if self.is_simulation:
                 height, width = gray_img.shape[:2]
@@ -2837,11 +2851,11 @@ class SquidController:
                 expected_height = 3000  # Expected camera height
                 if width < expected_width or height < expected_height:
                     gray_img = cv2.resize(gray_img, (expected_width, expected_height), interpolation=cv2.INTER_LINEAR)
-            
+
             # Apply same cropping logic as snap_image for both microscope types
             # For Squid+ cameras with binning, we need to adjust the crop dimensions
             is_squid_plus = getattr(CONFIG, 'FILTER_CONTROLLER_ENABLE', False) or getattr(CONFIG, 'USE_XERYON', False)
-            
+
             if is_squid_plus:
                 # Squid+ camera binning adjustment for crop dimensions
                 # binning_factor_default: 1 = no binning (full res), 2 = 2x2 binning (half res), etc.
@@ -2854,7 +2868,7 @@ class SquidController:
                 # Original Squid microscope: use crop dimensions as-is
                 crop_height = CONFIG.ACQUISITION.CROP_HEIGHT
                 crop_width = CONFIG.ACQUISITION.CROP_WIDTH
-            
+
             # Crop using configuration-based dimensions with proper bounds checking (same as snap_image)
             height, width = gray_img.shape[:2]
             start_x = width // 2 - crop_width // 2
@@ -2907,34 +2921,34 @@ class SquidController:
         """
         # Get the actual image dimensions
         original_height, original_width = gray_img.shape[:2]
-        
+
         # For Squid+ cameras with binning, we need to account for the binning factor
         # Check if this is a Squid+ microscope (has filter wheel or objective switcher)
         is_squid_plus = getattr(CONFIG, 'FILTER_CONTROLLER_ENABLE', False) or getattr(CONFIG, 'USE_XERYON', False)
-        
+
         if is_squid_plus:
             # Squid+ camera binning adjustment for image resize calculation
             # binning_factor_default: 1 = no binning (full res), 2 = 2x2 binning (half res), etc.
             binning_factor = getattr(CONFIG.CAMERA_CONFIG, 'BINNING_FACTOR_DEFAULT', 1)
             # Ensure binning_factor is at least 1 to avoid division by zero
             binning_factor = max(1, binning_factor)
-            
+
             # Calculate the effective full resolution (unbinned equivalent)
             effective_width = original_width * binning_factor
             effective_height = original_height * binning_factor
-            
+
             # Calculate scale1 resolution (1/4 of effective full resolution)
             scale1_width = effective_width // 4
             scale1_height = effective_height // 4
-            
+
             logger.debug(f"Squid+ binning adjustment: original={original_width}x{original_height}, binning={binning_factor}, effective={effective_width}x{effective_height}, scale1={scale1_width}x{scale1_height}")
         else:
             # Original Squid microscope: no binning, resize directly to 1/4
             scale1_width = original_width // 4
             scale1_height = original_height // 4
-            
+
             logger.debug(f"Original Squid: original={original_width}x{original_height}, scale1={scale1_width}x{scale1_height}")
-        
+
         # Resize image to scale1 resolution
         scaled_img = cv2.resize(gray_img, (scale1_width, scale1_height), interpolation=cv2.INTER_AREA)
 
@@ -2978,11 +2992,11 @@ class SquidController:
         if not hasattr(self, 'filter_wheel') or self.filter_wheel is None:
             logger.warning("No filter wheel to initialize")
             return False
-        
+
         try:
             # Check if homing is enabled in configuration
             homing_enabled = getattr(CONFIG, 'SQUID_FILTERWHEEL_HOMING_ENABLED', True)
-            
+
             if homing_enabled:
                 logger.info("Homing filter wheel...")
                 success = self.filter_wheel.home()
@@ -2995,12 +3009,12 @@ class SquidController:
             else:
                 logger.info("Filter wheel homing is disabled in configuration")
                 return True
-                
+
         except Exception as e:
             logger.error(f"Failed to initialize filter wheel: {e}")
             return False
-    
-    
+
+
     def _initialize_squid_plus_hardware(self):
         """
         Initialize Squid+ specific hardware components including homing and positioning.
@@ -3009,8 +3023,11 @@ class SquidController:
         try:
             # Initialize Filter Wheel if enabled
             if getattr(CONFIG, 'FILTER_CONTROLLER_ENABLE', False):
-                from squid_control.control.filter_wheel import FilterWheelController, FilterWheelSimulation
-                
+                from squid_control.control.filter_wheel import (
+                    FilterWheelController,
+                    FilterWheelSimulation,
+                )
+
                 if self.is_simulation:
                     self.filter_wheel = FilterWheelSimulation()
                     logger.info("Filter wheel initialized in simulation mode")
@@ -3019,7 +3036,7 @@ class SquidController:
                     logger.info("Configuring W-axis motor for filter wheel...")
                     self.microcontroller.configure_squidfilter()
                     time.sleep(0.5)
-                    
+
                     self.filter_wheel = FilterWheelController(
                         microcontroller=self.microcontroller,
                         is_simulation=False
@@ -3028,60 +3045,62 @@ class SquidController:
                     logger.info("⚠️  Filter wheel will be homed after service starts (call initialize_filter_wheel())")
             else:
                 logger.info("Filter wheel not enabled in configuration")
-            
+
             # Initialize Objective Switcher if enabled
             if getattr(CONFIG, 'USE_XERYON', False):
-                from squid_control.control.objective_switcher import ObjectiveSwitcherController, ObjectiveSwitcherSimulation
-                
+                from squid_control.control.objective_switcher import (
+                    ObjectiveSwitcherController,
+                    ObjectiveSwitcherSimulation,
+                )
+
                 xeryon_sn = getattr(CONFIG, 'XERYON_SERIAL_NUMBER', '')
                 xeryon_speed = getattr(CONFIG, 'XERYON_SPEED', 80)
-                
+
                 if self.is_simulation:
                     self.objective_switcher = ObjectiveSwitcherSimulation(stage=self.navigationController)
                     logger.info("Objective switcher initialized in simulation mode")
-                else:
-                    if xeryon_sn:
-                        self.objective_switcher = ObjectiveSwitcherController(
-                            serial_number=xeryon_sn,
-                            stage=self.navigationController,
-                            is_simulation=False
-                        )
-                        logger.info(f"Objective switcher initialized with hardware (SN: {xeryon_sn})")
-                        
-                        # Home and position the objective switcher immediately
-                        logger.info("Homing objective switcher...")
-                        self.objective_switcher.home()
-                        logger.info("✓ Objective switcher homed successfully")
-                        
-                        # Set the speed
-                        self.objective_switcher.set_speed(xeryon_speed)
-                        logger.info(f"Objective switcher speed set to {xeryon_speed}")
-                        
-                        # Move to initial position based on default objective
-                        default_obj = self.objectiveStore.current_objective if hasattr(self, 'objectiveStore') else getattr(CONFIG, 'DEFAULT_OBJECTIVE', '20x')
-                        pos1_objs = getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_1', ['20x'])
-                        pos2_objs = getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_2', ['4x'])
-                        
-                        logger.info(f"Default objective: '{default_obj}', Position 1: {pos1_objs}, Position 2: {pos2_objs}")
-                        
-                        # Check which position the default objective belongs to
-                        if default_obj and default_obj in pos1_objs:
-                            logger.info(f"Moving to position 1 for default objective: {default_obj}")
-                            self.objective_switcher.move_to_position_1(move_z=False)
-                        elif default_obj and default_obj in pos2_objs:
-                            logger.info(f"Moving to position 2 for default objective: {default_obj}")
-                            self.objective_switcher.move_to_position_2(move_z=False)
-                        else:
-                            # Default to position 1 if no match found
-                            logger.warning(f"Default objective '{default_obj}' not found in position lists, defaulting to position 1")
-                            self.objective_switcher.move_to_position_1(move_z=False)
-                        
-                        logger.info("✓ Objective switcher ready")
+                elif xeryon_sn:
+                    self.objective_switcher = ObjectiveSwitcherController(
+                        serial_number=xeryon_sn,
+                        stage=self.navigationController,
+                        is_simulation=False
+                    )
+                    logger.info(f"Objective switcher initialized with hardware (SN: {xeryon_sn})")
+
+                    # Home and position the objective switcher immediately
+                    logger.info("Homing objective switcher...")
+                    self.objective_switcher.home()
+                    logger.info("✓ Objective switcher homed successfully")
+
+                    # Set the speed
+                    self.objective_switcher.set_speed(xeryon_speed)
+                    logger.info(f"Objective switcher speed set to {xeryon_speed}")
+
+                    # Move to initial position based on default objective
+                    default_obj = self.objectiveStore.current_objective if hasattr(self, 'objectiveStore') else getattr(CONFIG, 'DEFAULT_OBJECTIVE', '20x')
+                    pos1_objs = getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_1', ['20x'])
+                    pos2_objs = getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_2', ['4x'])
+
+                    logger.info(f"Default objective: '{default_obj}', Position 1: {pos1_objs}, Position 2: {pos2_objs}")
+
+                    # Check which position the default objective belongs to
+                    if default_obj and default_obj in pos1_objs:
+                        logger.info(f"Moving to position 1 for default objective: {default_obj}")
+                        self.objective_switcher.move_to_position_1(move_z=False)
+                    elif default_obj and default_obj in pos2_objs:
+                        logger.info(f"Moving to position 2 for default objective: {default_obj}")
+                        self.objective_switcher.move_to_position_2(move_z=False)
                     else:
-                        logger.warning("Xeryon serial number not provided - objective switcher disabled")
+                        # Default to position 1 if no match found
+                        logger.warning(f"Default objective '{default_obj}' not found in position lists, defaulting to position 1")
+                        self.objective_switcher.move_to_position_1(move_z=False)
+
+                    logger.info("✓ Objective switcher ready")
+                else:
+                    logger.warning("Xeryon serial number not provided - objective switcher disabled")
             else:
                 logger.info("Objective switcher not enabled in configuration")
-                
+
         except Exception as e:
             logger.error(f"Failed to initialize Squid+ hardware: {e}")
             # Continue without Squid+ hardware if initialization fails
