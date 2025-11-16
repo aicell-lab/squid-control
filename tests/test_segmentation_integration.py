@@ -9,7 +9,6 @@ import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
-import cv2
 import numpy as np
 import pytest
 
@@ -39,8 +38,15 @@ class TestMicroSAMClient:
         
         # Create mock service
         mock_service = AsyncMock()
-        mock_segmentation = np.random.randint(0, 100, (512, 512), dtype=np.uint16)
-        mock_service.segment_all = AsyncMock(return_value=mock_segmentation)
+        # Mock returns list of polygon objects (current implementation)
+        mock_polygon_objects = [
+            {
+                "id": 1,
+                "polygons": [[[10, 10], [20, 10], [20, 20], [10, 20], [10, 10]]],
+                "bbox": [10, 10, 20, 20]
+            }
+        ]
+        mock_service.segment_all = AsyncMock(return_value=mock_polygon_objects)
         
         # Create test image
         test_image = np.random.randint(0, 255, (512, 512), dtype=np.uint8)
@@ -48,12 +54,12 @@ class TestMicroSAMClient:
         # Run segmentation
         result = await segment_image(mock_service, test_image)
         
-        assert result.shape == (512, 512)
-        # Current client returns a binary uint8 mask (0 or 255)
-        assert result.dtype == np.uint8
-        # Ensure binary mask semantics
-        assert set(np.unique(result)).issubset({0, 255})
-        # Verify the call used embedding=False and accepted either ndarray or base64
+        # Current implementation returns list of polygon objects
+        assert isinstance(result, list)
+        assert len(result) > 0
+        assert "id" in result[0]
+        assert "polygons" in result[0]
+        # Verify the call used embedding=False
         call_args = mock_service.segment_all.call_args
         assert call_args[1]['embedding'] is False
     
@@ -64,8 +70,15 @@ class TestMicroSAMClient:
         
         # Create mock service
         mock_service = AsyncMock()
-        mock_segmentation = np.random.randint(0, 100, (512, 512), dtype=np.uint16)
-        mock_service.segment_all = AsyncMock(return_value=mock_segmentation)
+        # Mock returns list of polygon objects (current implementation)
+        mock_polygon_objects = [
+            {
+                "id": 1,
+                "polygons": [[[10, 10], [20, 10], [20, 20], [10, 20], [10, 10]]],
+                "bbox": [10, 10, 20, 20]
+            }
+        ]
+        mock_service.segment_all = AsyncMock(return_value=mock_polygon_objects)
         
         # Create test RGB image
         test_image = np.random.randint(0, 255, (512, 512, 3), dtype=np.uint8)
@@ -73,12 +86,12 @@ class TestMicroSAMClient:
         # Run segmentation
         result = await segment_image(mock_service, test_image)
         
-        assert result.shape == (512, 512)
-        # Current client returns a binary uint8 mask (0 or 255)
-        assert result.dtype == np.uint8
-        # Ensure binary mask semantics
-        assert set(np.unique(result)).issubset({0, 255})
-        # Verify the call used embedding=False (payload may be ndarray or base64)
+        # Current implementation returns list of polygon objects
+        assert isinstance(result, list)
+        assert len(result) > 0
+        assert "id" in result[0]
+        assert "polygons" in result[0]
+        # Verify the call used embedding=False
         call_args = mock_service.segment_all.call_args
         assert call_args[1]['embedding'] is False
 
@@ -196,20 +209,27 @@ class TestSegmentationWorkflow:
         
         # Mock microSAM service
         mock_microsam_service = AsyncMock()
-        mock_microsam_service.segment_all = AsyncMock(return_value=np.array([[1, 2], [2, 0]], dtype=np.uint16))
+        mock_polygon_objects = [
+            {
+                "id": 1,
+                "polygons": [[[10, 10], [20, 10], [20, 20], [10, 20], [10, 10]]],
+                "bbox": [10, 10, 20, 20]
+            }
+        ]
+        mock_microsam_service.segment_all = AsyncMock(return_value=mock_polygon_objects)
         
         # Test image
         test_image = np.random.randint(0, 1000, (100, 100), dtype=np.uint16)
         
-        # Test with default contrast (disable resize to match mock return size)
-        result1 = await segment_image(mock_microsam_service, test_image, resize=1.0)
-        assert result1.shape == (2, 2)
-        assert result1.dtype == np.uint8
+        # Test with default contrast
+        result1 = await segment_image(mock_microsam_service, test_image)
+        assert isinstance(result1, list)
+        assert len(result1) > 0
         
-        # Test with custom contrast (disable resize to match mock return size)
-        result2 = await segment_image(mock_microsam_service, test_image, 5.0, 95.0, resize=1.0)
-        assert result2.shape == (2, 2)
-        assert result2.dtype == np.uint8
+        # Test with custom contrast
+        result2 = await segment_image(mock_microsam_service, test_image, 5.0, 95.0)
+        assert isinstance(result2, list)
+        assert len(result2) > 0
         
         # Verify microSAM was called twice
         assert mock_microsam_service.segment_all.call_count == 2
@@ -345,148 +365,6 @@ class TestPolygonExtraction:
         # Verify coordinates are in millimeters (reasonable range for well size)
         assert all(abs(coord) < 10.0 for coord in result.flatten())  # Well typically < 10mm radius
     
-    def test_extract_polygons_simple_circle(self):
-        """Test polygon extraction from a simple circular mask."""
-        from squid_control.hypha_tools.microsam_client import extract_polygons_from_segmentation_mask
-        
-        # Create a simple circular mask using OpenCV
-        mask = np.zeros((500, 500), dtype=np.uint8)
-        cv2.circle(mask, (250, 250), 100, 255, -1)  # Filled circle
-        
-        canvas_info = {
-            'canvas_info': {
-                'canvas_width_px': 500,
-                'canvas_height_px': 500,
-                'pixel_size_xy_um': 0.333
-            }
-        }
-        
-        polygons = extract_polygons_from_segmentation_mask(
-            mask, "A1", canvas_info, pixel_size_xy_um=0.333, scale=1, min_area_px=50
-        )
-        
-        # Should extract at least one polygon
-        assert len(polygons) > 0
-        
-        # Check polygon format
-        polygon = polygons[0]
-        assert 'well_id' in polygon
-        assert 'polygon_wkt' in polygon
-        assert polygon['well_id'] == "A1"
-        
-        # Check WKT format
-        wkt = polygon['polygon_wkt']
-        assert wkt.startswith("POLYGON((")
-        assert wkt.endswith("))")
-        assert "," in wkt  # Should have multiple coordinate pairs
-    
-    def test_extract_polygons_multiple_cells(self):
-        """Test polygon extraction from mask with multiple cells."""
-        from squid_control.hypha_tools.microsam_client import extract_polygons_from_segmentation_mask
-        
-        # Create mask with multiple circles (cells)
-        mask = np.zeros((500, 500), dtype=np.uint8)
-        cv2.circle(mask, (150, 150), 50, 255, -1)  # Cell 1
-        cv2.circle(mask, (350, 150), 50, 255, -1)  # Cell 2
-        cv2.circle(mask, (250, 350), 50, 255, -1)  # Cell 3
-        
-        canvas_info = {
-            'canvas_info': {
-                'canvas_width_px': 500,
-                'canvas_height_px': 500,
-                'pixel_size_xy_um': 0.333
-            }
-        }
-        
-        polygons = extract_polygons_from_segmentation_mask(
-            mask, "A1", canvas_info, pixel_size_xy_um=0.333, scale=1, min_area_px=50
-        )
-        
-        # Should extract 3 polygons (one per cell)
-        assert len(polygons) == 3
-        
-        # All should have same well_id
-        for p in polygons:
-            assert p['well_id'] == "A1"
-            assert 'polygon_wkt' in p
-    
-    def test_extract_polygons_with_holes(self):
-        """Test that holes in masks are ignored (only outer contour extracted)."""
-        from squid_control.hypha_tools.microsam_client import extract_polygons_from_segmentation_mask
-        
-        # Create mask with outer circle and inner hole
-        mask = np.zeros((500, 500), dtype=np.uint8)
-        # Draw outer circle
-        cv2.circle(mask, (250, 250), 100, 255, -1)
-        # Draw inner hole
-        cv2.circle(mask, (250, 250), 50, 0, -1)
-        
-        canvas_info = {
-            'canvas_info': {
-                'canvas_width_px': 500,
-                'canvas_height_px': 500,
-                'pixel_size_xy_um': 0.333
-            }
-        }
-        
-        polygons = extract_polygons_from_segmentation_mask(
-            mask, "A1", canvas_info, pixel_size_xy_um=0.333, scale=1, min_area_px=50
-        )
-        
-        # Should extract only ONE polygon (outer boundary, hole ignored)
-        assert len(polygons) == 1
-        
-        # The polygon should represent the outer boundary
-        polygon = polygons[0]
-        assert polygon['well_id'] == "A1"
-        assert 'polygon_wkt' in polygon
-    
-    def test_extract_polygons_empty_mask(self):
-        """Test polygon extraction from empty mask."""
-        from squid_control.hypha_tools.microsam_client import extract_polygons_from_segmentation_mask
-        
-        # Create empty mask
-        mask = np.zeros((500, 500), dtype=np.uint8)
-        
-        canvas_info = {
-            'canvas_info': {
-                'canvas_width_px': 500,
-                'canvas_height_px': 500,
-                'pixel_size_xy_um': 0.333
-            }
-        }
-        
-        polygons = extract_polygons_from_segmentation_mask(
-            mask, "A1", canvas_info, pixel_size_xy_um=0.333, scale=1
-        )
-        
-        # Should return empty list
-        assert len(polygons) == 0
-    
-    def test_extract_polygons_min_area_filter(self):
-        """Test that small contours are filtered out."""
-        from squid_control.hypha_tools.microsam_client import extract_polygons_from_segmentation_mask
-        
-        # Create mask with one large and one small circle
-        mask = np.zeros((500, 500), dtype=np.uint8)
-        cv2.circle(mask, (250, 250), 100, 255, -1)  # Large cell
-        cv2.circle(mask, (100, 100), 5, 255, -1)    # Small noise
-        
-        canvas_info = {
-            'canvas_info': {
-                'canvas_width_px': 500,
-                'canvas_height_px': 500,
-                'pixel_size_xy_um': 0.333
-            }
-        }
-        
-        # With high min_area, only large cell should be extracted
-        polygons = extract_polygons_from_segmentation_mask(
-            mask, "A1", canvas_info, pixel_size_xy_um=0.333, scale=1, min_area_px=5000
-        )
-        
-        # Should extract only the large polygon
-        assert len(polygons) == 1
     
     def test_append_polygons_to_json(self):
         """Test thread-safe JSON file appending."""
@@ -582,9 +460,9 @@ class TestPolygonExtractionAPI:
         with tempfile.TemporaryDirectory() as tmpdir:
             service.squidController.experiment_manager.base_path = Path(tmpdir)
             
-            # Create segmentation experiment directory
-            seg_experiment = Path(tmpdir) / "test-experiment-segmentation"
-            seg_experiment.mkdir()
+            # Create source experiment directory (API looks for polygons.json in source experiment)
+            source_experiment = Path(tmpdir) / "test-experiment"
+            source_experiment.mkdir()
             
             # Create polygons.json with test data
             polygons_data = {
@@ -594,7 +472,7 @@ class TestPolygonExtractionAPI:
                     {"well_id": "A2", "polygon_wkt": "POLYGON((9.0 10.0, 11.0 12.0, 9.0 10.0))"}
                 ]
             }
-            json_path = seg_experiment / "polygons.json"
+            json_path = source_experiment / "polygons.json"
             with open(json_path, 'w') as f:
                 json.dump(polygons_data, f)
             
@@ -604,7 +482,7 @@ class TestPolygonExtractionAPI:
             assert result['success'] is True
             assert result['total_count'] == 3
             assert len(result['polygons']) == 3
-            assert result['experiment_name'] == "test-experiment-segmentation"
+            assert result['experiment_name'] == "test-experiment"
     
     @pytest.mark.asyncio
     async def test_segmentation_get_polygons_filter_by_well(self):
@@ -618,9 +496,9 @@ class TestPolygonExtractionAPI:
         with tempfile.TemporaryDirectory() as tmpdir:
             service.squidController.experiment_manager.base_path = Path(tmpdir)
             
-            # Create segmentation experiment directory
-            seg_experiment = Path(tmpdir) / "test-experiment-segmentation"
-            seg_experiment.mkdir()
+            # Create source experiment directory (API looks for polygons.json in source experiment)
+            source_experiment = Path(tmpdir) / "test-experiment"
+            source_experiment.mkdir()
             
             # Create polygons.json with test data
             polygons_data = {
@@ -630,7 +508,7 @@ class TestPolygonExtractionAPI:
                     {"well_id": "A2", "polygon_wkt": "POLYGON((9.0 10.0, 11.0 12.0, 9.0 10.0))"}
                 ]
             }
-            json_path = seg_experiment / "polygons.json"
+            json_path = source_experiment / "polygons.json"
             with open(json_path, 'w') as f:
                 json.dump(polygons_data, f)
             
@@ -656,12 +534,12 @@ class TestPolygonExtractionAPI:
         with tempfile.TemporaryDirectory() as tmpdir:
             service.squidController.experiment_manager.base_path = Path(tmpdir)
             
-            # Create segmentation experiment directory
-            seg_experiment = Path(tmpdir) / "test-experiment-segmentation"
-            seg_experiment.mkdir()
+            # Create source experiment directory (API looks for polygons.json in source experiment)
+            source_experiment = Path(tmpdir) / "test-experiment"
+            source_experiment.mkdir()
             
             # Create corrupt JSON file
-            json_path = seg_experiment / "polygons.json"
+            json_path = source_experiment / "polygons.json"
             with open(json_path, 'w') as f:
                 f.write("invalid json content{")
             

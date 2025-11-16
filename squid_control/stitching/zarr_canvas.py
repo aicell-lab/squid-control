@@ -102,7 +102,7 @@ class WellZarrCanvasBase:
         # 2. Write queue: receives preprocessed data for serialized zarr writes
         self.preprocessing_queue = asyncio.Queue(maxsize=500)  # Handle burst from camera
         self.zarr_write_queue = asyncio.Queue(maxsize=100)     # Preprocessed data ready to write
-        
+
         self.stitching_task = None  # Preprocessing task
         self.writer_task = None     # Zarr writer task
         self.is_stitching = False   # Flag for preprocessing loop
@@ -797,7 +797,7 @@ class WellZarrCanvasBase:
 
         # Prepare preprocessed data for all scales
         preprocessed_scales = []
-        
+
         # Determine scale range based on scan mode
         start_scale = 1 if is_quick_scan else 0
         end_scale = min(self.num_scales, 6) if is_quick_scan else self.num_scales
@@ -820,7 +820,7 @@ class WellZarrCanvasBase:
                                processed_image.shape[0] // relative_scale_factor)
                 else:
                     # Normal scaling from original
-                    new_size = (processed_image.shape[1] // scale_factor, 
+                    new_size = (processed_image.shape[1] // scale_factor,
                                processed_image.shape[0] // scale_factor)
                 scaled_image = cv2.resize(processed_image, new_size, interpolation=cv2.INTER_AREA)
             else:
@@ -930,7 +930,7 @@ class WellZarrCanvasBase:
                                 image_to_write = image_to_write.astype(np.uint8)
 
                             zarr_array[timepoint, channel_idx, z_idx, y_start:y_end, x_start:x_end] = image_to_write
-                            
+
                         except IndexError as e:
                             logger.error(f"ZARR_WRITE: IndexError writing to zarr array at scale {scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
                             logger.error(f"ZARR_WRITE: Zarr array shape: {zarr_array.shape}, trying to access timepoint {timepoint}")
@@ -955,7 +955,7 @@ class WellZarrCanvasBase:
         preprocessed = self._preprocess_image_for_stitching(
             image, x_mm, y_mm, channel_idx, z_idx, timepoint, is_quick_scan=False
         )
-        
+
         # Step 2: Write to zarr (I/O work)
         if preprocessed is not None:
             self._write_preprocessed_to_zarr(preprocessed)
@@ -980,13 +980,13 @@ class WellZarrCanvasBase:
         preprocessed = self._preprocess_image_for_stitching(
             image, x_mm, y_mm, channel_idx, z_idx, timepoint, is_quick_scan=True
         )
-        
+
         # Step 2: Write to zarr (I/O work)
         if preprocessed is not None:
             self._write_preprocessed_to_zarr(preprocessed)
 
     async def add_image_async(self, image: np.ndarray, x_mm: float, y_mm: float,
-                              channel_idx: int = 0, z_idx: int = 0, timepoint: int = 0, 
+                              channel_idx: int = 0, z_idx: int = 0, timepoint: int = 0,
                               quick_scan: bool = False):
         """
         Add image to the preprocessing queue for asynchronous processing.
@@ -1019,7 +1019,7 @@ class WellZarrCanvasBase:
             frame_data: Dict with image, coordinates, and metadata
         """
         loop = asyncio.get_event_loop()
-        
+
         # CPU work in thread pool (runs in parallel with other preprocessing tasks)
         preprocessed = await loop.run_in_executor(
             self.executor,
@@ -1032,7 +1032,7 @@ class WellZarrCanvasBase:
             frame_data['timepoint'],
             frame_data.get('quick_scan', False)
         )
-        
+
         # Queue for serialized writing (only if preprocessing succeeded)
         if preprocessed is not None:
             await self.zarr_write_queue.put(preprocessed)
@@ -1049,7 +1049,7 @@ class WellZarrCanvasBase:
                     self.zarr_write_queue.get(),
                     timeout=1.0
                 )
-                
+
                 # Write to zarr (I/O work, single-threaded)
                 loop = asyncio.get_event_loop()
                 await loop.run_in_executor(
@@ -1057,7 +1057,7 @@ class WellZarrCanvasBase:
                     self._write_preprocessed_to_zarr,
                     preprocessed_data
                 )
-                
+
             except asyncio.TimeoutError:
                 continue  # No data to write, keep waiting
             except Exception as e:
@@ -1094,12 +1094,12 @@ class WellZarrCanvasBase:
         if not self.is_stitching:
             self.is_stitching = True
             self.is_writing = True
-            
+
             # Start preprocessing loop
             self.stitching_task = asyncio.create_task(self._stitching_loop())
             # Start writer loop
             self.writer_task = asyncio.create_task(self._zarr_writer_loop())
-            
+
             logger.info("Started background stitching (preprocessing + writer tasks)")
 
     async def stop_stitching(self):
@@ -1108,7 +1108,7 @@ class WellZarrCanvasBase:
         Order: Stop preprocessing → Drain preprocessing queue → Stop writer → Drain write queue
         """
         logger.info("Stopping stitching pipeline...")
-        
+
         # Step 1: Stop preprocessing loop (no new images will be preprocessed)
         self.is_stitching = False
         logger.info("Stopped preprocessing loop, draining preprocessing queue...")
@@ -1168,9 +1168,9 @@ class WellZarrCanvasBase:
         """
         active_tasks = set()
         max_concurrent = 4  # Match thread pool size for optimal parallelization
-        
+
         logger.info(f"Preprocessing loop started (max {max_concurrent} concurrent tasks)")
-        
+
         while self.is_stitching or not self.preprocessing_queue.empty():
             try:
                 # Launch new preprocessing tasks up to max_concurrent limit
@@ -1178,39 +1178,39 @@ class WellZarrCanvasBase:
                     try:
                         # Get frame from preprocessing queue (non-blocking)
                         frame_data = self.preprocessing_queue.get_nowait()
-                        
+
                         # Launch preprocessing task (runs in parallel)
                         task = asyncio.create_task(self._preprocess_and_queue_write(frame_data))
                         active_tasks.add(task)
-                        
+
                         # Remove task from set when done
                         task.add_done_callback(active_tasks.discard)
-                        
+
                         logger.debug(f"Launched preprocessing task ({len(active_tasks)} active)")
-                        
+
                     except asyncio.QueueEmpty:
                         break  # No more items in queue
                     except Exception as e:
                         logger.error(f"Error launching preprocessing task: {e}")
-                
+
                 # Small delay to prevent busy loop
                 await asyncio.sleep(0.01)
-                
+
                 # If no active tasks and queue is empty, wait a bit longer
                 if len(active_tasks) == 0 and self.preprocessing_queue.empty():
                     await asyncio.sleep(0.1)
-                
+
             except Exception as e:
                 logger.error(f"Error in preprocessing loop: {e}")
                 import traceback
                 traceback.print_exc()
-        
+
         # Wait for all active preprocessing tasks to complete
         if active_tasks:
             logger.info(f"Waiting for {len(active_tasks)} active preprocessing tasks to complete...")
             await asyncio.gather(*active_tasks, return_exceptions=True)
             logger.info("All preprocessing tasks completed")
-        
+
         logger.info("Preprocessing loop exited")
 
     def get_canvas_region_pixels(self, center_x_px: int, center_y_px: int, width_px: int, height_px: int,
@@ -1322,7 +1322,7 @@ class WellZarrCanvasBase:
 
         # Validate image input
         if image is None or image.size == 0:
-            logger.error(f"ZARR_WRITE_PIXELS: Invalid image input - image is None or empty")
+            logger.error("ZARR_WRITE_PIXELS: Invalid image input - image is None or empty")
             return
 
         logger.info(f"ZARR_WRITE_PIXELS: Writing image shape={image.shape}, dtype={image.dtype} to all scales, "
@@ -1375,7 +1375,7 @@ class WellZarrCanvasBase:
                     # Calculate scale factor from reference scale to target scale
                     # If input is at scale 0 and we're writing to scale 1, we need to downsample by 4
                     scale_factor_from_ref = 4 ** (target_scale - scale)
-                    
+
                     # Convert pixel coordinates for this scale
                     x_start_px_scaled = x_start_px // scale_factor_from_ref if scale_factor_from_ref > 1 else x_start_px
                     y_start_px_scaled = y_start_px // scale_factor_from_ref if scale_factor_from_ref > 1 else y_start_px
@@ -1425,7 +1425,7 @@ class WellZarrCanvasBase:
                                        f"{y_start_px_scaled}:{y_end_px_scaled}, {x_start_px_scaled}:{x_end_px_scaled}] "
                                        f"with image shape={image_to_write.shape}")
                             zarr_array[timepoint, channel_idx, z_idx, y_start_px_scaled:y_end_px_scaled, x_start_px_scaled:x_end_px_scaled] = image_to_write
-                            
+
                             scales_written += 1
                         except IndexError as e:
                             logger.error(f"ZARR_WRITE_PIXELS: ❌ IndexError writing to scale {target_scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
@@ -2335,7 +2335,7 @@ class ExperimentManager:
 
         # For different experiments or new canvases, create/load directly
         experiment_path = self.base_path / target_experiment
-        
+
         # Ensure experiment directory exists
         if not experiment_path.exists():
             raise ValueError(f"Experiment '{target_experiment}' does not exist")
@@ -2505,7 +2505,7 @@ class ExperimentManager:
                     {
                         "active": True,
                         "coefficient": 1.0,
-                        "color": "8000FF",
+                        "color": "0000FF",
                         "family": "linear",
                         "label": "Fluorescence 405 nm Ex",
                         "window": {
@@ -2527,7 +2527,7 @@ class ExperimentManager:
                     {
                         "active": True,
                         "coefficient": 1.0,
-                        "color": "FF0000",
+                        "color": "FF00FF",
                         "family": "linear",
                         "label": "Fluorescence 638 nm Ex",
                         "window": {
@@ -2538,7 +2538,7 @@ class ExperimentManager:
                     {
                         "active": True,
                         "coefficient": 1.0,
-                        "color": "FFFF00",
+                        "color": "FF0000",
                         "family": "linear",
                         "label": "Fluorescence 561 nm Ex",
                         "window": {
@@ -2549,7 +2549,7 @@ class ExperimentManager:
                     {
                         "active": True,
                         "coefficient": 1.0,
-                        "color": "FF00FF",
+                        "color": "00FFFF",
                         "family": "linear",
                         "label": "Fluorescence 730 nm Ex",
                         "window": {
