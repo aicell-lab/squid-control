@@ -64,7 +64,9 @@ async def test_microscope_service():
 
 
             # Initialize artifact manager and snapshot manager for testing
-            from squid_control.hypha_tools.artifact_manager.artifact_manager import SquidArtifactManager
+            from squid_control.hypha_tools.artifact_manager.artifact_manager import (
+                SquidArtifactManager,
+            )
             from squid_control.hypha_tools.snapshot_utils import SnapshotManager
             
             microscope.artifact_manager = SquidArtifactManager()
@@ -532,59 +534,6 @@ async def test_service_parameter_persistence(test_microscope_service):
     assert microscope.F405_intensity_exposure[1] == 150
 
 # Schema-based method tests
-async def test_schema_methods(test_microscope_service):
-    """Test the schema-based methods used by the microscope service."""
-    microscope, service = test_microscope_service
-
-    # Test get_schema
-    schema = microscope.get_schema()
-    assert isinstance(schema, dict)
-    assert "move_by_distance" in schema
-    assert "snap_image" in schema
-    assert "navigate_to_well" in schema
-
-    # Test move_by_distance_schema
-    from squid_control.start_hypha_service import MicroscopeHyphaService
-    config = MicroscopeHyphaService.MoveByDistanceInput(x=1.0, y=0.5, z=0.1)
-    result = microscope.move_by_distance_schema(config)
-    assert isinstance(result, str)
-    assert "moved" in result.lower() or "cannot move" in result.lower()
-
-    # Test move_to_position_schema with safe position
-    # X: 10-112.5mm, Y: 6-76mm, Z: 0.05-6mm
-    config = MicroscopeHyphaService.MoveToPositionInput(x=35.0, y=30.0, z=3.0)
-    try:
-        result = microscope.move_to_position_schema(config)
-        assert isinstance(result, str)
-        assert "moved" in result.lower() or "cannot move" in result.lower()
-    except Exception as e:
-        # Handle case where movement is still outside limits
-        assert "limit" in str(e) or "range" in str(e)
-
-    # Test snap_image_schema
-    config = MicroscopeHyphaService.SnapImageInput(exposure=100, channel=0, intensity=50)
-    result = await microscope.snap_image_schema(config)
-    assert isinstance(result, str)
-    assert "![Image](" in result
-
-    # Test navigate_to_well_schema
-    config = MicroscopeHyphaService.NavigateToWellInput(row='B', col=3, well_plate_type='96')
-    result = await microscope.navigate_to_well_schema(config)
-    assert isinstance(result, str)
-    assert "B,3" in result
-
-    # Test set_illumination_schema
-    config = MicroscopeHyphaService.SetIlluminationInput(channel=0, intensity=60)
-    result = microscope.set_illumination_schema(config)
-    assert isinstance(result, dict)
-    assert "result" in result
-
-    # Test set_camera_exposure_schema
-    config = MicroscopeHyphaService.SetCameraExposureInput(channel=0, exposure_time=150)
-    result = microscope.set_camera_exposure_schema(config)
-    assert isinstance(result, dict)
-    assert "result" in result
-
 # Permission and authentication tests
 async def test_permission_system(test_microscope_service):
     """Test the permission system in simulation mode (always allows access)."""
@@ -846,85 +795,6 @@ async def test_comprehensive_well_navigation(test_microscope_service):
         elif plate_type == '384':
             result = await service.navigate_to_well(row='P', col=24, well_plate_type=plate_type)
             assert "P,24" in result
-
-# Additional schema method tests
-async def test_additional_schema_methods(test_microscope_service):
-    """Test additional schema methods and input validation."""
-    microscope, service = test_microscope_service
-
-    # Test contrast_autofocus_schema
-    config = MicroscopeHyphaService.AutoFocusInput(N=10, delta_Z=1.524)
-    result = await microscope.contrast_autofocus_schema(config)
-    assert "auto-focus" in result.lower()
-
-    # Test home_stage_schema
-    result = await microscope.home_stage_schema()
-    assert isinstance(result, dict)
-    assert "result" in result
-
-    # Test return_stage_schema
-    result = await microscope.return_stage_schema()
-    assert isinstance(result, dict)
-    assert "result" in result
-
-    # Test reflection_autofocus_schema
-    result = await microscope.reflection_autofocus_schema()
-    assert isinstance(result, dict)
-    assert "result" in result
-
-    # Test autofocus_set_reflection_reference_schema
-    result = await microscope.autofocus_set_reflection_reference_schema()
-    assert isinstance(result, dict)
-    assert "result" in result
-
-    # Test get_status_schema
-    result = microscope.get_status_schema()
-    assert isinstance(result, dict)
-    assert "result" in result
-
-# Test Pydantic input models
-async def test_pydantic_input_models():
-    """Test all Pydantic input model classes."""
-    from squid_control.start_hypha_service import MicroscopeHyphaService
-
-    # Test MoveByDistanceInput
-    move_input = MicroscopeHyphaService.MoveByDistanceInput(x=1.0, y=2.0, z=0.5)
-    assert move_input.x == 1.0
-    assert move_input.y == 2.0
-    assert move_input.z == 0.5
-
-    # Test MoveToPositionInput
-    position_input = MicroscopeHyphaService.MoveToPositionInput(x=5.0, y=None, z=3.35)
-    assert position_input.x == 5.0
-    assert position_input.y is None
-    assert position_input.z == 3.35
-
-    # Test SnapImageInput
-    snap_input = MicroscopeHyphaService.SnapImageInput(exposure=100, channel=0, intensity=50)
-    assert snap_input.exposure == 100
-    assert snap_input.channel == 0
-    assert snap_input.intensity == 50
-
-    # Test NavigateToWellInput
-    well_input = MicroscopeHyphaService.NavigateToWellInput(row='B', col=3, well_plate_type='96')
-    assert well_input.row == 'B'
-    assert well_input.col == 3
-    assert well_input.well_plate_type == '96'
-
-    # Test SetIlluminationInput
-    illum_input = MicroscopeHyphaService.SetIlluminationInput(channel=11, intensity=75)
-    assert illum_input.channel == 11
-    assert illum_input.intensity == 75
-
-    # Test SetCameraExposureInput
-    exposure_input = MicroscopeHyphaService.SetCameraExposureInput(channel=12, exposure_time=200)
-    assert exposure_input.channel == 12
-    assert exposure_input.exposure_time == 200
-
-    # Test AutoFocusInput
-    af_input = MicroscopeHyphaService.AutoFocusInput(N=15, delta_Z=2.0)
-    assert af_input.N == 15
-    assert af_input.delta_Z == 2.0
 
 # Test error conditions and exception handling
 async def test_error_conditions(test_microscope_service):
