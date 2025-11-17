@@ -1052,107 +1052,115 @@ async def webrtc_test_services():
     webrtc_service_id = None
 
     try:
-        # Use context manager for proper connection handling
-        async with connect_to_server({
+        # Connect to server without context manager to keep connection open
+        server = await connect_to_server({
             "server_url": TEST_SERVER_URL,
             "token": token,
             "workspace": TEST_WORKSPACE,
             "ping_interval": None
-        }) as server:
-            print("✅ Connected to Hypha server")
+        })
+        print("✅ Connected to Hypha server")
 
-            # Create unique service IDs for this test
-            test_id = f"test-webrtc-microscope-{uuid.uuid4().hex[:8]}"
-            webrtc_service_id = f"video-track-{test_id}"
+        # Create unique service IDs for this test
+        test_id = f"test-webrtc-microscope-{uuid.uuid4().hex[:8]}"
+        webrtc_service_id = f"video-track-{test_id}"
 
-            print(f"Creating microscope service: {test_id}")
-            print(f"Creating WebRTC service: {webrtc_service_id}")
+        print(f"Creating microscope service: {test_id}")
+        print(f"Creating WebRTC service: {webrtc_service_id}")
 
-            # Create microscope instance in simulation mode
-            print("🔬 Creating Microscope instance...")
-            microscope = MicroscopeHyphaService(is_simulation=True, is_local=False)
-            microscope.service_id = test_id
-            microscope.login_required = False  # Disable auth for tests
-            microscope.authorized_emails = None
+        # Create microscope instance in simulation mode
+        print("🔬 Creating Microscope instance...")
+        microscope = MicroscopeHyphaService(is_simulation=True, is_local=False)
+        microscope.service_id = test_id
+        microscope.login_required = False  # Disable auth for tests
+        microscope.authorized_emails = None
 
-            # Override setup method
-            async def mock_setup():
-                pass
-            microscope.setup = mock_setup
+        # Override setup method
+        async def mock_setup():
+            pass
+        microscope.setup = mock_setup
 
-            # Register the microscope service
-            print("📝 Registering microscope service...")
-            await microscope.start_hypha_service(server, test_id)
-            print("✅ Microscope service registered")
+        # Register the microscope service
+        print("📝 Registering microscope service...")
+        await microscope.start_hypha_service(server, test_id)
+        print("✅ Microscope service registered")
 
-            # Register WebRTC service following the actual implementation pattern
-            print("📹 Registering WebRTC service...")
-            await microscope.start_webrtc_service(server, webrtc_service_id)
-            print("✅ WebRTC service registered")
+        # Register WebRTC service following the actual implementation pattern
+        print("📹 Registering WebRTC service...")
+        await microscope.start_webrtc_service(server, webrtc_service_id)
+        print("✅ WebRTC service registered")
 
-            # Verify services are accessible
-            print("🔍 Verifying services...")
-            microscope_svc = await server.get_service(test_id)
-            ping_result = await microscope_svc.ping()
-            assert ping_result == "pong"
-            print("✅ Services verified and ready")
+        # Verify services are accessible
+        print("🔍 Verifying services...")
+        microscope_svc = await server.get_service(test_id)
+        ping_result = await microscope_svc.ping()
+        assert ping_result == "pong"
+        print("✅ Services verified and ready")
 
-            try:
-                yield {
-                    'microscope': microscope,
-                    'microscope_service_id': test_id,
-                    'webrtc_service_id': webrtc_service_id,
-                    'server': server,
-                    'token': token
-                }
-            finally:
-                # Cleanup
-                print("🧹 Cleaning up WebRTC test services...")
+        try:
+            yield {
+                'microscope': microscope,
+                'microscope_service_id': test_id,
+                'webrtc_service_id': webrtc_service_id,
+                'server': server,
+                'token': token
+            }
+        finally:
+            # Cleanup
+            print("🧹 Cleaning up WebRTC test services...")
 
-                # Stop video buffering
-                if microscope and hasattr(microscope, 'stop_video_buffering'):
-                    try:
-                        if microscope.frame_acquisition_running:
-                            # Add timeout for test environment to prevent hanging
-                            await asyncio.wait_for(
-                                microscope.stop_video_buffering(),
-                                timeout=5.0  # 5 second timeout for tests
-                            )
-                    except asyncio.TimeoutError:
-                        print("⚠️ Video buffering stop timed out in WebRTC test, forcing cleanup...")
-                        # Force stop the video buffering by setting flags directly
-                        microscope.frame_acquisition_running = False
-                        if microscope.frame_acquisition_task:
-                            microscope.frame_acquisition_task.cancel()
-                        if microscope.video_idle_check_task:
-                            microscope.video_idle_check_task.cancel()
-                        print("✅ Video buffering force stopped")
-                    except Exception as e:
-                        print(f"Error stopping video buffering: {e}")
+            # Stop video buffering
+            if microscope and hasattr(microscope, 'stop_video_buffering'):
+                try:
+                    if microscope.frame_acquisition_running:
+                        # Add timeout for test environment to prevent hanging
+                        await asyncio.wait_for(
+                            microscope.stop_video_buffering(),
+                            timeout=5.0  # 5 second timeout for tests
+                        )
+                except asyncio.TimeoutError:
+                    print("⚠️ Video buffering stop timed out in WebRTC test, forcing cleanup...")
+                    # Force stop the video buffering by setting flags directly
+                    microscope.frame_acquisition_running = False
+                    if microscope.frame_acquisition_task:
+                        microscope.frame_acquisition_task.cancel()
+                    if microscope.video_idle_check_task:
+                        microscope.video_idle_check_task.cancel()
+                    print("✅ Video buffering force stopped")
+                except Exception as e:
+                    print(f"Error stopping video buffering: {e}")
 
-                # Close SquidController
-                if microscope and hasattr(microscope, 'squidController'):
-                    try:
-                        if hasattr(microscope.squidController, 'camera'):
-                            camera = microscope.squidController.camera
-                            if hasattr(camera, 'cleanup_zarr_resources_async'):
-                                try:
-                                    # Add timeout for zarr cleanup as well
-                                    await asyncio.wait_for(
-                                        camera.cleanup_zarr_resources_async(),
-                                        timeout=3.0  # 3 second timeout for zarr cleanup
-                                    )
-                                except asyncio.TimeoutError:
-                                    print("⚠️ Zarr cleanup timed out in WebRTC test, skipping...")
-                                except Exception as e:
-                                    print(f"Camera cleanup error: {e}")
+            # Close SquidController
+            if microscope and hasattr(microscope, 'squidController'):
+                try:
+                    if hasattr(microscope.squidController, 'camera'):
+                        camera = microscope.squidController.camera
+                        if hasattr(camera, 'cleanup_zarr_resources_async'):
+                            try:
+                                # Add timeout for zarr cleanup as well
+                                await asyncio.wait_for(
+                                    camera.cleanup_zarr_resources_async(),
+                                    timeout=3.0  # 3 second timeout for zarr cleanup
+                                )
+                            except asyncio.TimeoutError:
+                                print("⚠️ Zarr cleanup timed out in WebRTC test, skipping...")
+                            except Exception as e:
+                                print(f"Camera cleanup error: {e}")
 
-                        microscope.squidController.close()
-                        print("✅ SquidController closed")
-                    except Exception as e:
-                        print(f"Error closing SquidController: {e}")
+                    microscope.squidController.close()
+                    print("✅ SquidController closed")
+                except Exception as e:
+                    print(f"Error closing SquidController: {e}")
 
-                print("✅ WebRTC test cleanup completed")
+            # Disconnect server
+            if server:
+                try:
+                    await server.disconnect()
+                    print("✅ Server disconnected")
+                except Exception as e:
+                    print(f"Error disconnecting server: {e}")
+
+            print("✅ WebRTC test cleanup completed")
 
     except Exception as e:
         pytest.fail(f"Failed to create WebRTC test services: {e}")
