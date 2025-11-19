@@ -5,11 +5,15 @@ This module provides async functions for interacting with the Weaviate vector da
 through direct Hypha RPC service calls (not HTTP endpoints).
 """
 
+import base64
+import io
 import json
 import logging
 import os
 from typing import Any, Dict, List, Optional
 
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 from hypha_rpc import connect_to_server
 
 logger = logging.getLogger(__name__)
@@ -318,7 +322,8 @@ async def search_similar_by_uuid(
     object_uuid: str,
     collection_name: str = WEAVIATE_COLLECTION_NAME,
     application_id: Optional[str] = None,
-    limit: int = 10
+    limit: int = 10,
+    certainty: float = 0.9
 ) -> Dict[str, Any]:
     """
     Search for similar images by UUID.
@@ -330,6 +335,7 @@ async def search_similar_by_uuid(
         collection_name: Weaviate collection name (default: "Agentlens")
         application_id: Application ID (required for fetching the object)
         limit: Maximum number of results to return (default: 10)
+        certainty: Minimum certainty threshold for similarity (default: 0.9, range: 0.0-1.0)
     
     Returns:
         Dict with 'success' (bool), 'results' (list), 'count' (int), and optional 'error' (str)
@@ -388,7 +394,7 @@ async def search_similar_by_uuid(
             near_vector=query_vector,
             limit=limit + 1,  # Fetch one extra to account for the query object itself
             include_vector=False,
-            certainty=0.9,
+            certainty=certainty,
             return_properties=[
                 "image_id", "description", "metadata", "dataset_id", "file_path",
                 "preview_image", "tag", "area", "perimeter", "equivalent_diameter",
@@ -424,4 +430,187 @@ async def search_similar_by_uuid(
             'results': [],
             'count': 0
         }
+
+
+async def get_cell_preview_by_uuid(
+    object_uuid: str,
+    application_id: str,
+    collection_name: str = WEAVIATE_COLLECTION_NAME
+) -> Optional[str]:
+    """
+    Get the preview image (base64 PNG) for a cell by its UUID.
+    
+    Args:
+        object_uuid: UUID of the cell object in Weaviate
+        application_id: Application ID (experiment name)
+        collection_name: Weaviate collection name (default: "Agentlens")
+    
+    Returns:
+        Base64 encoded PNG string if found, None if preview unavailable
+    
+    Raises:
+        Exception: If object not found or fetch fails
+    """
+    try:
+        weaviate_service = await _get_weaviate_service()
+        
+        # Fetch the object by UUID
+        try:
+            query_object = await weaviate_service.data.get(
+                collection_name=collection_name,
+                application_id=application_id,
+                uuid=object_uuid,
+                include_vector=False
+            )
+        except Exception as e:
+            # If direct get fails, try fetching all and filtering (fallback)
+            logger.debug(f"Direct UUID fetch failed, trying fallback: {e}")
+            objects = await weaviate_service.query.fetch_objects(
+                collection_name=collection_name,
+                application_id=application_id,
+                limit=10000,
+                return_properties=["preview_image"],
+                include_vector=False
+            )
+            
+            # Find the object with matching UUID
+            query_object = None
+            actual_objects = objects.objects if hasattr(objects, 'objects') else objects
+            for obj in actual_objects:
+                obj_uuid = getattr(obj, 'uuid', None) or getattr(obj, 'id', None)
+                if str(obj_uuid) == str(object_uuid):
+                    query_object = obj
+                    break
+            
+            if query_object is None:
+                raise ValueError(f"Object with UUID '{object_uuid}' not found")
+        
+        # Extract preview_image field
+        preview_image = None
+        if hasattr(query_object, 'properties'):
+            preview_image = getattr(query_object.properties, 'preview_image', None)
+        elif hasattr(query_object, 'preview_image'):
+            preview_image = query_object.preview_image
+        elif isinstance(query_object, dict):
+            preview_image = query_object.get('properties', {}).get('preview_image')
+        
+        if preview_image is None:
+            logger.warning(f"No preview image found for UUID {object_uuid}")
+            return None
+        
+        return preview_image
+        
+    except Exception as e:
+        logger.error(f"Error fetching preview for UUID {object_uuid}: {e}", exc_info=True)
+        raise
+
+
+def create_validation_composite_image(
+    reference_preview_base64: str,
+    validation_previews_base64: List[str]
+) -> np.ndarray:
+    """
+    Create a composite image for GPT validation with reference cell on left and validation cells on right.
+    
+    Args:
+        reference_preview_base64: Base64 encoded PNG of reference cell (50x50)
+        validation_previews_base64: List of base64 encoded PNGs for validation cells (up to 10)
+    
+    Returns:
+        numpy array (RGB format) of composite image
+    
+    Raises:
+        ValueError: If inputs are invalid or image decoding fails
+    """
+    try:
+        # Configuration
+        cell_size = 50  # Each cell preview is 50x50
+        padding = 10
+        title_height = 30
+        cols_validation = 2  # 2 columns for validation cells
+        rows_validation = 5  # 5 rows for validation cells
+        
+        # Decode reference image
+        ref_img_bytes = base64.b64decode(reference_preview_base64)
+        ref_img = Image.open(io.BytesIO(ref_img_bytes)).convert('RGB')
+        
+        # Ensure reference image is 50x50
+        if ref_img.size != (cell_size, cell_size):
+            ref_img = ref_img.resize((cell_size, cell_size), Image.Resampling.LANCZOS)
+        
+        # Decode validation images (up to 10)
+        validation_imgs = []
+        for i, preview_b64 in enumerate(validation_previews_base64[:10]):
+            try:
+                val_img_bytes = base64.b64decode(preview_b64)
+                val_img = Image.open(io.BytesIO(val_img_bytes)).convert('RGB')
+                if val_img.size != (cell_size, cell_size):
+                    val_img = val_img.resize((cell_size, cell_size), Image.Resampling.LANCZOS)
+                validation_imgs.append(val_img)
+            except Exception as e:
+                logger.warning(f"Failed to decode validation image {i}: {e}")
+                # Create a placeholder black image
+                validation_imgs.append(Image.new('RGB', (cell_size, cell_size), (0, 0, 0)))
+        
+        # Ensure we have exactly 10 validation images (fill with black if needed)
+        while len(validation_imgs) < 10:
+            validation_imgs.append(Image.new('RGB', (cell_size, cell_size), (0, 0, 0)))
+        
+        # Calculate composite dimensions
+        # Left side: reference cell
+        left_width = cell_size + 2 * padding
+        # Right side: 2 columns x 5 rows of validation cells
+        right_width = cols_validation * cell_size + (cols_validation + 1) * padding
+        
+        composite_width = left_width + right_width
+        composite_height = title_height + rows_validation * cell_size + (rows_validation + 1) * padding
+        
+        # Create composite canvas (white background)
+        composite = Image.new('RGB', (composite_width, composite_height), (255, 255, 255))
+        draw = ImageDraw.Draw(composite)
+        
+        # Use PIL's default font (simple and works everywhere)
+        font = ImageFont.load_default()
+        
+        # Draw title for reference cell (left side)
+        ref_title = "Reference Cell"
+        ref_title_bbox = draw.textbbox((0, 0), ref_title, font=font)
+        ref_title_width = ref_title_bbox[2] - ref_title_bbox[0]
+        ref_title_x = (left_width - ref_title_width) // 2
+        draw.text((ref_title_x, 5), ref_title, fill=(0, 0, 0), font=font)
+        
+        # Draw title for validation cells (right side)
+        val_title = "Least Similar Cells"
+        val_title_bbox = draw.textbbox((0, 0), val_title, font=font)
+        val_title_width = val_title_bbox[2] - val_title_bbox[0]
+        val_title_x = left_width + (right_width - val_title_width) // 2
+        draw.text((val_title_x, 5), val_title, fill=(0, 0, 0), font=font)
+        
+        # Paste reference cell (centered vertically on left side)
+        ref_y = title_height + (composite_height - title_height - cell_size) // 2
+        ref_x = padding
+        composite.paste(ref_img, (ref_x, ref_y))
+        
+        # Paste validation cells in 2x5 grid on right side
+        val_start_x = left_width
+        val_start_y = title_height
+        
+        for idx, val_img in enumerate(validation_imgs):
+            row = idx // cols_validation
+            col = idx % cols_validation
+            
+            x = val_start_x + padding + col * (cell_size + padding)
+            y = val_start_y + padding + row * (cell_size + padding)
+            
+            composite.paste(val_img, (x, y))
+        
+        # Convert PIL image to numpy array
+        composite_array = np.array(composite)
+        
+        logger.info(f"Created validation composite image: {composite_array.shape}")
+        return composite_array
+        
+    except Exception as e:
+        logger.error(f"Error creating composite image: {e}", exc_info=True)
+        raise ValueError(f"Failed to create composite image: {e}")
 
