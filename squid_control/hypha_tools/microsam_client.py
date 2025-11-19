@@ -1525,7 +1525,8 @@ async def process_segmentation_for_similarity_search(
         channel_configs: List of channel configurations (same as used for segmentation)
         progress_callback: Optional callback(status_message, current, total)
         batch_size: Batch size for embedding generation and upload (default: 32)
-        agent_lens_base_url: Base URL for agent-lens service
+        agent_lens_base_url: Base URL for agent-lens embedding service (default: https://hypha.aicell.io/agent-lens/apps/agent-lens)
+        reset_application: If True, delete existing Weaviate application before creating (default: True)
     
     Returns:
         Dict with results:
@@ -1684,7 +1685,6 @@ async def process_segmentation_for_similarity_search(
         setup_result = await setup_weaviate_application(
             application_id=source_experiment,
             description=f"Segmentation results from {source_experiment}",
-            base_url=agent_lens_base_url,
             reset_application=reset_application
         )
         
@@ -1778,7 +1778,6 @@ async def process_segmentation_for_similarity_search(
             upload_result = await batch_upload_to_weaviate(
                 objects=batch_objects,
                 application_id=source_experiment,
-                base_url=agent_lens_base_url,
                 retry_attempts=2
             )
             
