@@ -10,11 +10,15 @@ import base64
 import json
 import logging
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import cv2
 import numpy as np
+from shapely import wkt
+from shapely.geometry import Polygon
+from skimage.measure import label, regionprops
 
 logger = logging.getLogger(__name__)
 
@@ -1266,6 +1270,236 @@ async def segment_experiment_wells(
     return results
 
 
+def extract_cell_features(
+    polygon_wkt: str,
+    image: np.ndarray,
+    pixel_size_um: float
+) -> Dict[str, Optional[float]]:
+    """
+    Extract morphological features from a single cell.
+    
+    Uses hybrid approach:
+    - Polygon geometry for: area, perimeter, bbox dimensions, circularity, solidity, convexity
+    - Image regionprops for: aspect_ratio, eccentricity
+    
+    Args:
+        polygon_wkt: WKT format polygon string (in mm coordinates)
+        image: Cell image (RGB or grayscale)
+        pixel_size_um: Pixel size in micrometers
+    
+    Returns:
+        Dictionary with morphological features in physical units (µm, µm²):
+        - area: Cell area in µm²
+        - perimeter: Cell perimeter in µm
+        - equivalent_diameter: Diameter of circle with same area in µm
+        - bbox_width: Bounding box width in µm
+        - bbox_height: Bounding box height in µm
+        - aspect_ratio: Major axis / minor axis (elongation, unitless)
+        - circularity: 4π×area/perimeter² (roundness, unitless, 1.0 = perfect circle)
+        - eccentricity: 0 = circle, → 1 elongated (unitless)
+        - solidity: Area / convex hull area (unitless)
+        - convexity: Perimeter of convex hull / perimeter (smoothness, unitless)
+        
+        Returns None for features that fail to compute.
+    """
+    features = {
+        'area': None,
+        'perimeter': None,
+        'equivalent_diameter': None,
+        'bbox_width': None,
+        'bbox_height': None,
+        'aspect_ratio': None,
+        'circularity': None,
+        'eccentricity': None,
+        'solidity': None,
+        'convexity': None
+    }
+    
+    try:
+        # Parse polygon from WKT
+        polygon = wkt.loads(polygon_wkt)
+        
+        if not polygon.is_valid or polygon.is_empty:
+            logger.warning("Invalid or empty polygon geometry")
+            return features
+        
+        # Convert mm to µm for area/perimeter calculations
+        mm_to_um = 1000.0
+        
+        # Extract polygon-based features
+        try:
+            # Area in µm² (polygon.area is in mm², convert to µm²)
+            area_mm2 = polygon.area
+            features['area'] = area_mm2 * (mm_to_um ** 2)
+            
+            # Perimeter in µm (polygon.length is in mm, convert to µm)
+            perimeter_mm = polygon.length
+            features['perimeter'] = perimeter_mm * mm_to_um
+            
+            # Equivalent diameter (diameter of circle with same area)
+            if features['area'] and features['area'] > 0:
+                features['equivalent_diameter'] = 2 * np.sqrt(features['area'] / np.pi)
+            
+            # Bounding box dimensions in µm
+            minx, miny, maxx, maxy = polygon.bounds
+            features['bbox_width'] = (maxx - minx) * mm_to_um
+            features['bbox_height'] = (maxy - miny) * mm_to_um
+            
+            # Circularity: 4π×area/perimeter² (1.0 = perfect circle)
+            if features['area'] and features['perimeter'] and features['perimeter'] > 0:
+                features['circularity'] = (4 * np.pi * features['area']) / (features['perimeter'] ** 2)
+            
+            # Solidity: area / convex hull area
+            convex_hull = polygon.convex_hull
+            convex_area_mm2 = convex_hull.area
+            if convex_area_mm2 > 0:
+                features['solidity'] = area_mm2 / convex_area_mm2
+            
+            # Convexity: convex hull perimeter / perimeter
+            convex_perimeter_mm = convex_hull.length
+            if perimeter_mm > 0:
+                features['convexity'] = convex_perimeter_mm / perimeter_mm
+                
+        except Exception as e:
+            logger.warning(f"Failed to extract polygon-based features: {e}")
+        
+        # Extract image-based features (aspect_ratio, eccentricity)
+        try:
+            # Convert image to grayscale if needed
+            if len(image.shape) == 3:
+                gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+            else:
+                gray = image
+            
+            # Create binary mask (non-zero pixels are cell)
+            _, binary = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
+            
+            # Label connected components
+            labeled = label(binary)
+            
+            # Get region properties
+            regions = regionprops(labeled)
+            
+            if len(regions) > 0:
+                # Use the largest region (should be the cell)
+                region = max(regions, key=lambda r: r.area)
+                
+                # Aspect ratio: major_axis_length / minor_axis_length
+                if region.minor_axis_length > 0:
+                    features['aspect_ratio'] = region.major_axis_length / region.minor_axis_length
+                
+                # Eccentricity: 0 = circle, → 1 = elongated
+                features['eccentricity'] = region.eccentricity
+                
+        except Exception as e:
+            logger.warning(f"Failed to extract image-based features: {e}")
+    
+    except Exception as e:
+        logger.error(f"Failed to parse polygon or extract features: {e}")
+    
+    return features
+
+
+def _prepare_upload_object(
+    idx: int,
+    metadata: Dict,
+    embedding: Optional[List[float]],
+    image: np.ndarray,
+    source_experiment: str,
+    timestamp: str,
+    channel_configs: List[Dict],
+    pixel_size_um: float
+) -> Optional[Dict[str, Any]]:
+    """
+    Prepare a single upload object with features extraction (thread-safe helper).
+    
+    Args:
+        idx: Cell index
+        metadata: Cell metadata with polygon_obj, well_id, etc.
+        embedding: Embedding vector or None
+        image: Cell image
+        source_experiment: Experiment name
+        timestamp: ISO timestamp
+        channel_configs: Channel configurations
+        pixel_size_um: Pixel size in micrometers
+    
+    Returns:
+        Upload object dictionary or None if failed
+    """
+    from squid_control.hypha_tools.cell_extractor import generate_cell_preview
+    
+    try:
+        if embedding is None:
+            logger.warning(f"Cell {idx}: No embedding, skipping upload")
+            return None
+        
+        polygon_obj = metadata['polygon_obj']
+        well_id = metadata['well_id']
+        
+        # Generate annotation ID
+        annotation_id = f"{source_experiment}_cell_{idx}"
+        
+        # Generate preview image
+        preview_base64 = None
+        try:
+            preview_base64 = generate_cell_preview(image, size=50)
+        except Exception as e:
+            logger.warning(f"Cell {idx}: Failed to generate preview: {e}")
+        
+        # Extract cell features
+        features = {}
+        try:
+            polygon_wkt = polygon_obj.get('polygon_wkt')
+            if polygon_wkt:
+                features = extract_cell_features(polygon_wkt, image, pixel_size_um)
+        except Exception as e:
+            logger.warning(f"Cell {idx}: Failed to extract features: {e}")
+        
+        # Prepare metadata
+        upload_metadata = {
+            'annotation_id': annotation_id,
+            'well_id': well_id,
+            'annotation_type': 'polygon',
+            'timestamp': timestamp,
+            'polygon_wkt': polygon_obj.get('polygon_wkt'),
+            'source': 'segmentation',
+            'bbox': polygon_obj.get('bbox'),
+            'channel_info': [config['channel'] for config in channel_configs]
+        }
+        
+        # Prepare upload object with all fields
+        upload_obj = {
+            'image_id': annotation_id,
+            'description': f"Segmented cell from well {well_id}",
+            'metadata': upload_metadata,
+            'dataset_id': source_experiment,
+            'vector': embedding
+        }
+        
+        # Add preview image if available
+        if preview_base64:
+            upload_obj['preview_image'] = preview_base64
+        
+        # Add morphological features directly to upload object
+        # (following the same pattern as image_id, description, preview_image, etc.)
+        upload_obj['area'] = features.get('area')
+        upload_obj['perimeter'] = features.get('perimeter')
+        upload_obj['equivalent_diameter'] = features.get('equivalent_diameter')
+        upload_obj['bbox_width'] = features.get('bbox_width')
+        upload_obj['bbox_height'] = features.get('bbox_height')
+        upload_obj['aspect_ratio'] = features.get('aspect_ratio')
+        upload_obj['circularity'] = features.get('circularity')
+        upload_obj['eccentricity'] = features.get('eccentricity')
+        upload_obj['solidity'] = features.get('solidity')
+        upload_obj['convexity'] = features.get('convexity')
+        
+        return upload_obj
+        
+    except Exception as e:
+        logger.error(f"Cell {idx}: Failed to prepare upload object: {e}", exc_info=True)
+        return None
+
+
 async def process_segmentation_for_similarity_search(
     experiment_manager,
     source_experiment: str,
@@ -1462,56 +1696,73 @@ async def process_segmentation_for_similarity_search(
         
         logger.info("✅ Weaviate application ready")
         
-        # Step 5: Prepare objects and upload to Weaviate
-        logger.info("📤 Preparing objects for upload...")
-        upload_objects = []
+        # Step 5: Prepare objects and upload to Weaviate (with multi-threading)
+        logger.info("📤 Preparing objects for upload (multi-threaded)...")
         timestamp = datetime.utcnow().isoformat() + "Z"
         
-        for idx, (metadata, embedding, image) in enumerate(zip(extracted_metadata, embeddings, extracted_images)):
-            if embedding is None:
-                logger.warning(f"Cell {idx}: No embedding, skipping upload")
-                continue
-            
-            polygon_obj = metadata['polygon_obj']
-            well_id = metadata['well_id']
-            
-            # Generate annotation ID
-            annotation_id = f"{source_experiment}_cell_{idx}"
-            
-            # Generate preview image
-            try:
-                preview_base64 = generate_cell_preview(image, size=50)
-            except Exception as e:
-                logger.warning(f"Cell {idx}: Failed to generate preview: {e}")
-                preview_base64 = None
-            
-            # Prepare metadata
-            upload_metadata = {
-                'annotation_id': annotation_id,
-                'well_id': well_id,
-                'annotation_type': 'polygon',
-                'timestamp': timestamp,
-                'polygon_wkt': polygon_obj.get('polygon_wkt'),
-                'source': 'segmentation',
-                'bbox': polygon_obj.get('bbox'),
-                'channel_info': [config['channel'] for config in channel_configs]
-            }
-            
-            # Prepare upload object
-            upload_obj = {
-                'image_id': annotation_id,
-                'description': f"Segmented cell from well {well_id}",
-                'metadata': upload_metadata,
-                'dataset_id': source_experiment,
-                'vector': embedding
-            }
-            
-            if preview_base64:
-                upload_obj['preview_image'] = preview_base64
-            
-            upload_objects.append(upload_obj)
+        # Get pixel size from experiment (use first cell's well to get canvas)
+        pixel_size_um = 0.333  # Default fallback
+        try:
+            if extracted_metadata:
+                first_well_id = extracted_metadata[0]['well_id']
+                well_row, well_col = first_well_id[0], int(first_well_id[1:])
+                canvas = experiment_manager.get_well_canvas(
+                    well_row, well_col, 
+                    well_plate_type="96",
+                    experiment_name=source_experiment
+                )
+                if canvas:
+                    pixel_size_um = canvas.pixel_size_xy_um
+                    logger.info(f"Using pixel size: {pixel_size_um} µm")
+        except Exception as e:
+            logger.warning(f"Failed to get pixel size from canvas, using default {pixel_size_um} µm: {e}")
         
-        logger.info(f"Prepared {len(upload_objects)} objects for upload")
+        # Prepare arguments for parallel processing
+        total_cells = len(extracted_metadata)
+        logger.info(f"Processing {total_cells} cells in parallel...")
+        
+        # Use ThreadPoolExecutor for parallel processing
+        # Limit to 2 workers to avoid overwhelming the system
+        max_workers = min(2, total_cells) if total_cells > 0 else 1
+        upload_objects = []
+        
+        # Get the asyncio event loop
+        loop = asyncio.get_event_loop()
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Submit all tasks using run_in_executor to avoid blocking the event loop
+            async_futures = []
+            for idx, (metadata, embedding, image) in enumerate(zip(extracted_metadata, embeddings, extracted_images)):
+                # Use run_in_executor to make the thread pool non-blocking for asyncio
+                async_future = loop.run_in_executor(
+                    executor,
+                    _prepare_upload_object,
+                    idx, metadata, embedding, image,
+                    source_experiment, timestamp, channel_configs,
+                    pixel_size_um
+                )
+                async_futures.append((idx, async_future))
+            
+            # Collect results as they complete (non-blocking with await)
+            completed = 0
+            for idx, async_future in async_futures:
+                try:
+                    # Await the future - this yields control back to the event loop
+                    result = await async_future
+                    if result is not None:
+                        upload_objects.append(result)
+                    completed += 1
+                    
+                    # Progress updates every 50 cells
+                    if completed % 50 == 0 or completed == total_cells:
+                        logger.info(f"  Prepared {completed}/{total_cells} objects")
+                        if progress_callback:
+                            progress_callback(f"Preparing objects", completed, total_cells)
+                            
+                except Exception as e:
+                    logger.error(f"Cell {idx}: Exception in parallel processing: {e}", exc_info=True)
+        
+        logger.info(f"✅ Prepared {len(upload_objects)} objects for upload (from {total_cells} cells)")
         
         # Upload in batches
         logger.info(f"📤 Uploading {len(upload_objects)} objects to Weaviate...")

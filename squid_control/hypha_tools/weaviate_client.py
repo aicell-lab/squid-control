@@ -154,13 +154,29 @@ async def batch_upload_to_weaviate(
     Upload batch of objects to Weaviate using insert-many endpoint.
     
     Args:
-        objects: List of object dictionaries with required fields:
+        objects: List of object dictionaries with fields:
+            Required fields:
             - image_id: Unique identifier
             - description: Text description
             - metadata: Dict with annotation info
             - dataset_id: Dataset identifier
             - vector: Embedding vector (list of floats)
-            - preview_image: Optional base64 PNG string
+            
+            Additional fields (may be None if extraction fails):
+            - preview_image: Base64 PNG string (50x50 preview)
+            
+            Morphological features (in µm or unitless, None if extraction fails):
+            - area: Cell area in µm²
+            - perimeter: Cell perimeter in µm
+            - equivalent_diameter: Diameter of circle with same area in µm
+            - bbox_width: Bounding box width in µm
+            - bbox_height: Bounding box height in µm
+            - aspect_ratio: Major axis / minor axis (elongation, unitless)
+            - circularity: 4π×area/perimeter² (roundness, unitless)
+            - eccentricity: 0 = circle, → 1 = elongated (unitless)
+            - solidity: Area / convex hull area (unitless)
+            - convexity: Convex hull perimeter / perimeter (unitless)
+            
         application_id: Application ID for the upload
         collection_name: Weaviate collection name (default: "Agentlens")
         base_url: Base URL for agent-lens service
@@ -176,11 +192,25 @@ async def batch_upload_to_weaviate(
     
     # Validate objects
     for idx, obj in enumerate(objects):
+        # Core required fields for Weaviate
         required_fields = ['image_id', 'description', 'metadata', 'dataset_id', 'vector']
+        
+        # Morphological features that are always included (may have None values)
+        expected_feature_fields = [
+            'area', 'perimeter', 'equivalent_diameter', 'bbox_width', 'bbox_height',
+            'aspect_ratio', 'circularity', 'eccentricity', 'solidity', 'convexity'
+        ]
+        
+        # Check for missing required fields
         missing_fields = [f for f in required_fields if f not in obj]
         if missing_fields:
             logger.error(f"Object {idx} missing required fields: {missing_fields}")
             return {'success': False, 'error': f"Object {idx} missing fields: {missing_fields}"}
+        
+        # Check for missing feature fields (warn but don't fail)
+        missing_features = [f for f in expected_feature_fields if f not in obj]
+        if missing_features:
+            logger.warning(f"Object {idx} missing feature fields: {missing_features}")
     
     # Prepare query parameters
     params = {
