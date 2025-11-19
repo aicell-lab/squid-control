@@ -388,6 +388,7 @@ async def search_similar_by_uuid(
             near_vector=query_vector,
             limit=limit + 1,  # Fetch one extra to account for the query object itself
             include_vector=False,
+            certainty=0.9,
             return_properties=[
                 "image_id", "description", "metadata", "dataset_id", "file_path",
                 "preview_image", "tag", "area", "perimeter", "equivalent_diameter",
