@@ -377,15 +377,49 @@ async def search_similar_by_uuid(
             if query_object is None:
                 raise ValueError(f"Object with UUID '{object_uuid}' not found")
         
-        # Step 2: Extract vector from the object
+        # Step 2: Extract vector from the object (copied from weaviate_search.py)
         query_vector = None
+        
+        # Try different ways to access the vector
         if hasattr(query_object, 'vector'):
             query_vector = query_object.vector
-        elif isinstance(query_object, dict) and 'vector' in query_object:
-            query_vector = query_object['vector']
+        elif isinstance(query_object, dict):
+            if 'vector' in query_object:
+                query_vector = query_object['vector']
+        
+        # If we still don't have the vector, try to access it via metadata or additional fields
+        if query_vector is None:
+            if hasattr(query_object, 'additional'):
+                additional = query_object.additional
+                if hasattr(additional, 'vector'):
+                    query_vector = additional.vector
+            elif isinstance(query_object, dict):
+                if 'additional' in query_object and isinstance(query_object['additional'], dict):
+                    query_vector = query_object['additional'].get('vector')
+            
+            if query_vector is None and isinstance(query_object, dict):
+                for key in ['vector', 'embedding', '_vector']:
+                    if key in query_object:
+                        query_vector = query_object[key]
+                        break
+        
+        # Handle case where vector is a dictionary (e.g., {'default': [vector...]})
+        if isinstance(query_vector, dict):
+            if 'default' in query_vector:
+                query_vector = query_vector['default']
+            elif len(query_vector) == 1:
+                query_vector = list(query_vector.values())[0]
+            else:
+                query_vector = list(query_vector.values())[0] if query_vector else None
         
         if query_vector is None:
-            raise ValueError(f"Could not extract vector from object with UUID '{object_uuid}'")
+            raise ValueError(f"Could not extract vector from object with UUID '{object_uuid}'. The object may not have a vector stored.")
+        
+        if not isinstance(query_vector, list):
+            raise ValueError(f"Extracted vector is not a list: {type(query_vector)}")
+        
+        if not all(isinstance(x, (int, float)) for x in query_vector):
+            raise ValueError("Vector contains non-numeric values")
         
         # Step 3: Perform similarity search using the extracted vector
         results = await weaviate_service.query.near_vector(

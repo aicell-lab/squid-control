@@ -1624,6 +1624,7 @@ class MicroscopeHyphaService:
             "segmentation_cancel": self.segmentation_cancel,
             "segmentation_get_polygons": self.segmentation_get_polygons,
             "search_cells_in_well": self.search_cells_in_well,
+            "validate_certainty_with_gpt": self.validate_certainty_with_gpt,
         }
 
         # Conditionally register Squid+ specific endpoints
