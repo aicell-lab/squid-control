@@ -4345,7 +4345,7 @@ class MicroscopeHyphaService:
     async def validate_certainty_with_gpt(
         self,
         target_uuid: str = Field(..., description="UUID of the reference cell to validate against"),
-        certainty: float = Field(0.9, description="Certainty threshold to test (0.0-1.0)"),
+        certainty: float = Field(0.95, description="Certainty threshold to test (0.0-1.0)"),
         application_id: Optional[str] = Field(None, description="Experiment/dataset name. If None, uses current active experiment."),
         search_limit: int = Field(1000, description="Number of similar cells to search"),
         validation_count: int = Field(10, description="Number of least similar cells to validate"),
@@ -4362,7 +4362,7 @@ class MicroscopeHyphaService:
         
         Args:
             target_uuid: UUID of the reference cell in Weaviate
-            certainty: Certainty threshold to test (default: 0.9, range: 0.0-1.0)
+            certainty: Certainty threshold to test (default: 0.95, range: 0.0-1.0)
             application_id: Experiment name (default: active experiment)
             search_limit: Maximum number of similar cells to retrieve (default: 1000)
             validation_count: Number of least similar cells to validate (default: 10)

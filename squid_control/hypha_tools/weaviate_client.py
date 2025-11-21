@@ -323,7 +323,7 @@ async def search_similar_by_uuid(
     collection_name: str = WEAVIATE_COLLECTION_NAME,
     application_id: Optional[str] = None,
     limit: int = 10,
-    certainty: float = 0.9
+    certainty: float = 0.95
 ) -> Dict[str, Any]:
     """
     Search for similar images by UUID.
