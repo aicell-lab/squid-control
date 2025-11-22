@@ -194,12 +194,12 @@ async def batch_upload_to_weaviate(
             Additional fields (may be None if extraction fails):
             - preview_image: Base64 PNG string (50x50 preview)
             
-            Morphological features (in µm or unitless, None if extraction fails):
-            - area: Cell area in µm²
-            - perimeter: Cell perimeter in µm
-            - equivalent_diameter: Diameter of circle with same area in µm
-            - bbox_width: Bounding box width in µm
-            - bbox_height: Bounding box height in µm
+            Morphological features (in pixels or unitless, None if extraction fails):
+            - area: Cell area in pixels²
+            - perimeter: Cell perimeter in pixels
+            - equivalent_diameter: Diameter of circle with same area in pixels
+            - bbox_width: Bounding box width in pixels
+            - bbox_height: Bounding box height in pixels
             - aspect_ratio: Major axis / minor axis (elongation, unitless)
             - circularity: 4π×area/perimeter² (roundness, unitless)
             - eccentricity: 0 = circle, → 1 = elongated (unitless)
