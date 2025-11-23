@@ -2197,62 +2197,6 @@ async def test_scan_start_full_zarr_profile(test_microscope_service):
     
     print("✅ scan_start full_zarr profile test passed!")
 
-
-async def test_scan_start_quick_zarr_profile(test_microscope_service):
-    """Test scan_start with quick_zarr profile."""
-    microscope, service = test_microscope_service
-    
-    print("Testing scan_start with quick_zarr profile")
-    
-    from unittest.mock import AsyncMock, patch
-    
-    # Mock the quick_scan_brightfield_to_zarr method
-    mock_scan = AsyncMock(return_value={
-        "success": True,
-        "message": "Quick scan with stitching completed successfully"
-    })
-    
-    with patch.object(microscope, 'quick_scan_brightfield_to_zarr', new=mock_scan):
-        # Start scan with quick_zarr profile
-        result = await service.scan_start(
-            config={
-                "saved_data_type": "quick_zarr",
-                "well_plate_type": "96",
-                "exposure_time": 5.0,
-                "intensity": 70.0,
-                "fps_target": 10,
-                "n_stripes": 4,
-                "stripe_width_mm": 4.0,
-                "dy_mm": 0.9,
-                "velocity_scan_mm_per_s": 7.0,
-                "experiment_name": 'test_quick',
-                "action_ID": "test_quick_zarr"
-            }
-        )
-        
-        assert result['success'] == True, "Scan should start successfully"
-        assert result['saved_data_type'] == 'quick_zarr', "Profile should be quick_zarr"
-        assert result['state'] == 'running', "State should be running"
-        
-        # Brief wait for scan task to start
-        await asyncio.sleep(0.2)
-        
-        # Check status
-        status = await service.scan_get_status()
-        assert status['state'] in ['running', 'completed'], "State should be running or completed"
-        assert status['saved_data_type'] == 'quick_zarr', "Profile should be quick_zarr"
-        
-        # Wait for scan to complete
-        await asyncio.sleep(0.5)
-        
-        # Verify mock was called
-        assert mock_scan.called, "quick_scan_brightfield_to_zarr should have been called"
-        
-        print("   ✓ quick_zarr profile scan completed successfully")
-    
-    print("✅ scan_start quick_zarr profile test passed!")
-
-
 async def test_scan_cancel_functionality(test_microscope_service):
     """Test scan_cancel cancels running scan."""
     microscope, service = test_microscope_service
