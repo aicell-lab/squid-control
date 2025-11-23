@@ -653,9 +653,49 @@ class MicroscopeHyphaService:
                             offset_y_mm: float = Field(0.0, description="Y-axis offset in millimeters"),
                             context=None):
         """Set wellplate offset values for X and Y axes. Offsets are added to well positions in non-simulation mode."""
+        from configparser import ConfigParser
+        from pathlib import Path
+        from .control.config import load_config
+        
         CONFIG.WELLPLATE_OFFSET_X_MM = float(offset_x_mm)
         CONFIG.WELLPLATE_OFFSET_Y_MM = float(offset_y_mm)
-        logger.info(f"Updated wellplate offsets: X={offset_x_mm} mm, Y={offset_y_mm} mm")
+        
+        # Get config file path
+        config_file_path = None
+        try:
+            if CONFIG.CACHE_CONFIG_FILE_PATH and os.path.exists(CONFIG.CACHE_CONFIG_FILE_PATH):
+                with open(CONFIG.CACHE_CONFIG_FILE_PATH) as f:
+                    config_file_path = f.read().strip()
+        except Exception:
+            pass
+        
+        if not config_file_path or not os.path.exists(config_file_path):
+            config_dir = Path(__file__).parent.parent
+            for name in ["configuration_HCS_v2.ini", "configuration_Squid+.ini"]:
+                for path in [config_dir / name, config_dir / "config" / name]:
+                    if path.exists():
+                        config_file_path = str(path)
+                        break
+                if config_file_path:
+                    break
+        
+        # Update INI file
+        if config_file_path and os.path.exists(config_file_path):
+            cfp = ConfigParser()
+            cfp.read(config_file_path)
+            # Find section with wellplate_offset or use GENERAL
+            section = next((s for s in cfp.sections() + ['DEFAULT'] if cfp.has_option(s, 'wellplate_offset_x_mm')), 
+                          'GENERAL' if 'GENERAL' in cfp.sections() else (cfp.sections()[0] if cfp.sections() else 'DEFAULT'))
+            if section not in cfp.sections() and section != 'DEFAULT':
+                cfp.add_section(section)
+            cfp.set(section, 'wellplate_offset_x_mm', str(offset_x_mm))
+            cfp.set(section, 'wellplate_offset_y_mm', str(offset_y_mm))
+            with open(config_file_path, 'w') as f:
+                cfp.write(f)
+            logger.info(f"Updated config file with wellplate offsets: X={offset_x_mm} mm, Y={offset_y_mm} mm")
+        
+        # Reload configuration
+        load_config(config_file_path, False)
         return {"offset_x_mm": CONFIG.WELLPLATE_OFFSET_X_MM, "offset_y_mm": CONFIG.WELLPLATE_OFFSET_Y_MM}
 
     async def one_new_frame(self, context=None):
