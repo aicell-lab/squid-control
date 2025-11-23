@@ -647,6 +647,57 @@ class MicroscopeHyphaService:
         """
         return self.squidController.get_simulated_sample_data_alias()
 
+    @schema_function(skip_self=True)
+    def set_wellplate_offset(self, 
+                            offset_x_mm: float = Field(0.0, description="X-axis offset in millimeters"), 
+                            offset_y_mm: float = Field(0.0, description="Y-axis offset in millimeters"),
+                            context=None):
+        """Set wellplate offset values for X and Y axes. Offsets are added to well positions in non-simulation mode."""
+        from configparser import ConfigParser
+        from pathlib import Path
+        from .control.config import load_config
+        
+        CONFIG.WELLPLATE_OFFSET_X_MM = float(offset_x_mm)
+        CONFIG.WELLPLATE_OFFSET_Y_MM = float(offset_y_mm)
+        
+        # Get config file path
+        config_file_path = None
+        try:
+            if CONFIG.CACHE_CONFIG_FILE_PATH and os.path.exists(CONFIG.CACHE_CONFIG_FILE_PATH):
+                with open(CONFIG.CACHE_CONFIG_FILE_PATH) as f:
+                    config_file_path = f.read().strip()
+        except Exception:
+            pass
+        
+        if not config_file_path or not os.path.exists(config_file_path):
+            config_dir = Path(__file__).parent.parent
+            for name in ["configuration_HCS_v2.ini", "configuration_Squid+.ini"]:
+                for path in [config_dir / name, config_dir / "config" / name]:
+                    if path.exists():
+                        config_file_path = str(path)
+                        break
+                if config_file_path:
+                    break
+        
+        # Update INI file
+        if config_file_path and os.path.exists(config_file_path):
+            cfp = ConfigParser()
+            cfp.read(config_file_path)
+            # Find section with wellplate_offset or use GENERAL
+            section = next((s for s in cfp.sections() + ['DEFAULT'] if cfp.has_option(s, 'wellplate_offset_x_mm')), 
+                          'GENERAL' if 'GENERAL' in cfp.sections() else (cfp.sections()[0] if cfp.sections() else 'DEFAULT'))
+            if section not in cfp.sections() and section != 'DEFAULT':
+                cfp.add_section(section)
+            cfp.set(section, 'wellplate_offset_x_mm', str(offset_x_mm))
+            cfp.set(section, 'wellplate_offset_y_mm', str(offset_y_mm))
+            with open(config_file_path, 'w') as f:
+                cfp.write(f)
+            logger.info(f"Updated config file with wellplate offsets: X={offset_x_mm} mm, Y={offset_y_mm} mm")
+        
+        # Reload configuration
+        load_config(config_file_path, False)
+        return {"offset_x_mm": CONFIG.WELLPLATE_OFFSET_X_MM, "offset_y_mm": CONFIG.WELLPLATE_OFFSET_Y_MM}
+
     async def one_new_frame(self, context=None):
         """
         Get an image from the microscope
@@ -1512,11 +1563,11 @@ class MicroscopeHyphaService:
             return None
 
     @schema_function(skip_self=True)
-    async def inspect_tool(self, images: List[dict]=Field(..., description="A list of images to be inspected, each dictionary must contain 'http_url' (required) and optionally 'title' (optional)"), query: str=Field(..., description="User query about the images for GPT-4 vision model analysis"), context_description: str=Field(..., description="Context description for the visual inspection task, typically describing that images are taken from the microscope"), context=None):
+    async def inspect_tool(self, images: List[dict]=Field(..., description="A list of images to be inspected, each dictionary must contain 'http_url' (required) and optionally 'title' (optional)"), query: str=Field(..., description="User query about the images for GPT-5.1 vision model analysis"), context_description: str=Field(..., description="Context description for the visual inspection task, typically describing that images are taken from the microscope"), context=None):
         """
-        Inspect images using GPT-4's vision model (GPT-5.1) for analysis and description.
+        Inspect images using GPT's vision model (GPT-5.1) for analysis and description.
         Returns: String response from the vision model containing image analysis based on the query.
-        Notes: All image URLs must be HTTP/HTTPS accessible. The method validates URLs and processes images through the GPT-4 vision API.
+        Notes: All image URLs must be HTTP/HTTPS accessible. The method validates URLs and processes images through the GPT-5.1 vision API.
         """
         try:
             from squid_control.hypha_tools.vision_inspection import inspect_images
@@ -1585,6 +1636,7 @@ class MicroscopeHyphaService:
             "move_to_loading_position": self.move_to_loading_position,
             "set_simulated_sample_data_alias": self.set_simulated_sample_data_alias,
             "get_simulated_sample_data_alias": self.get_simulated_sample_data_alias,
+            "set_wellplate_offset": self.set_wellplate_offset,
             "contrast_autofocus": self.contrast_autofocus,
             "reflection_autofocus": self.reflection_autofocus,
             "autofocus_set_reflection_reference": self.autofocus_set_reflection_reference,
@@ -1605,7 +1657,7 @@ class MicroscopeHyphaService:
             "scan_cancel": self.scan_cancel,
             # Stitching functions
             "scan_region_to_zarr": self.scan_region_to_zarr,
-            "quick_scan_brightfield_to_zarr": self.quick_scan_brightfield_to_zarr,
+            "quick_scan_region_to_zarr": self.quick_scan_region_to_zarr,
             "get_stitched_region": self.get_stitched_region,
             # Experiment management functions (replaces zarr fileset management)
             "create_experiment": self.create_experiment,
@@ -2796,153 +2848,139 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to reset stitching canvas: {e}")
             raise e
 
-    async def quick_scan_brightfield_to_zarr(self, well_plate_type: str = '96', exposure_time: float = 5, intensity: float = 70, fps_target: int = 10, action_ID: str = 'quick_scan_stitching', n_stripes: int = 4, stripe_width_mm: float = 4.0, dy_mm: float = 0.9, velocity_scan_mm_per_s: float = 7.0, do_contrast_autofocus: bool = False, do_reflection_af: bool = False, experiment_name: Optional[str] = None, well_padding_mm: float = 1.0, uploading: bool = False, context=None):
+
+    async def quick_scan_region_to_zarr(self, start_x_mm: float, start_y_mm: float,
+                                        scan_width_mm: float, scan_height_mm: float,
+                                        dy_mm: float = 0.85, exposure_time: float = 5,
+                                        intensity: float = 70, fps_target: int = 10,
+                                        velocity_scan_mm_per_s: float = 7.0,
+                                        experiment_name: Optional[str] = None,
+                                        uploading: bool = False,
+                                        context=None):
         """
-        DEPRECATED: Use scan_start() with saved_data_type='quick_zarr' instead.
-        
-        Perform a quick brightfield scan with live stitching to OME-Zarr canvas.
-        Uses 4-stripe x 4 mm scanning pattern with serpentine motion per well.
-        Only supports brightfield channel with exposure time ≤ 30ms.
-        Always uses well-based approach with individual canvases per well.
+        Quick brightfield scan of a rectangular region without well plates.
+        Simplified version that scans a continuous rectangular area in horizontal stripes.
+        No autofocus, no well plate logic - just a simple fast scan.
         
         Args:
-            well_plate_type: Well plate format ('6', '12', '24', '96', '384')
-            exposure_time: Camera exposure time in milliseconds (must be ≤ 30ms)
+            start_x_mm: Starting X position in mm (left edge of scan area)
+            start_y_mm: Starting Y position in mm (bottom edge of scan area)
+            scan_width_mm: Width of scan area in mm (X direction)
+            scan_height_mm: Height of scan area in mm (Y direction)
+            dy_mm: Y increment between horizontal stripes in mm (default 0.85)
+            exposure_time: Camera exposure time in ms (max 30ms)
             intensity: Brightfield LED intensity (0-100)
             fps_target: Target frame rate for acquisition (default 10fps)
-            action_ID: Unique identifier for this scan
-            n_stripes: Number of stripes per well (default 4)
-            stripe_width_mm: Length of each stripe inside a well in mm (default 4.0)
-            dy_mm: Y increment between stripes in mm (default 0.9)
-            velocity_scan_mm_per_s: Stage velocity during stripe scanning in mm/s (default 7.0)
-            do_contrast_autofocus: Whether to perform contrast-based autofocus at each well
-            do_reflection_af: Whether to perform reflection-based autofocus at each well
-            experiment_name: Name of the experiment to use. If None, uses active experiment or 'default' as fallback
-            well_padding_mm: Padding around each well in mm
+            velocity_scan_mm_per_s: Stage velocity during scanning in mm/s (default 7.0)
+            experiment_name: Name of the experiment. If None, uses active experiment
             uploading: Enable upload after scanning is complete
             
         Returns:
             dict: Status of the scan with performance metrics
         """
-        logger.warning("DEPRECATED: quick_scan_brightfield_to_zarr is deprecated and will be removed in a future release. Use scan_start() with saved_data_type='quick_zarr' instead.")
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
-
+            
             # Validate exposure time early
             if exposure_time > 30:
                 raise ValueError(f"Quick scan exposure time must not exceed 30ms (got {exposure_time}ms)")
-
-            logger.info(f"Starting quick scan with stitching: {well_plate_type} well plate, {n_stripes} stripes × {stripe_width_mm}mm, dy={dy_mm}mm, scan_velocity={velocity_scan_mm_per_s}mm/s, fps={fps_target}")
-
+            
+            logger.info(f"Starting quick region scan: start=({start_x_mm}, {start_y_mm}), "
+                       f"size={scan_width_mm}x{scan_height_mm}mm, dy={dy_mm}mm, "
+                       f"velocity={velocity_scan_mm_per_s}mm/s, fps={fps_target}")
+            
             # Check if video buffering is active and stop it during scanning
             video_buffering_was_active = self.frame_acquisition_running
             if video_buffering_was_active:
-                logger.info("Video buffering is active, stopping it temporarily during quick scanning")
+                logger.info("Video buffering is active, stopping it temporarily during quick region scanning")
                 await self.stop_video_buffering()
                 # Wait for camera to settle after stopping video buffering
                 logger.info("Waiting for camera to settle after stopping video buffering...")
                 await asyncio.sleep(0.5)
-
+            
             # Set scanning flag to prevent automatic video buffering restart during scan
             self.scanning_in_progress = True
-
+            
             # Record start time for performance metrics
             start_time = time.time()
-
-            # Perform the quick brightfield scan to Zarr
-            await self.squidController.quick_scan_brightfield_to_zarr(
-                well_plate_type=well_plate_type,
+            
+            # Perform the quick region scan to Zarr
+            result = await self.squidController.quick_scan_region_to_zarr(
+                start_x_mm=start_x_mm,
+                start_y_mm=start_y_mm,
+                scan_width_mm=scan_width_mm,
+                scan_height_mm=scan_height_mm,
+                dy_mm=dy_mm,
                 exposure_time=exposure_time,
                 intensity=intensity,
                 fps_target=fps_target,
-                action_ID=action_ID,
-                n_stripes=n_stripes,
-                stripe_width_mm=stripe_width_mm,
-                dy_mm=dy_mm,
                 velocity_scan_mm_per_s=velocity_scan_mm_per_s,
-                do_contrast_autofocus=do_contrast_autofocus,
-                do_reflection_af=do_reflection_af,
-                experiment_name=experiment_name,
-                well_padding_mm=well_padding_mm
+                experiment_name=experiment_name
             )
-
+            
             # Calculate performance metrics
             scan_duration = time.time() - start_time
-
-            # Calculate well plate dimensions for area estimation
-            wellplate_configs = {
-                '6': {'rows': 2, 'cols': 3},
-                '12': {'rows': 3, 'cols': 4},
-                '24': {'rows': 4, 'cols': 6},
-                '96': {'rows': 8, 'cols': 12},
-                '384': {'rows': 16, 'cols': 24}
-            }
-
-            # Convert well_plate_type to string to avoid ObjectProxy issues
-            wellplate_type_str = str(well_plate_type)
-            config = wellplate_configs.get(wellplate_type_str, wellplate_configs['96'])
-            total_wells = config['rows'] * config['cols']
-            total_stripes = total_wells * n_stripes
-
+            n_stripes = result.get('stripes_scanned', 0)
+            total_frames = result.get('total_frames', 0)
+            
+            actual_experiment_name = experiment_name or self.squidController.experiment_manager.current_experiment_name
+            
             # Upload the experiment if uploading is enabled
             upload_result = None
             if uploading:
                 try:
-                    logger.info("Uploading experiment after quick scan completion")
+                    logger.info("Uploading experiment after quick region scan completion")
                     upload_result = await self.upload_zarr_dataset(
-                        experiment_name=experiment_name or self.squidController.experiment_manager.current_experiment_name,
-                        description=f"Quick scan with stitching - {action_ID}",
+                        experiment_name=actual_experiment_name,
+                        description=f"Quick region scan - {scan_width_mm}x{scan_height_mm}mm",
                         include_acquisition_settings=True
                     )
-                    logger.info("Successfully uploaded experiment after quick scan")
+                    logger.info("Successfully uploaded experiment after quick region scan")
                 except Exception as e:
-                    logger.error(f"Failed to upload experiment after quick scan: {e}")
+                    logger.error(f"Failed to upload experiment after quick region scan: {e}")
                     # Don't raise the exception - continue with response
-
+            
             return {
                 "success": True,
-                "message": "Quick scan with stitching completed successfully",
+                "message": "Quick region scan completed successfully",
                 "scan_parameters": {
-                    "well_plate_type": wellplate_type_str,
-                    "wells_scanned": total_wells,
-                    "stripes_per_well": n_stripes,
-                    "stripe_width_mm": stripe_width_mm,
+                    "start_position": {"x_mm": start_x_mm, "y_mm": start_y_mm},
+                    "scan_size": {"width_mm": scan_width_mm, "height_mm": scan_height_mm},
+                    "scan_area_mm2": scan_width_mm * scan_height_mm,
+                    "stripes_scanned": n_stripes,
                     "dy_mm": dy_mm,
-                    "total_stripes": total_stripes,
                     "exposure_time_ms": exposure_time,
                     "intensity": intensity,
                     "scan_velocity_mm_per_s": velocity_scan_mm_per_s,
                     "target_fps": fps_target,
-                    "inter_well_velocity_mm_per_s": 30.0
+                    "experiment_name": actual_experiment_name
                 },
                 "performance_metrics": {
                     "total_scan_time_seconds": round(scan_duration, 2),
-                    "scan_time_per_well_seconds": round(scan_duration / total_wells, 2),
-                    "scan_time_per_stripe_seconds": round(scan_duration / total_stripes, 2),
-                    "estimated_frames_acquired": int(scan_duration * fps_target)
+                    "scan_time_per_stripe_seconds": round(scan_duration / n_stripes, 2) if n_stripes > 0 else 0,
+                    "total_frames_acquired": total_frames,
+                    "average_fps": round(total_frames / scan_duration, 2) if scan_duration > 0 else 0
                 },
                 "stitching_info": {
                     "zarr_scales_updated": "1-5 (scale 0 skipped for performance)",
                     "channel": "BF LED matrix full",
-                    "action_id": action_ID,
-                    "pattern": f"{n_stripes}-stripe × {stripe_width_mm}mm serpentine per well",
-                    "experiment_name": self.squidController.experiment_manager.current_experiment_name
+                    "experiment_name": actual_experiment_name
                 },
                 "upload_result": upload_result
             }
-
+            
         except ValueError as e:
-            logger.error(f"Validation error in quick scan: {e}")
+            logger.error(f"Validation error in quick region scan: {e}")
             raise e
         except Exception as e:
-            logger.error(f"Failed to perform quick scan with stitching: {e}")
+            logger.error(f"Failed to perform quick region scan: {e}")
             raise e
         finally:
             # Always reset the scanning flag, regardless of success or failure
             self.scanning_in_progress = False
-            logger.info("Quick scanning completed, video buffering auto-start is now re-enabled")
+            logger.info("Quick region scanning completed, video buffering auto-start is now re-enabled")
 
     @schema_function(skip_self=True)
     def get_stitched_region(self, center_x_mm: float = Field(..., description="Region center X in stage coordinates (mm)"),
@@ -3477,14 +3515,15 @@ class MicroscopeHyphaService:
         - timepoint (int): Timepoint index for time-lapse
         
         For 'quick_zarr':
-        - well_padding_mm (float): Padding around well in mm
-        - dy_mm (float): Y interval in mm
-        - exposure_time (float): Camera exposure time in ms
-        - intensity (float): Brightfield LED intensity
-        - fps_target (int): Target frame rate
-        - n_stripes (int): Number of stripes per well
-        - stripe_width_mm (float): Length of each stripe in mm
-        - velocity_scan_mm_per_s (float): Stage velocity during scanning
+        - start_x_mm (float, required): Starting X position in mm (left edge of scan area)
+        - start_y_mm (float, required): Starting Y position in mm (bottom edge of scan area)
+        - scan_width_mm (float, required): Width of scan area in mm (X direction)
+        - scan_height_mm (float, required): Height of scan area in mm (Y direction)
+        - dy_mm (float): Y increment between horizontal stripes in mm (default 0.85)
+        - exposure_time (float): Camera exposure time in ms (max 30ms, default 5)
+        - intensity (float): Brightfield LED intensity 0-100 (default 70)
+        - fps_target (int): Target frame rate for acquisition (default 10)
+        - velocity_scan_mm_per_s (float): Stage velocity during scanning in mm/s (default 7.0)
         - experiment_name (str): Experiment name
         - uploading (bool): Enable upload after scanning
         """
@@ -3581,33 +3620,37 @@ class MicroscopeHyphaService:
                 )
 
             elif saved_data_type == 'quick_zarr':
-                # Extract quick_zarr specific parameters
-                well_padding_mm = config.get('well_padding_mm', 1.0)
+                # Extract quick_zarr specific parameters (now using region-based scanning)
+                start_x_mm = config.get('start_x_mm')
+                start_y_mm = config.get('start_y_mm')
+                scan_width_mm = config.get('scan_width_mm')
+                scan_height_mm = config.get('scan_height_mm')
                 dy_mm = config.get('dy_mm', 0.85)
                 exposure_time = config.get('exposure_time', 5)
                 intensity = config.get('intensity', 70)
                 fps_target = config.get('fps_target', 10)
-                n_stripes = config.get('n_stripes', 4)
-                stripe_width_mm = config.get('stripe_width_mm', 4.0)
                 velocity_scan_mm_per_s = config.get('velocity_scan_mm_per_s', 7.0)
                 experiment_name = config.get('experiment_name')
                 uploading = config.get('uploading', False)
 
+                # Validate required parameters for quick_zarr
+                if start_x_mm is None or start_y_mm is None:
+                    raise ValueError("quick_zarr scan requires 'start_x_mm' and 'start_y_mm' parameters")
+                if scan_width_mm is None or scan_height_mm is None:
+                    raise ValueError("quick_zarr scan requires 'scan_width_mm' and 'scan_height_mm' parameters")
+
                 scan_coro = self._run_scan_with_state_tracking(
-                    self.quick_scan_brightfield_to_zarr,
-                    well_plate_type=well_plate_type,
+                    self.quick_scan_region_to_zarr,
+                    start_x_mm=start_x_mm,
+                    start_y_mm=start_y_mm,
+                    scan_width_mm=scan_width_mm,
+                    scan_height_mm=scan_height_mm,
+                    dy_mm=dy_mm,
                     exposure_time=exposure_time,
                     intensity=intensity,
                     fps_target=fps_target,
-                    action_ID=action_ID,
-                    n_stripes=n_stripes,
-                    stripe_width_mm=stripe_width_mm,
-                    dy_mm=dy_mm,
                     velocity_scan_mm_per_s=velocity_scan_mm_per_s,
-                    do_contrast_autofocus=do_contrast_autofocus,
-                    do_reflection_af=do_reflection_af,
                     experiment_name=experiment_name,
-                    well_padding_mm=well_padding_mm,
                     uploading=uploading,
                     context=context
                 )
@@ -4304,7 +4347,6 @@ class MicroscopeHyphaService:
                 object_uuid=target_uuid,
                 application_id=actual_experiment_name,
                 limit=limit_expected,
-                base_url="https://hypha.aicell.io/agent-lens/apps/agent-lens"
             )
             
             if not search_result.get('success'):
