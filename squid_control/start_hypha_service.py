@@ -647,6 +647,17 @@ class MicroscopeHyphaService:
         """
         return self.squidController.get_simulated_sample_data_alias()
 
+    @schema_function(skip_self=True)
+    def set_wellplate_offset(self, 
+                            offset_x_mm: float = Field(0.0, description="X-axis offset in millimeters"), 
+                            offset_y_mm: float = Field(0.0, description="Y-axis offset in millimeters"),
+                            context=None):
+        """Set wellplate offset values for X and Y axes. Offsets are added to well positions in non-simulation mode."""
+        CONFIG.WELLPLATE_OFFSET_X_MM = float(offset_x_mm)
+        CONFIG.WELLPLATE_OFFSET_Y_MM = float(offset_y_mm)
+        logger.info(f"Updated wellplate offsets: X={offset_x_mm} mm, Y={offset_y_mm} mm")
+        return {"offset_x_mm": CONFIG.WELLPLATE_OFFSET_X_MM, "offset_y_mm": CONFIG.WELLPLATE_OFFSET_Y_MM}
+
     async def one_new_frame(self, context=None):
         """
         Get an image from the microscope
@@ -1585,6 +1596,7 @@ class MicroscopeHyphaService:
             "move_to_loading_position": self.move_to_loading_position,
             "set_simulated_sample_data_alias": self.set_simulated_sample_data_alias,
             "get_simulated_sample_data_alias": self.get_simulated_sample_data_alias,
+            "set_wellplate_offset": self.set_wellplate_offset,
             "contrast_autofocus": self.contrast_autofocus,
             "reflection_autofocus": self.reflection_autofocus,
             "autofocus_set_reflection_reference": self.autofocus_set_reflection_reference,
