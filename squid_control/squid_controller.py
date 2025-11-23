@@ -1422,7 +1422,7 @@ class SquidController:
     def stop_scan_and_stitching(self):
         """
         Stop any ongoing scanning and stitching processes.
-        This will interrupt scan_region_to_zarr and quick_scan_brightfield_to_zarr.
+        This will interrupt scan_region_to_zarr and quick_scan.
         """
         self.scan_stop_requested = True
         logger.info("Scan stop requested - ongoing scans will be interrupted")
@@ -1467,11 +1467,21 @@ class SquidController:
                 logger.error(f"ZARR_QUEUE: Failed to get well canvas for {well_row}{well_column}: {e}")
                 return f"Failed to get well canvas: {e}"
 
-            # Validate channel exists in this well canvas
+            # Validate channel exists in this well canvas and get the correct zarr_channel_idx for this specific canvas
             if channel_name not in well_canvas.channel_to_zarr_index:
                 logger.warning(f"ZARR_QUEUE: Channel '{channel_name}' not found in well canvas {well_row}{well_column}")
                 logger.warning(f"ZARR_QUEUE: Available channels: {list(well_canvas.channel_to_zarr_index.keys())}")
                 return f"Channel {channel_name} not found"
+            
+            # Get the zarr channel index for this specific well canvas
+            # This is important because different well canvases may have different channel mappings
+            well_canvas_zarr_channel_idx = well_canvas.get_zarr_channel_index(channel_name)
+            logger.info(f'ZARR_QUEUE: Using zarr_channel_idx={well_canvas_zarr_channel_idx} for channel "{channel_name}" in well {well_row}{well_column}')
+
+            # Start stitching for this well canvas if not already active
+            if not well_canvas.is_stitching:
+                logger.info(f'ZARR_QUEUE: Starting stitching for well canvas {well_row}{well_column}')
+                await well_canvas.start_stitching()
 
             # Note: WellZarrCanvas will handle coordinate conversion internally
             logger.info(f'ZARR_QUEUE: Using absolute coordinates: ({x_mm:.2f}, {y_mm:.2f}), well_center: ({well_canvas.well_center_x:.2f}, {well_canvas.well_center_y:.2f})')
@@ -1482,7 +1492,7 @@ class SquidController:
                     'image': image.copy(),
                     'x_mm': x_mm,  # Use absolute coordinates - WellZarrCanvas will convert to well-relative
                     'y_mm': y_mm,  # Use absolute coordinates - WellZarrCanvas will convert to well-relative
-                    'channel_idx': zarr_channel_idx,
+                    'channel_idx': well_canvas_zarr_channel_idx,  # Use the channel index from this specific well canvas
                     'z_idx': 0,
                     'timepoint': timepoint,
                     'timestamp': time.time(),
@@ -2449,280 +2459,6 @@ class SquidController:
         """
         return self.experiment_manager.get_experiment_info(experiment_name)
 
-    async def quick_scan_brightfield_to_zarr(self, well_plate_type='96', exposure_time=5, intensity=50,
-                                      fps_target=10, action_ID='quick_scan_stitching',
-                                      n_stripes=4, stripe_width_mm=4.0, dy_mm=0.9, velocity_scan_mm_per_s=7.0,
-                                      do_contrast_autofocus=False, do_reflection_af=False, timepoint=0,
-                                      experiment_name=None, well_padding_mm=1.0):
-        """
-        Quick brightfield scan with live stitching to well-specific OME-Zarr canvases.
-        Scans entire well plate, creating individual zarr canvases for each well.
-        Uses 4-stripe × 4 mm scanning pattern with serpentine motion per well.
-        
-        Args:
-            well_plate_type (str): Well plate type ('6', '12', '24', '96', '384')
-            exposure_time (float): Camera exposure time in ms (max 30ms)
-            intensity (float): Brightfield LED intensity (0-100)
-            fps_target (int): Target frame rate for acquisition (default 10fps)
-            action_ID (str): Identifier for this scan
-            n_stripes (int): Number of stripes per well (default 4)
-            stripe_width_mm (float): Length of each stripe inside a well in mm (default 4.0)
-            dy_mm (float): Y increment between stripes in mm (default 0.9)
-            velocity_scan_mm_per_s (float): Stage velocity during stripe scanning in mm/s (default 7.0)
-            do_contrast_autofocus (bool): Whether to perform contrast-based autofocus
-            do_reflection_af (bool): Whether to perform reflection-based autofocus
-            timepoint (int): Timepoint index for the scan (default 0)
-            experiment_name (str, optional): Name of the experiment to use. If None, uses active experiment or creates "default"
-            well_padding_mm (float): Padding around each well in mm
-        """
-
-        # Validate exposure time
-        if exposure_time > 30:
-            raise ValueError("Quick scan exposure time must not exceed 30ms")
-
-        # Get well plate format configuration
-        if well_plate_type == '6':
-            wellplate_format = WELLPLATE_FORMAT_6
-            max_rows = 2  # A-B
-            max_cols = 3  # 1-3
-        elif well_plate_type == '12':
-            wellplate_format = WELLPLATE_FORMAT_12
-            max_rows = 3  # A-C
-            max_cols = 4  # 1-4
-        elif well_plate_type == '24':
-            wellplate_format = WELLPLATE_FORMAT_24
-            max_rows = 4  # A-D
-            max_cols = 6  # 1-6
-        elif well_plate_type == '96':
-            wellplate_format = WELLPLATE_FORMAT_96
-            max_rows = 8  # A-H
-            max_cols = 12  # 1-12
-        elif well_plate_type == '384':
-            wellplate_format = WELLPLATE_FORMAT_384
-            max_rows = 16  # A-P
-            max_cols = 24  # 1-24
-        else:
-            # Default to 96-well plate if unsupported type is provided
-            wellplate_format = WELLPLATE_FORMAT_96
-            max_rows = 8
-            max_cols = 12
-            well_plate_type = '96'
-
-        # Ensure we have an active experiment
-        self.ensure_active_experiment(experiment_name)
-
-        # Always use well-based approach - create well canvases dynamically as we encounter wells
-        logger.info(f"Quick scan with stitching for experiment '{self.experiment_manager.current_experiment}': individual canvases for each well ({well_plate_type})")
-
-        # Validate that brightfield channel is available (we'll check per well canvas)
-        channel_name = 'BF LED matrix full'
-        # Store original velocity settings for restoration
-        original_velocity_result = self.set_stage_velocity()
-        original_velocity_x = original_velocity_result.get('velocity_x_mm_per_s', CONFIG.MAX_VELOCITY_X_MM)
-        original_velocity_y = original_velocity_result.get('velocity_y_mm_per_s', CONFIG.MAX_VELOCITY_Y_MM)
-
-        # Define velocity constants
-        HIGH_SPEED_VELOCITY_MM_PER_S = 30.0  # For moving between wells
-        scan_velocity = velocity_scan_mm_per_s  # For scanning within wells
-
-        try:
-            self.is_busy = True
-            self.scan_stop_requested = False  # Reset stop flag at start of scan
-            logger.info(f'Starting quick scan with stitching: {well_plate_type} well plate, {n_stripes} stripes × {stripe_width_mm}mm, dy={dy_mm}mm, scan_velocity={scan_velocity}mm/s, fps={fps_target}, timepoint={timepoint}')
-
-            if do_contrast_autofocus:
-                logger.info('Contrast autofocus enabled for quick scan')
-            if do_reflection_af:
-                logger.info('Reflection autofocus enabled for quick scan')
-
-            # 1. Before starting scanning, read the position of z axis
-            original_x_mm, original_y_mm, original_z_mm, _ = self.navigationController.update_pos(self.microcontroller)
-            logger.info(f'Original Z position before autofocus: {original_z_mm:.3f}mm')
-
-            # Set camera exposure time
-            self.camera.set_exposure_time(exposure_time)
-
-            # Calculate well plate parameters
-            well_spacing = wellplate_format.WELL_SPACING_MM
-            x_offset = CONFIG.WELLPLATE_OFFSET_X_MM
-            y_offset = CONFIG.WELLPLATE_OFFSET_Y_MM
-
-            # Calculate frame acquisition timing
-            frame_interval = 1.0 / fps_target  # seconds between frames
-
-            # Get software limits for safety
-            limit_x_pos = CONFIG.SOFTWARE_POS_LIMIT.X_POSITIVE
-            limit_x_neg = CONFIG.SOFTWARE_POS_LIMIT.X_NEGATIVE
-            limit_y_pos = CONFIG.SOFTWARE_POS_LIMIT.Y_POSITIVE
-            limit_y_neg = CONFIG.SOFTWARE_POS_LIMIT.Y_NEGATIVE
-
-            # Scan each well using snake pattern for rows
-            for row_idx in range(max_rows):
-                if self.scan_stop_requested:
-                    logger.info("Quick scan stopped by user request")
-                    self._restore_original_velocity(CONFIG.MAX_VELOCITY_X_MM, CONFIG.MAX_VELOCITY_Y_MM)
-                    break
-
-                row_letter = chr(ord('A') + row_idx)
-
-                # Snake pattern: alternate direction for each row
-                if row_idx % 2 == 0:
-                    # Even rows (0, 2, 4...): left to right (A1 → A12, C1 → C12, etc.)
-                    col_range = range(max_cols)
-                    direction = "left-to-right"
-                else:
-                    # Odd rows (1, 3, 5...): right to left (B12 → B1, D12 → D1, etc.)
-                    col_range = range(max_cols - 1, -1, -1)
-                    direction = "right-to-left"
-
-                logger.info(f'Scanning row {row_letter} ({direction})')
-
-                for col_idx in col_range:
-                    if self.scan_stop_requested:
-                        logger.info("Quick scan stopped by user request")
-                        self._restore_original_velocity(CONFIG.MAX_VELOCITY_X_MM, CONFIG.MAX_VELOCITY_Y_MM)
-                        break
-
-                    col_number = col_idx + 1
-                    well_name = f"{row_letter}{col_number}"
-
-                    # Calculate well center position
-                    well_center_x = wellplate_format.A1_X_MM + x_offset + col_idx * well_spacing
-                    well_center_y = wellplate_format.A1_Y_MM + y_offset + row_idx * well_spacing
-
-                    # Calculate stripe boundaries within the well
-                    stripe_half_width = stripe_width_mm / 2
-                    stripe_start_x = well_center_x - stripe_half_width
-                    stripe_end_x = well_center_x + stripe_half_width
-
-                    # Clamp stripe boundaries to software limits
-                    stripe_start_x = max(min(stripe_start_x, limit_x_pos), limit_x_neg)
-                    stripe_end_x = max(min(stripe_end_x, limit_x_pos), limit_x_neg)
-
-                    # Calculate starting Y position for stripes (centered around well)
-                    stripe_start_y = well_center_y - ((n_stripes - 1) * dy_mm) / 2
-
-                    logger.info(f'Scanning well {well_name}: {n_stripes} stripes × {stripe_width_mm}mm at Y positions starting from {stripe_start_y:.2f}mm')
-
-                    # Autofocus workflow: move to well center first if autofocus is requested
-                    if do_contrast_autofocus or do_reflection_af:
-                        logger.info(f'Moving to well {well_name} center for autofocus')
-
-                        # Set high speed velocity for moving to well center
-                        velocity_result = self.set_stage_velocity(HIGH_SPEED_VELOCITY_MM_PER_S, HIGH_SPEED_VELOCITY_MM_PER_S)
-                        if not velocity_result['success']:
-                            logger.warning(f"Failed to set high-speed velocity for autofocus: {velocity_result['message']}")
-
-                        # Move to well center using move_to_well function
-                        self.move_to_well(row_letter, col_number, well_plate_type)
-
-                        # Wait for movement to complete
-                        while self.microcontroller.is_busy():
-                            await asyncio.sleep(0.005)
-
-                        # Perform autofocus
-                        if do_reflection_af:
-                            logger.info(f'Performing reflection autofocus at well {well_name}')
-                            if hasattr(self, 'laserAutofocusController'):
-                                await self.reflection_autofocus()
-                            else:
-                                logger.warning('Reflection autofocus requested but laserAutofocusController not available')
-                        elif do_contrast_autofocus:
-                            logger.info(f'Performing contrast autofocus at well {well_name}')
-                            await self.contrast_autofocus()
-
-                        # Update position after autofocus
-                        actual_x_mm, actual_y_mm, actual_z_mm, _ = self.navigationController.update_pos(self.microcontroller)
-                        logger.info(f'Autofocus completed at well {well_name}, current position: ({actual_x_mm:.2f}, {actual_y_mm:.2f}, {actual_z_mm:.2f})')
-
-                    # Get well canvas for this well and validate brightfield channel
-                    canvas = self.experiment_manager.get_well_canvas(row_letter, col_number, well_plate_type, well_padding_mm)
-
-                    # Validate that brightfield channel is available in this canvas
-                    if channel_name not in canvas.channel_to_zarr_index:
-                        logger.error(f"Requested channel '{channel_name}' not found in well canvas!")
-                        logger.error(f"Available channels: {list(canvas.channel_to_zarr_index.keys())}")
-                        raise ValueError(f"Channel '{channel_name}' not available in well canvas")
-
-                    # Get local zarr channel index for brightfield
-                    try:
-                        zarr_channel_idx = canvas.get_zarr_channel_index(channel_name)
-                    except ValueError as e:
-                        logger.error(f"Channel mapping error: {e}")
-                        continue
-
-                    # Start stitching for this well
-                    logger.info(f'QUICK_SCAN: Starting stitching for well {well_name}')
-                    await canvas.start_stitching()
-                    logger.info(f'QUICK_SCAN: Stitching started for well {well_name}, is_stitching={canvas.is_stitching}')
-
-                    # Move to well stripe start position at high speed
-                    await self._move_to_well_at_high_speed(well_name, stripe_start_x, stripe_start_y,
-                                                            HIGH_SPEED_VELOCITY_MM_PER_S, limit_y_neg, limit_y_pos)
-
-                    # Set scan velocity for stripe scanning
-                    velocity_result = self.set_stage_velocity(scan_velocity, scan_velocity)
-                    if not velocity_result['success']:
-                        logger.warning(f"Failed to set scanning velocity: {velocity_result['message']}")
-
-                    # Scan all stripes within the well with continuous frame acquisition
-                    total_frames = await self._scan_well_with_continuous_acquisition(
-                        well_name, n_stripes, stripe_start_x, stripe_end_x,
-                        stripe_start_y, dy_mm, intensity, frame_interval,
-                        zarr_channel_idx, limit_y_neg, limit_y_pos, timepoint=timepoint,
-                        well_plate_type=well_plate_type, well_padding_mm=well_padding_mm, channel_name=channel_name)
-
-                    logger.info(f'Well {well_name} completed with {n_stripes} stripes, total frames: {total_frames}')
-
-                    # Debug stitching status after completing well
-                    self.debug_stitching_status()
-
-                    # 3. After scanning for this well is done, move the z axis back to the remembered position
-                    if do_contrast_autofocus or do_reflection_af:
-                        logger.info(f'Restoring Z position to original: {original_z_mm:.3f}mm')
-                        self.navigationController.move_z_to(original_z_mm)
-                        while self.microcontroller.is_busy():
-                            await asyncio.sleep(0.005)
-
-            logger.info('Quick scan with stitching completed')
-
-            # Allow time for final images to be queued for stitching
-            logger.info('Allowing time for final images to be queued for stitching...')
-            await asyncio.sleep(0.5)
-
-        finally:
-            self.is_busy = False
-
-            # Turn off illumination if still on
-            self.liveController.turn_off_illumination()
-
-            # Restore original velocity settings
-            self._restore_original_velocity(original_velocity_x, original_velocity_y)
-
-            # Debug stitching status before stopping
-            logger.info('QUICK_SCAN: Final stitching status before stopping:')
-            self.debug_stitching_status()
-
-            # Stop stitching for all active well canvases in the experiment
-            for well_id, well_canvas in self.experiment_manager.well_canvases.items():
-                if well_canvas.is_stitching:
-                    logger.info(f'QUICK_SCAN: Stopping stitching for well canvas {well_id}, queue_size={well_canvas.preprocessing_queue.qsize()}')
-                    await well_canvas.stop_stitching()
-                    # Activate channels that have data
-                    logger.info(f'QUICK_SCAN: Activating channels with data for well {well_id}')
-                    well_canvas.activate_channels_with_data()
-                    logger.info(f'QUICK_SCAN: Stopped stitching for well canvas {well_id}')
-
-            # Final stitching status after stopping
-            logger.info('QUICK_SCAN: Final stitching status after stopping:')
-            self.debug_stitching_status()
-
-            # CRITICAL: Additional delay after stitching stops to ensure all zarr operations are complete
-            # This prevents race conditions with ZIP export when scanning finishes normally
-            logger.info('Waiting additional time for all zarr operations to stabilize...')
-            await asyncio.sleep(0.5)  # 500ms buffer to ensure filesystem operations complete
-            logger.info('Quick scan with stitching fully completed - zarr data ready for export')
-
     async def _move_to_well_at_high_speed(self, well_name, start_x, start_y, high_speed_velocity, limit_y_neg, limit_y_pos):
         """Move to well at high speed (30 mm/s) for efficient inter-well movement."""
         logger.info(f'Moving to well {well_name} at high speed ({high_speed_velocity} mm/s)')
@@ -2973,10 +2709,223 @@ class SquidController:
         else:
             logger.warning(f'Failed to restore original stage velocity: {restore_result["message"]}')
 
+    async def quick_scan_region_to_zarr(self, start_x_mm: float, start_y_mm: float, 
+                                        scan_width_mm: float, scan_height_mm: float,
+                                        dy_mm: float = 0.85, exposure_time: float = 5, 
+                                        intensity: float = 70, fps_target: int = 10,
+                                        velocity_scan_mm_per_s: float = 7.0,
+                                        experiment_name: str = None, 
+                                        action_ID: str = 'quick_region_scan',
+                                        timepoint: int = 0):
+        """
+        Quick brightfield scan of a rectangular region with continuous acquisition.
+        Scans in horizontal stripes from left to right, then moves up by dy_mm.
+        No autofocus, no well plates - just a simple continuous scan.
+        
+        Args:
+            start_x_mm (float): Starting X position in mm (left edge of scan area)
+            start_y_mm (float): Starting Y position in mm (bottom edge of scan area)
+            scan_width_mm (float): Width of scan area in mm (X direction)
+            scan_height_mm (float): Height of scan area in mm (Y direction)
+            dy_mm (float): Y increment between horizontal stripes in mm (default 0.85)
+            exposure_time (float): Camera exposure time in ms (max 30ms)
+            intensity (float): Brightfield LED intensity (0-100)
+            fps_target (int): Target frame rate for acquisition (default 10fps)
+            velocity_scan_mm_per_s (float): Stage velocity during scanning in mm/s (default 7.0)
+            experiment_name (str, optional): Name of the experiment. If None, uses active experiment
+            action_ID (str): Identifier for this scan
+            timepoint (int): Timepoint index for the scan (default 0)
+            
+        Returns:
+            dict: Scan results with performance metrics
+        """
+        # Validate exposure time
+        if exposure_time > 30:
+            raise ValueError("Quick scan exposure time must not exceed 30ms")
+        
+        # Ensure we have an active experiment
+        self.ensure_active_experiment(experiment_name)
+        
+        logger.info(f'Starting quick region scan: start=({start_x_mm:.2f}, {start_y_mm:.2f}), '
+                   f'size={scan_width_mm:.2f}x{scan_height_mm:.2f}mm, dy={dy_mm}mm, '
+                   f'velocity={velocity_scan_mm_per_s}mm/s, fps={fps_target}')
+        
+        # Calculate scan parameters
+        end_x_mm = start_x_mm + scan_width_mm
+        end_y_mm = start_y_mm + scan_height_mm
+        n_stripes = int(scan_height_mm / dy_mm) + 1
+        
+        # Channel configuration
+        channel_name = 'BF LED matrix full'
+        
+        # Store original velocity settings for restoration
+        original_velocity_result = self.set_stage_velocity()
+        original_velocity_x = original_velocity_result.get('velocity_x_mm_per_s', CONFIG.MAX_VELOCITY_X_MM)
+        original_velocity_y = original_velocity_result.get('velocity_y_mm_per_s', CONFIG.MAX_VELOCITY_Y_MM)
+        
+        # Get software limits for safety
+        limit_x_pos = CONFIG.SOFTWARE_POS_LIMIT.X_POSITIVE
+        limit_x_neg = CONFIG.SOFTWARE_POS_LIMIT.X_NEGATIVE
+        limit_y_pos = CONFIG.SOFTWARE_POS_LIMIT.Y_POSITIVE
+        limit_y_neg = CONFIG.SOFTWARE_POS_LIMIT.Y_NEGATIVE
+        
+        # Clamp scan boundaries to software limits
+        start_x_mm = max(min(start_x_mm, limit_x_pos), limit_x_neg)
+        end_x_mm = max(min(end_x_mm, limit_x_pos), limit_x_neg)
+        start_y_mm = max(min(start_y_mm, limit_y_pos), limit_y_neg)
+        end_y_mm = max(min(end_y_mm, limit_y_pos), limit_y_neg)
+        
+        logger.info(f'Clamped scan area: X=[{start_x_mm:.2f}, {end_x_mm:.2f}], Y=[{start_y_mm:.2f}, {end_y_mm:.2f}]')
+        
+        # Configure well plate parameters for automatic well detection
+        # The system will automatically create well canvases as images are acquired
+        # based on their actual position on the well plate
+        well_plate_type = '96'  # Use 96-well plate format for coordinate mapping
+        well_padding_mm = 2.5   # Generous padding for well boundaries
+        
+        try:
+            self.is_busy = True
+            self.scan_stop_requested = False
+            
+            # Set camera exposure time
+            self.camera.set_exposure_time(exposure_time)
+            
+            # Calculate frame acquisition timing
+            frame_interval = 1.0 / fps_target  # seconds between frames
+            
+            
+            # Move to starting position at high speed (30 mm/s)
+            HIGH_SPEED_VELOCITY = 30.0
+            logger.info(f'Moving to scan start position ({start_x_mm:.2f}, {start_y_mm:.2f}) at {HIGH_SPEED_VELOCITY}mm/s')
+            velocity_result = self.set_stage_velocity(HIGH_SPEED_VELOCITY, HIGH_SPEED_VELOCITY)
+            if not velocity_result['success']:
+                logger.warning(f"Failed to set high-speed velocity: {velocity_result['message']}")
+            
+            self.navigationController.move_x_to(start_x_mm)
+            self.navigationController.move_y_to(start_y_mm)
+            
+            # Wait for movement to complete
+            while self.microcontroller.is_busy():
+                await asyncio.sleep(0.005)
+            
+            logger.info(f'Moved to scan start position')
+            
+            # Set scan velocity for stripe scanning
+            velocity_result = self.set_stage_velocity(velocity_scan_mm_per_s, velocity_scan_mm_per_s)
+            if not velocity_result['success']:
+                logger.warning(f"Failed to set scanning velocity: {velocity_result['message']}")
+            
+            # Turn on brightfield illumination
+            self.liveController.set_illumination(0, intensity)  # Channel 0 = brightfield
+            await asyncio.sleep(0.01)  # Small delay for illumination to stabilize
+            self.liveController.turn_on_illumination()
+            
+            # Scan all stripes with continuous frame acquisition
+            total_frames = 0
+            last_frame_time = time.time()
+            
+            for stripe_idx in range(n_stripes):
+                if self.scan_stop_requested:
+                    logger.info("Quick region scan stopped by user request")
+                    break
+                
+                stripe_y = start_y_mm + stripe_idx * dy_mm
+                
+                # Clamp Y position to limits
+                stripe_y = max(min(stripe_y, limit_y_pos), limit_y_neg)
+                
+                # Alternate direction for serpentine pattern
+                if stripe_idx % 2 == 0:
+                    # Even stripes: left to right
+                    from_x, to_x = start_x_mm, end_x_mm
+                    direction = "L→R"
+                else:
+                    # Odd stripes: right to left
+                    from_x, to_x = end_x_mm, start_x_mm
+                    direction = "R→L"
+                
+                logger.info(f'Stripe {stripe_idx+1}/{n_stripes} ({direction}): Y={stripe_y:.2f}mm, X=[{from_x:.2f}→{to_x:.2f}]mm')
+                
+                # Move to stripe starting position
+                self.navigationController.move_x_to(from_x)
+                self.navigationController.move_y_to(stripe_y)
+                
+                # Wait for Y movement to complete before starting X motion
+                while self.microcontroller.is_busy():
+                    await asyncio.sleep(0.005)
+                
+                # Start X motion for this stripe
+                self.navigationController.move_x_to(to_x)
+                
+                # Acquire frames continuously while moving
+                stripe_frames = 0
+                while self.microcontroller.is_busy():
+                    if self.scan_stop_requested:
+                        break
+                    
+                    # Check if it's time to acquire next frame
+                    current_time = time.time()
+                    if current_time - last_frame_time >= frame_interval:
+                        # Acquire and process frame
+                        # Note: zarr_channel_idx (0) is a placeholder - the actual channel index
+                        # will be determined by _add_image_to_zarr_quick_well_based based on the detected well
+                        success = await self._acquire_and_process_frame(
+                            0, timepoint,  # zarr_channel_idx=0 (placeholder, recalculated per well)
+                            well_plate_type, well_padding_mm, channel_name
+                        )
+                        
+                        if success:
+                            stripe_frames += 1
+                            total_frames += 1
+                        
+                        last_frame_time = current_time
+                    else:
+                        # Small sleep to avoid busy waiting
+                        await asyncio.sleep(0.001)
+                
+                logger.info(f'Stripe {stripe_idx+1} completed with {stripe_frames} frames')
+            
+            logger.info(f'Quick region scan completed with {n_stripes} stripes, total frames: {total_frames}')
+            
+            # Allow time for final images to be queued for stitching
+            await asyncio.sleep(0.5)
+            
+            return {
+                "success": True,
+                "total_frames": total_frames,
+                "stripes_scanned": n_stripes,
+                "scan_area_mm2": scan_width_mm * scan_height_mm
+            }
+            
+        finally:
+            self.is_busy = False
+            
+            # Turn off illumination
+            self.liveController.turn_off_illumination()
+            
+            # Restore original velocity settings
+            self._restore_original_velocity(original_velocity_x, original_velocity_y)
+            
+            # Stop stitching for all active well canvases that were created during the scan
+            logger.info('Stopping stitching for all active well canvases from region scan')
+            for well_id, well_canvas in self.experiment_manager.well_canvases.items():
+                if well_canvas.is_stitching:
+                    logger.info(f'Stopping stitching for well canvas {well_id}, queue_size={well_canvas.preprocessing_queue.qsize()}')
+                    await well_canvas.stop_stitching()
+                    # Activate channels that have data
+                    logger.info(f'Activating channels with data for well {well_id}')
+                    well_canvas.activate_channels_with_data()
+                    logger.info(f'Stopped stitching for well canvas {well_id}')
+            
+            # Additional delay for zarr operations to complete
+            logger.info('Waiting for all zarr operations to complete...')
+            await asyncio.sleep(0.5)
+            logger.info('Quick region scan fully completed - zarr data ready')
+
     def stop_scan_and_stitching(self):
         """
         Stop any ongoing scanning and stitching processes.
-        This will interrupt scan_region_to_zarr and quick_scan_brightfield_to_zarr.
+        This will interrupt scan_region_to_zarr and quick_scan_region_to_zarr.
         """
         self.scan_stop_requested = True
         logger.info("Scan stop requested - ongoing scans will be interrupted")
