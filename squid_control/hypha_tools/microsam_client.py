@@ -19,6 +19,7 @@ import numpy as np
 from shapely import wkt
 from shapely.geometry import Polygon
 from skimage.measure import label, regionprops
+from skimage.feature import graycomatrix, graycoprops
 
 logger = logging.getLogger(__name__)
 
@@ -1294,6 +1295,11 @@ def extract_cell_features(
         - eccentricity: 0 = circle, → 1 elongated (unitless)
         - solidity: Area / convex hull area (unitless)
         - convexity: Perimeter of convex hull / perimeter (smoothness, unitless)
+        - brightness: Mean pixel intensity (0-255)
+        - contrast: GLCM contrast (texture variation, unitless)
+        - homogeneity: GLCM homogeneity (texture smoothness, 0-1)
+        - energy: GLCM energy/uniformity (0-1)
+        - correlation: GLCM correlation (texture linearity, -1 to 1)
         
         Returns None for features that fail to compute.
     """
@@ -1307,7 +1313,12 @@ def extract_cell_features(
         'circularity': None,
         'eccentricity': None,
         'solidity': None,
-        'convexity': None
+        'convexity': None,
+        'brightness': None,
+        'contrast': None,
+        'homogeneity': None,
+        'energy': None,
+        'correlation': None
     }
     
     try:
@@ -1373,6 +1384,70 @@ def extract_cell_features(
                     # (regionprops doesn't have direct convex perimeter)
                     # For now, use solidity as it's closely related
                     features['convexity'] = features['solidity']  # Approximation
+            
+            # Brightness: mean intensity of cell pixels
+            try:
+                cell_pixels = gray[labeled == region.label]
+                if len(cell_pixels) > 0:
+                    features['brightness'] = float(cell_pixels.mean())
+            except Exception as e:
+                logger.warning(f"Failed to calculate brightness: {e}")
+            
+            # GLCM texture features
+            try:
+                # Extract masked cell region
+                cell_mask = (labeled == region.label).astype(np.uint8)
+                cell_pixels = gray[cell_mask > 0]
+                
+                # Only compute GLCM if we have enough pixels (need at least 4 pixels for GLCM)
+                if len(cell_pixels) >= 4:
+                    # Get bounding box of cell region for efficient processing
+                    minr, minc, maxr, maxc = region.bbox
+                    cell_region = gray[minr:maxr, minc:maxc].copy()
+                    cell_region_mask = cell_mask[minr:maxr, minc:maxc]
+                    
+                    # Ensure uint8 format for GLCM
+                    if cell_region.dtype != np.uint8:
+                        # Normalize to 0-255 range if needed
+                        if cell_region.max() > 0:
+                            cell_region = ((cell_region - cell_region.min()) / (cell_region.max() - cell_region.min()) * 255).astype(np.uint8)
+                        else:
+                            cell_region = cell_region.astype(np.uint8)
+                    
+                    # Set non-cell pixels to 0 (background)
+                    cell_region[cell_region_mask == 0] = 0
+                    
+                    # Compute GLCM matrix
+                    # distances=[1]: compare adjacent pixels
+                    # angles: 0, 45, 90, 135 degrees for rotation invariance
+                    # levels: 256 for full uint8 range
+                    # symmetric: True, normed: True for standard computation
+                    angles = [0, np.pi/4, np.pi/2, 3*np.pi/4]
+                    glcm = graycomatrix(
+                        cell_region, 
+                        distances=[1], 
+                        angles=angles,
+                        levels=256,
+                        symmetric=True,
+                        normed=True
+                    )
+                    
+                    # Extract texture properties and average across all angles
+                    # This provides rotation-invariant texture features
+                    contrast_vals = graycoprops(glcm, 'contrast')[0]
+                    homogeneity_vals = graycoprops(glcm, 'homogeneity')[0]
+                    energy_vals = graycoprops(glcm, 'energy')[0]
+                    correlation_vals = graycoprops(glcm, 'correlation')[0]
+                    
+                    # Average across all angles for rotation invariance
+                    features['contrast'] = float(np.mean(contrast_vals))
+                    features['homogeneity'] = float(np.mean(homogeneity_vals))
+                    features['energy'] = float(np.mean(energy_vals))
+                    features['correlation'] = float(np.mean(correlation_vals))
+                else:
+                    logger.debug(f"Cell region too small for GLCM computation ({len(cell_pixels)} pixels)")
+            except Exception as e:
+                logger.warning(f"Failed to calculate GLCM texture features: {e}")
                 
         except Exception as e:
             logger.warning(f"Failed to extract features from region: {e}")
@@ -1473,6 +1548,13 @@ def _prepare_upload_object(
         upload_obj['eccentricity'] = features.get('eccentricity')
         upload_obj['solidity'] = features.get('solidity')
         upload_obj['convexity'] = features.get('convexity')
+        
+        # Add brightness and texture features
+        upload_obj['brightness'] = features.get('brightness')
+        upload_obj['contrast'] = features.get('contrast')
+        upload_obj['homogeneity'] = features.get('homogeneity')
+        upload_obj['energy'] = features.get('energy')
+        upload_obj['correlation'] = features.get('correlation')
         
         return upload_obj
         
