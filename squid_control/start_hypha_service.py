@@ -1283,6 +1283,83 @@ class MicroscopeHyphaService:
             self.scanning_in_progress = False
             logger.info("Well plate scanning completed, video buffering auto-start is now re-enabled")
 
+    async def scan_flexible_positions(self, positions: List[dict] = None, illumination_settings: List[dict] = None, do_contrast_autofocus: bool = False, do_reflection_af: bool = True, action_ID: str = 'flexibleScan', context=None):
+        """
+        Scan arbitrary positions with individual grid parameters (no well plate constraints).
+        
+        Args:
+            positions: List of position dictionaries, each containing:
+                {
+                    'x': 10.0,        # X position in mm (absolute stage coordinate)
+                    'y': 20.0,        # Y position in mm (absolute stage coordinate)
+                    'z': 5.0,         # Z position in mm (absolute stage coordinate, optional)
+                    'Nx': 3,          # Number of X grid points for this position (default: 1)
+                    'Ny': 3,          # Number of Y grid points for this position (default: 1)
+                    'Nz': 1,          # Number of Z grid points for this position (default: 1)
+                    'dx': 0.8,        # X spacing in mm for this position (default: 0.8)
+                    'dy': 0.8,        # Y spacing in mm for this position (default: 0.8)
+                    'dz': 0.01,       # Z spacing in mm for this position (default: 0.01)
+                    'name': 'pos1'    # Optional name for this position (default: 'position_N')
+                }
+            illumination_settings: List of dictionaries with illumination settings
+            do_contrast_autofocus: Whether to perform contrast-based autofocus
+            do_reflection_af: Whether to perform reflection-based autofocus
+            action_ID: Identifier for this scan
+            
+        Returns: Confirmation message
+        """
+        try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+
+            if positions is None or len(positions) == 0:
+                raise ValueError("positions list cannot be empty")
+
+            if illumination_settings is None:
+                logger.warning("No illumination settings provided, using default settings")
+                illumination_settings = [
+                    {'channel': 'BF LED matrix full', 'intensity': 28.0, 'exposure_time': 20.0},
+                    {'channel': 'Fluorescence 488 nm Ex', 'intensity': 27.0, 'exposure_time': 60.0},
+                    {'channel': 'Fluorescence 561 nm Ex', 'intensity': 98.0, 'exposure_time': 100.0},
+                ]
+
+            # Check if video buffering is active and stop it during scanning
+            video_buffering_was_active = self.frame_acquisition_running
+            if video_buffering_was_active:
+                logger.info("Video buffering is active, stopping it temporarily during flexible position scanning")
+                await self.stop_video_buffering()
+                # Wait additional time to ensure camera fully settles after stopping video buffering
+                logger.info("Waiting for camera to settle after stopping video buffering...")
+                await asyncio.sleep(0.5)
+
+            # Set scanning flag to prevent automatic video buffering restart during scan
+            self.scanning_in_progress = True
+
+            logger.info(f"Start flexible position scanning with {len(positions)} positions")
+
+            # Run the blocking flexible_position_scan operation in a separate thread executor
+            # This prevents the asyncio event loop from being blocked during long scans
+            await asyncio.get_event_loop().run_in_executor(
+                None,  # Use default ThreadPoolExecutor
+                self.squidController.flexible_position_scan,
+                positions,
+                illumination_settings,
+                do_contrast_autofocus,
+                do_reflection_af,
+                action_ID
+            )
+
+            logger.info("Flexible position scanning completed")
+            return "Flexible position scanning completed"
+        except Exception as e:
+            logger.error(f"Failed to scan flexible positions: {e}")
+            raise e
+        finally:
+            # Always reset the scanning flag, regardless of success or failure
+            self.scanning_in_progress = False
+            logger.info("Flexible position scanning completed, video buffering auto-start is now re-enabled")
+
     @schema_function(skip_self=True)
     def set_illumination(self, channel: int=Field(0, description="Illumination channel: 0=Brightfield, 11=405nm, 12=488nm, 13=638nm, 14=561nm, 15=730nm"), intensity: int=Field(50, description="LED illumination intensity percentage (range: 0-100)"), context=None):
         """
@@ -3484,15 +3561,15 @@ class MicroscopeHyphaService:
                         config: dict = Field(..., description="Scan configuration dictionary containing all scan parameters"),
                         context=None):
         """
-        Launch a background scanning operation with one of three profiles: raw_images, full_zarr, or quick_zarr.
+        Launch a background scanning operation with one of four profiles: raw_images, raw_image_flexible, full_zarr, or quick_zarr.
         Returns: Dictionary with success status, profile type, action_ID, and scan state ('running').
         Notes: Scan executes asynchronously. Use scan_get_status() to monitor progress and scan_cancel() to abort.
         
-        Config dictionary must contain 'saved_data_type' (str): 'raw_images', 'full_zarr', or 'quick_zarr'
+        Config dictionary must contain 'saved_data_type' (str): 'raw_images', 'raw_image_flexible', 'full_zarr', or 'quick_zarr'
         
         Common parameters:
         - action_ID (str): Unique identifier for this scan operation
-        - well_plate_type (str): Well plate format: '6', '12', '24', '96', or '384'
+        - well_plate_type (str): Well plate format: '6', '12', '24', '96', or '384' (not used for raw_image_flexible)
         - do_contrast_autofocus (bool): Enable contrast-based autofocus
         - do_reflection_af (bool): Enable reflection-based laser autofocus
         
@@ -3501,6 +3578,20 @@ class MicroscopeHyphaService:
         - wells_to_scan (List[str]): List of wells to scan (e.g., ['A1', 'B2', 'C3'])
         - Nx, Ny (int): Grid dimensions
         - dx, dy (float): Position intervals in mm
+        
+        For 'raw_image_flexible':
+        - positions (List[dict]): List of position dictionaries, each with:
+          * x (float): X position in mm (absolute stage coordinate)
+          * y (float): Y position in mm (absolute stage coordinate)
+          * z (float, optional): Z position in mm (absolute stage coordinate)
+          * Nx (int, optional): Number of X grid points (default: 1)
+          * Ny (int, optional): Number of Y grid points (default: 1)
+          * Nz (int, optional): Number of Z grid points (default: 1)
+          * dx (float, optional): X spacing in mm (default: 0.8)
+          * dy (float, optional): Y spacing in mm (default: 0.8)
+          * dz (float, optional): Z spacing in mm (default: 0.01)
+          * name (str, optional): Position name (default: 'position_N')
+        - illumination_settings (List[dict]): Illumination settings
         
         For 'full_zarr':
         - start_x_mm, start_y_mm (float, optional): Starting position in mm (relative to well center).
@@ -3542,7 +3633,7 @@ class MicroscopeHyphaService:
                 raise ValueError("Config must contain 'saved_data_type' parameter")
 
             # Validate saved_data_type
-            valid_types = ['raw_images', 'full_zarr', 'quick_zarr']
+            valid_types = ['raw_images', 'raw_image_flexible', 'full_zarr', 'quick_zarr']
             if saved_data_type not in valid_types:
                 raise ValueError(f"Invalid saved_data_type '{saved_data_type}'. Must be one of: {valid_types}")
 
@@ -3616,6 +3707,30 @@ class MicroscopeHyphaService:
                     well_plate_type=well_plate_type,
                     well_padding_mm=well_padding_mm,
                     uploading=uploading,
+                    context=context
+                )
+
+            elif saved_data_type == 'raw_image_flexible':
+                # Extract raw_image_flexible specific parameters
+                positions = config.get('positions')
+                illumination_settings = config.get('illumination_settings')
+                
+                # Validate required parameters
+                if positions is None or len(positions) == 0:
+                    raise ValueError("raw_image_flexible scan requires 'positions' parameter with at least one position")
+                
+                # Validate each position has required fields
+                for idx, pos in enumerate(positions):
+                    if 'x' not in pos or 'y' not in pos:
+                        raise ValueError(f"Position {idx} must have 'x' and 'y' coordinates")
+                
+                scan_coro = self._run_scan_with_state_tracking(
+                    self.scan_flexible_positions,
+                    positions=positions,
+                    illumination_settings=illumination_settings,
+                    do_contrast_autofocus=do_contrast_autofocus,
+                    do_reflection_af=do_reflection_af,
+                    action_ID=action_ID,
                     context=context
                 )
 
@@ -3700,7 +3815,7 @@ class MicroscopeHyphaService:
         """
         Abort the currently running scan operation and return microscope to idle state.
         Returns: Dictionary with success status, confirmation message, and final scan state.
-        Notes: Works with any scan profile (raw_images, full_zarr, quick_zarr). Scan stops gracefully where possible. Partial data may be retained.
+        Notes: Works with any scan profile (raw_images, raw_image_flexible, full_zarr, quick_zarr). Scan stops gracefully where possible. Partial data may be retained.
         """
         try:
             # Check authentication
