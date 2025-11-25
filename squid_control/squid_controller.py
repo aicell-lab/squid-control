@@ -537,6 +537,10 @@ class SquidController:
         self.multipointController.set_deltaY(dy)
         self.multipointController.start_new_experiment(action_ID)
 
+        # Clear location_list to ensure we use well plate coordinates from scanCoordinates
+        # This prevents using stale coordinates from previous flexible position scans
+        self.multipointController.location_list = None
+
         # Start scanning
         self.is_busy = True
         print('Starting new plate scan with custom illumination settings')
