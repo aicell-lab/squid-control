@@ -279,7 +279,7 @@ class MicroscopeHyphaService:
             'state': 'idle',  # idle, running, completed, failed
             'error_message': None,
             'scan_task': None,  # asyncio.Task for the running scan
-            'saved_data_type': None,  # raw_images, full_zarr, quick_zarr
+            'saved_data_type': None,  # raw_images_well_plate, full_zarr, quick_zarr
         }
 
         # Segmentation state tracking (single segmentation operation at a time)
@@ -1225,7 +1225,7 @@ class MicroscopeHyphaService:
             
         Returns: The message of the action
         """
-        logger.warning("DEPRECATED: scan_plate_save_raw_images is deprecated and will be removed in a future release. Use scan_start() with saved_data_type='raw_images' instead.")
+        logger.warning("DEPRECATED: scan_plate_save_raw_images is deprecated and will be removed in a future release. Use scan_start() with saved_data_type='raw_images_well_plate' instead.")
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -3561,11 +3561,11 @@ class MicroscopeHyphaService:
                         config: dict = Field(..., description="Scan configuration dictionary containing all scan parameters"),
                         context=None):
         """
-        Launch a background scanning operation with one of four profiles: raw_images, raw_image_flexible, full_zarr, or quick_zarr.
+        Launch a background scanning operation with one of four profiles: raw_images_well_plate, raw_image_flexible, full_zarr, or quick_zarr.
         Returns: Dictionary with success status, profile type, action_ID, and scan state ('running').
         Notes: Scan executes asynchronously. Use scan_get_status() to monitor progress and scan_cancel() to abort.
         
-        Config dictionary must contain 'saved_data_type' (str): 'raw_images', 'raw_image_flexible', 'full_zarr', or 'quick_zarr'
+        Config dictionary must contain 'saved_data_type' (str): 'raw_images_well_plate', 'raw_image_flexible', 'full_zarr', or 'quick_zarr'
         
         Common parameters:
         - action_ID (str): Unique identifier for this scan operation
@@ -3573,7 +3573,7 @@ class MicroscopeHyphaService:
         - do_contrast_autofocus (bool): Enable contrast-based autofocus
         - do_reflection_af (bool): Enable reflection-based laser autofocus
         
-        For 'raw_images':
+        For 'raw_images_well_plate':
         - illumination_settings (List[dict]): Illumination settings
         - wells_to_scan (List[str]): List of wells to scan (e.g., ['A1', 'B2', 'C3'])
         - Nx, Ny (int): Grid dimensions
@@ -3633,7 +3633,7 @@ class MicroscopeHyphaService:
                 raise ValueError("Config must contain 'saved_data_type' parameter")
 
             # Validate saved_data_type
-            valid_types = ['raw_images', 'raw_image_flexible', 'full_zarr', 'quick_zarr']
+            valid_types = ['raw_images_well_plate', 'raw_image_flexible', 'full_zarr', 'quick_zarr']
             if saved_data_type not in valid_types:
                 raise ValueError(f"Invalid saved_data_type '{saved_data_type}'. Must be one of: {valid_types}")
 
@@ -3649,8 +3649,8 @@ class MicroscopeHyphaService:
             logger.info(f"Starting unified scan with profile: {saved_data_type}")
 
             # Route to appropriate scan method based on profile
-            if saved_data_type == 'raw_images':
-                # Extract raw_images specific parameters
+            if saved_data_type == 'raw_images_well_plate':
+                # Extract raw_images_well_plate specific parameters
                 illumination_settings = config.get('illumination_settings')
                 wells_to_scan = config.get('wells_to_scan', ['A1'])
                 Nx = config.get('Nx', 3)
@@ -3815,7 +3815,7 @@ class MicroscopeHyphaService:
         """
         Abort the currently running scan operation and return microscope to idle state.
         Returns: Dictionary with success status, confirmation message, and final scan state.
-        Notes: Works with any scan profile (raw_images, raw_image_flexible, full_zarr, quick_zarr). Scan stops gracefully where possible. Partial data may be retained.
+        Notes: Works with any scan profile (raw_images_well_plate, raw_image_flexible, full_zarr, quick_zarr). Scan stops gracefully where possible. Partial data may be retained.
         """
         try:
             # Check authentication
