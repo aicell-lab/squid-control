@@ -1854,6 +1854,12 @@ class AutoFocusController:
 
         self.autofocus_in_progress = True
 
+        # Ensure autofocus parameters are initialized
+        if self.N is None:
+            self.set_N(19)  # Default number of steps
+        if self.deltaZ_usteps is None:
+            self.set_deltaZ(3.048)  # Default step size in um
+
         try:
             if hasattr(self, 'thread') and self.thread and self.thread.is_alive():
                 print('*** autofocus thread is still running ***')
@@ -2275,7 +2281,7 @@ class MultiPointWorker:
                                         if config.name == configuration_name_AF
 
                                 )
-                                self.autofocusController.set_microscope_mode(config_AF)
+                                self.autofocusController.liveController.set_microscope_mode(config_AF)
                                 print(f"autofocus at {coordiante_name}{i}_{j}, configuration: {configuration_name_AF},{config_AF}")
                                 if (
                                     self.FOV_counter
@@ -2286,9 +2292,16 @@ class MultiPointWorker:
                                     self.autofocusController.wait_till_autofocus_has_completed()
                                 # upate z location of scan_coordinates_mm after CONFIG.AF
                                 if len(coordiante_mm) == 3:
-                                    self.scan_coordinates_mm[coordinate_id, 2] = (
-                                        self.navigationController.z_pos_mm
-                                    )
+                                    # Handle both numpy array and list cases
+                                    if isinstance(self.scan_coordinates_mm, np.ndarray):
+                                        self.scan_coordinates_mm[coordinate_id, 2] = (
+                                            self.navigationController.z_pos_mm
+                                        )
+                                    else:
+                                        # For list, convert to list, modify, and update
+                                        coord = list(self.scan_coordinates_mm[coordinate_id])
+                                        coord[2] = self.navigationController.z_pos_mm
+                                        self.scan_coordinates_mm[coordinate_id] = coord
                                     # update the coordinate in the widget
                                     try:
                                         self.microscope.multiPointWidget2._update_z(
@@ -2319,7 +2332,7 @@ class MultiPointWorker:
                                         if config.name == configuration_name_AF
 
                                 )
-                                self.autofocusController.set_microscope_mode(config_AF)
+                                self.autofocusController.liveController.set_microscope_mode(config_AF)
                                 self.autofocusController.autofocus()
                                 self.autofocusController.wait_till_autofocus_has_completed()
                             # set the current plane as reference

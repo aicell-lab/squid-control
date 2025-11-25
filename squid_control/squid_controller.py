@@ -724,8 +724,8 @@ class SquidController:
         if self.is_simulation:
             await self.contrast_autofocus_simulation()
         else:
-            self.autofocusController.set_deltaZ(1.524)
-            self.autofocusController.set_N(15)
+            self.autofocusController.set_deltaZ(3.048)
+            self.autofocusController.set_N(19)
             self.autofocusController.autofocus()
             self.autofocusController.wait_till_autofocus_has_completed()
 
@@ -1030,13 +1030,14 @@ class SquidController:
 
         x_pos,y_pos, z_pos, *_ = self.navigationController.update_pos(microcontroller=self.microcontroller)
 
-        if abs(x_pos-x_pos_before)<CONFIG.STAGE_MOVED_THRESHOLD and dx!=0:
+        # Handle blocked movements: treat small blocked movements as success
+        threshold = CONFIG.STAGE_MOVED_THRESHOLD
+        if abs(x_pos-x_pos_before) < threshold and dx != 0 and abs(dx) > threshold:
             return False, x_pos_before, y_pos_before, z_pos_before, x_pos_before+dx, y_pos_before+dy, z_pos_before+dz
-        if abs(y_pos-y_pos_before)<CONFIG.STAGE_MOVED_THRESHOLD and dy!=0:
+        if abs(y_pos-y_pos_before) < threshold and dy != 0 and abs(dy) > threshold:
             return False, x_pos_before, y_pos_before, z_pos_before, x_pos_before+dx, y_pos_before+dy, z_pos_before+dz
-        if abs(z_pos-z_pos_before)<CONFIG.STAGE_MOVED_THRESHOLD and dz!=0:
+        if abs(z_pos-z_pos_before) < threshold and dz != 0 and abs(dz) > threshold:
             return False, x_pos_before, y_pos_before, z_pos_before, x_pos_before+dx, y_pos_before+dy, z_pos_before+dz
-
 
         return True, x_pos_before, y_pos_before, z_pos_before, x_pos, y_pos, z_pos
 
