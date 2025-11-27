@@ -27,7 +27,8 @@ def find_similar_cells(
         for x,y in range(scan_region_in_the_well):
             microscope_move_stage(x,y)
             image = microscope_acquire_image()
-            cell_images = segment_cells_from_image(image)
+            normalized_image = normalize_image(image)
+            cell_images = segment_cells_from_image(normalized_image)
 
             embedding_vectors = generate_embeddings_from_cells(cell_images)
             for embedding_vector in embedding_vectors:
@@ -76,3 +77,34 @@ def umap_analysis(
                 break 
         if stop:
             break
+
+#Agent code pattern, use case, find similar cells:
+
+similar_cells = []
+stop = False
+for well_id in range(A1, E12):
+    microscope_move_to_well(well_id)
+    for x,y in range(scan_region_in_the_well):
+        microscope_move_stage(x,y)
+        image = microscope_acquire_image()
+        normalized_image = normalize_image(image)
+        cell_images = segment_cells_from_image(normalized_image)
+
+        embedding_vectors = generate_embeddings_from_cells(cell_images)
+        for embedding_vector in embedding_vectors:
+            similarity_score = compare_similairty_with_target_cell(embedding_vector)
+            if similarity_score > threshold:
+                similar_cells.append(embedding_vector, similarity_score)
+                if len(similar_cells) < 400:
+                    continue
+                else:
+                    stop = True
+                    break
+                
+        if len(similar_cells) < 400:
+            continue
+        else:
+            stop = True
+            break 
+    if stop:
+        break
