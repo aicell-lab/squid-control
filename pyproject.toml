@@ -49,6 +49,7 @@ dependencies = [
     
     # Web services and API
     "hypha-rpc>=0.20.0,<1.0",
+    "hypha-artifact>=0.1.0",  # For direct zarr folder uploads to artifact manager
     "flask>=3.0.0,<4.0",
     "aiohttp>=3.9.0,<4.0",
     "requests>=2.26.0,<3.0",
@@ -87,6 +88,9 @@ dev = [
     "black",
     "isort",
     "flake8",
+]
+visualization = [
+    "vizarr>=0.7.0",  # GPU-accelerated zarr visualization in notebooks
 ]
 all = [
     "tensorrt",

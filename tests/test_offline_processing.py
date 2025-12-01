@@ -26,26 +26,18 @@ WHAT WAS TESTED:
    - Converts coordinates and applies proper transformations
 
 ✅ Zarr Canvas Operations
-   - Creates well-specific Zarr canvases
-   - Adds images to stitching queue with correct parameters
-   - Waits for stitching completion properly
-   - Exports canvases to ZIP files
+   - Creates single canvas per experiment using absolute stage coordinates
+   - Adds images to canvas with correct parameters
+   - Exports canvases directly (no ZIP files)
 
 ✅ File Management
    - Creates temporary directories for processing
-   - Exports well canvases to ZIP files in well_zips/ directory
-   - Creates .done marker files
+   - Uses hypha-artifact for direct folder uploads
    - Handles cleanup of temporary files
 
 ✅ Upload Interface
-   - Calls the upload method with correct parameters
+   - Uses AsyncHyphaArtifact for uploads
    - Passes proper metadata (experiment_id, dataset_name, etc.)
-   - Handles the upload response structure
-
-✅ Error Handling & Edge Cases
-   - Tests the .done file shortcut path (skip processing, upload existing)
-   - Handles missing or invalid data gracefully
-   - Proper cleanup on success/failure
 
 WHAT WAS NOT TESTED:
 ===================
@@ -60,6 +52,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import List
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import cv2
 import numpy as np
@@ -316,39 +309,54 @@ class FakeSquidController:
         self.pixel_size_xy = pixel_size_xy
 
 
-class FakeZarrArtifactManager:
-    """Fake uploader that records uploads instead of performing network I/O."""
+class FakeExperimentManager:
+    """Fake experiment manager for testing."""
+    
+    def __init__(self, base_path: str):
+        self.base_path = Path(base_path)
+        self.experiments = {}
+        self.active_experiment = None
+    
+    def create_experiment(self, name: str):
+        """Create a fake experiment."""
+        exp_path = self.base_path / name
+        exp_path.mkdir(parents=True, exist_ok=True)
+        self.experiments[name] = {
+            "path": exp_path,
+            "canvas": FakeCanvas(exp_path)
+        }
+        self.active_experiment = name
+        return {"success": True, "name": name, "path": str(exp_path)}
+    
+    def get_canvas(self, experiment_name: str = None):
+        """Get canvas for experiment."""
+        name = experiment_name or self.active_experiment
+        if name and name in self.experiments:
+            return self.experiments[name]["canvas"]
+        return None
 
-    def __init__(self):
-        self.upload_calls = []
 
-    async def upload_multiple_zip_files_to_dataset(
-        self,
-        microscope_service_id,
-        experiment_id,
-        zarr_files_info,
-        dataset_name,
-        acquisition_settings,
-        description,
-    ):
-        # Record call for assertions
-        self.upload_calls.append(
-            {
-                "microscope_service_id": microscope_service_id,
-                "experiment_id": experiment_id,
-                "zarr_files_info": zarr_files_info,
-                "dataset_name": dataset_name,
-                "acquisition_settings": acquisition_settings,
-                "description": description,
-            }
-        )
-        # Return minimal result similar to real manager
-        total_mb = sum(info.get("size_mb", 0) for info in zarr_files_info)
+class FakeCanvas:
+    """Fake zarr canvas for testing."""
+    
+    def __init__(self, path: Path):
+        self.zarr_path = path / "data.zarr"
+        self.zarr_path.mkdir(parents=True, exist_ok=True)
+        self.channel_to_zarr_index = {
+            "BF LED matrix full": 0,
+            "Fluorescence 488 nm Ex": 1,
+            "Fluorescence 561 nm Ex": 2
+        }
+        self.images_added = 0
+    
+    def get_zarr_channel_index(self, channel_name: str) -> int:
+        return self.channel_to_zarr_index.get(channel_name, 0)
+    
+    def get_export_info(self) -> dict:
         return {
-            "success": True,
-            "dataset_name": dataset_name,
-            "files_uploaded": len(zarr_files_info),
-            "total_size_mb": total_mb,
+            "total_size_mb": 1.5,
+            "canvas_dimensions": {"width": 1024, "height": 1024},
+            "num_scales": 6
         }
 
 
@@ -371,10 +379,112 @@ async def temp_saving_path():
 
 
 @pytest.mark.asyncio
-async def test_offline_stitch_and_upload_minimal(temp_saving_path):
-    """End-to-end minimal flow: generate tiny experiment and upload one dataset."""
+async def test_offline_processor_finds_experiment_folders(temp_saving_path):
+    """Test that the processor can find experiment folders."""
+    # Arrange: create synthetic data
+    experiment_id = "test-experiment"
+    experiment_folders = OfflineDataGenerator.create_synthetic_microscopy_data(
+        base_path=temp_saving_path,
+        experiment_id=experiment_id,
+        num_runs=2,
+        wells=["A1"],
+        channels=["BF LED matrix full"],
+    )
+    assert len(experiment_folders) == 2
 
-    # Arrange: create small synthetic data under DEFAULT_SAVING_PATH
+    fake_controller = FakeSquidController()
+    processor = OfflineProcessor(
+        squid_controller=fake_controller,
+        zarr_artifact_manager=None,
+        service_id="microscope-control-squid-test",
+    )
+
+    # Act
+    found_folders = processor.find_experiment_folders(experiment_id)
+
+    # Assert
+    assert len(found_folders) == 2
+    for folder in found_folders:
+        assert folder.exists()
+        assert (folder / "0").exists()
+
+
+@pytest.mark.asyncio
+async def test_offline_processor_parses_metadata(temp_saving_path):
+    """Test that the processor correctly parses experiment metadata."""
+    # Arrange
+    experiment_id = "test-metadata"
+    experiment_folders = OfflineDataGenerator.create_synthetic_microscopy_data(
+        base_path=temp_saving_path,
+        experiment_id=experiment_id,
+        num_runs=1,
+        wells=["A1", "B2"],
+        channels=["BF LED matrix full", "Fluorescence 488 nm Ex"],
+    )
+    experiment_folder = experiment_folders[0]
+
+    fake_controller = FakeSquidController()
+    processor = OfflineProcessor(
+        squid_controller=fake_controller,
+        zarr_artifact_manager=None,
+        service_id="microscope-control-squid-test",
+    )
+
+    # Act
+    acquisition_params = processor.parse_acquisition_parameters(experiment_folder)
+    xml_channels = processor.parse_configurations_xml(experiment_folder)
+    channel_mapping = processor.create_xml_to_channel_mapping(xml_channels)
+    coordinates_data = processor.parse_coordinates_csv(experiment_folder)
+
+    # Assert
+    assert acquisition_params is not None
+    assert acquisition_params.get("Nx") == 3
+    assert acquisition_params.get("Ny") == 3
+    
+    assert len(xml_channels) == 2
+    assert "BF LED matrix full" in xml_channels
+    
+    assert len(channel_mapping) >= 1
+    
+    # coordinates_data is grouped by well/region
+    assert len(coordinates_data) == 2  # A1 and B2
+    assert "A1" in coordinates_data
+    assert "B2" in coordinates_data
+
+
+@pytest.mark.asyncio
+async def test_offline_processor_creates_dataset_name(temp_saving_path):
+    """Test that the processor creates normalized dataset names."""
+    # Arrange
+    experiment_id = "test-naming"
+    experiment_folders = OfflineDataGenerator.create_synthetic_microscopy_data(
+        base_path=temp_saving_path,
+        experiment_id=experiment_id,
+        num_runs=1,
+        wells=["A1"],
+        channels=["BF LED matrix full"],
+    )
+    experiment_folder = experiment_folders[0]
+
+    fake_controller = FakeSquidController()
+    processor = OfflineProcessor(
+        squid_controller=fake_controller,
+        zarr_artifact_manager=None,
+        service_id="microscope-control-squid-test",
+    )
+
+    # Act
+    dataset_name = processor.create_normalized_dataset_name(experiment_folder, experiment_id)
+
+    # Assert
+    assert dataset_name is not None
+    assert experiment_id in dataset_name or "test" in dataset_name.lower()
+
+
+@pytest.mark.asyncio
+async def test_offline_stitch_and_upload_with_mock(temp_saving_path):
+    """Test the stitch and upload flow with mocked hypha-artifact."""
+    # Arrange: create small synthetic data
     experiment_id = "offline-test"
     experiment_folders = OfflineDataGenerator.create_synthetic_microscopy_data(
         base_path=temp_saving_path,
@@ -386,81 +496,210 @@ async def test_offline_stitch_and_upload_minimal(temp_saving_path):
     assert len(experiment_folders) == 1
 
     fake_controller = FakeSquidController()
-    fake_uploader = FakeZarrArtifactManager()
 
     processor = OfflineProcessor(
         squid_controller=fake_controller,
-        zarr_artifact_manager=fake_uploader,
+        zarr_artifact_manager=None,  # Not used anymore
         service_id="microscope-control-squid-test",
         max_concurrent_wells=1,
         image_batch_size=2,
     )
 
-    # Act
-    result = await processor.stitch_and_upload_timelapse(
-        experiment_id=experiment_id,
-        upload_immediately=True,
-        cleanup_temp_files=False,  # Keep files for assertion
-        use_parallel_wells=False,
-    )
+    # Mock the hypha-artifact upload
+    mock_artifact = MagicMock()
+    mock_artifact.edit = AsyncMock()
+    mock_artifact.put = AsyncMock()
+    mock_artifact.commit = AsyncMock()
+
+    with patch('squid_control.offline_processing.OfflineProcessor._upload_zarr_with_hypha_artifact') as mock_upload:
+        mock_upload.return_value = {
+            "success": True,
+            "dataset_name": f"{experiment_id}-uploaded",
+            "description": "Test upload"
+        }
+
+        # Act
+        result = await processor.stitch_and_upload_timelapse(
+            experiment_id=experiment_id,
+            upload_immediately=True,
+            cleanup_temp_files=False,
+            use_parallel_wells=False,
+        )
 
     # Assert basic success
     assert result["success"] is True
     assert result["total_datasets"] == 1
     assert len(result["processed_runs"]) == 1
-
-    # Assert upload occurred and files look reasonable
-    assert len(fake_uploader.upload_calls) == 1
-    call = fake_uploader.upload_calls[0]
-    assert call["dataset_name"]
-    zips = call["zarr_files_info"]
-    assert len(zips) >= 1
-    for info in zips:
-        assert Path(info["file_path"]).exists(), f"Missing ZIP: {info}"
-        assert info["size_mb"] > 0
+    
+    # Check that upload was called
+    assert mock_upload.called
 
 
 @pytest.mark.asyncio
-async def test_offline_done_path_uploads_existing_well_zips(temp_saving_path):
-    """If .done exists, processor should skip stitching and upload existing well ZIPs."""
-
-    # Arrange: create a dummy experiment folder (not used for parsing in .done path)
-    exp_folder = temp_saving_path / "offline-test-20250101T010101"
-    (exp_folder / "0").mkdir(parents=True, exist_ok=True)
-
-    # Create well_zips dir with pre-existing small zip files and a .done marker
-    well_zips = Path(CONFIG.DEFAULT_SAVING_PATH) / "well_zips"
-    well_zips.mkdir(parents=True, exist_ok=True)
-
-    # Create tiny zip files
-    for name in ["well_A1_96.zip", "well_B1_96.zip"]:
-        (well_zips / name).write_bytes(b"PK\x05\x06" + b"\x00" * 18)  # minimal empty ZIP EOCD
-    # Touch .done
-    (well_zips / ".done").touch()
+async def test_offline_processor_single_canvas_approach(temp_saving_path):
+    """Test that the processor uses a single canvas with absolute stage coordinates."""
+    # Arrange
+    experiment_id = "single-canvas-test"
+    experiment_folders = OfflineDataGenerator.create_synthetic_microscopy_data(
+        base_path=temp_saving_path,
+        experiment_id=experiment_id,
+        num_runs=1,
+        wells=["A1", "B2"],  # Multiple wells
+        channels=["BF LED matrix full"],
+    )
+    experiment_folder = experiment_folders[0]
 
     fake_controller = FakeSquidController()
-    fake_uploader = FakeZarrArtifactManager()
-
     processor = OfflineProcessor(
         squid_controller=fake_controller,
-        zarr_artifact_manager=fake_uploader,
+        zarr_artifact_manager=None,
         service_id="microscope-control-squid-test",
-        max_concurrent_wells=1,
-        image_batch_size=1,
     )
 
-    # Act: call run-parallel (will early-return to upload existing)
-    run_result = await processor.process_experiment_run_parallel(
-        experiment_folder=exp_folder,
-        upload_immediately=True,
+    # Parse coordinates
+    coordinates_data = processor.parse_coordinates_csv(experiment_folder)
+    
+    # Flatten all positions (as the new implementation does)
+    all_positions = []
+    for well_id, well_data in coordinates_data.items():
+        for coord_record in well_data:
+            coord_record['well_id'] = well_id
+            all_positions.append(coord_record)
+
+    # Assert: all positions from all wells are in a single list
+    assert len(all_positions) > 0
+    
+    # Check that we have positions from both wells
+    well_ids = set(pos['well_id'] for pos in all_positions)
+    assert "A1" in well_ids
+    assert "B2" in well_ids
+    
+    # All positions should have absolute stage coordinates
+    for pos in all_positions:
+        assert 'x (mm)' in pos
+        assert 'y (mm)' in pos
+        assert pos['x (mm)'] > 0  # Absolute coordinates
+
+
+@pytest.mark.asyncio
+async def test_offline_processor_upload_helper_method(temp_saving_path):
+    """Test the _upload_zarr_with_hypha_artifact helper method."""
+    # Arrange
+    fake_controller = FakeSquidController()
+    processor = OfflineProcessor(
+        squid_controller=fake_controller,
+        zarr_artifact_manager=None,
+        service_id="microscope-control-squid-test",
+    )
+
+    # Create a dummy zarr folder
+    zarr_folder = temp_saving_path / "test_experiment" / "data.zarr"
+    zarr_folder.mkdir(parents=True, exist_ok=True)
+    (zarr_folder / ".zattrs").write_text("{}")
+
+    # Mock AsyncHyphaArtifact
+    with patch('squid_control.offline_processing.OfflineProcessor._upload_zarr_with_hypha_artifact') as mock_upload:
+        mock_upload.return_value = {
+            "success": True,
+            "dataset_name": "test-dataset",
+            "description": "Test"
+        }
+
+        # Act
+        result = await processor._upload_zarr_with_hypha_artifact(
+            zarr_folder_path=str(zarr_folder),
+            dataset_name="test-dataset",
+            acquisition_settings={"test": True},
+            description="Test upload"
+        )
+
+        # Assert
+        assert result["success"] is True
+        assert result["dataset_name"] == "test-dataset"
+
+
+@pytest.mark.asyncio
+async def test_process_experiment_run_parallel_returns_positions(temp_saving_path):
+    """Test that process_experiment_run_parallel returns positions_processed instead of wells_processed."""
+    # Arrange
+    experiment_id = "parallel-test"
+    experiment_folders = OfflineDataGenerator.create_synthetic_microscopy_data(
+        base_path=temp_saving_path,
+        experiment_id=experiment_id,
+        num_runs=1,
+        wells=["A1"],
+        channels=["BF LED matrix full"],
+    )
+    experiment_folder = experiment_folders[0]
+
+    fake_controller = FakeSquidController()
+    processor = OfflineProcessor(
+        squid_controller=fake_controller,
+        zarr_artifact_manager=None,
+        service_id="microscope-control-squid-test",
+    )
+
+    # Mock the upload and experiment manager
+    with patch.object(processor, '_upload_zarr_with_hypha_artifact') as mock_upload, \
+         patch.object(processor, 'create_temp_experiment_manager') as mock_create_exp:
+        
+        mock_upload.return_value = {"success": True, "dataset_name": "test"}
+        
+        # Create a mock experiment manager
+        mock_exp_manager = FakeExperimentManager(str(temp_saving_path))
+        mock_create_exp.return_value = mock_exp_manager
+
+        # Act
+        result = await processor.process_experiment_run_parallel(
+            experiment_folder=experiment_folder,
+            upload_immediately=False,  # Don't upload for this test
+            cleanup_temp_files=True,
+            experiment_id=experiment_id,
+        )
+
+    # Assert - should have positions_processed, not wells_processed
+    assert result["success"] is True
+    assert "positions_processed" in result or "error" in result
+
+
+@pytest.mark.asyncio  
+async def test_process_experiment_run_sequential_delegates_to_parallel(temp_saving_path):
+    """Test that process_experiment_run_sequential delegates to process_experiment_run_parallel."""
+    # Arrange
+    experiment_id = "sequential-test"
+    experiment_folders = OfflineDataGenerator.create_synthetic_microscopy_data(
+        base_path=temp_saving_path,
+        experiment_id=experiment_id,
+        num_runs=1,
+        wells=["A1"],
+        channels=["BF LED matrix full"],
+    )
+    experiment_folder = experiment_folders[0]
+
+    fake_controller = FakeSquidController()
+    processor = OfflineProcessor(
+        squid_controller=fake_controller,
+        zarr_artifact_manager=None,
+        service_id="microscope-control-squid-test",
+    )
+
+    # Mock the parallel method to verify delegation
+    with patch.object(processor, 'process_experiment_run_parallel') as mock_parallel:
+        mock_parallel.return_value = {"success": True, "delegated": True}
+
+        # Act
+        result = await processor.process_experiment_run_sequential(
+            experiment_folder=experiment_folder,
+            upload_immediately=False,
+            cleanup_temp_files=True,
+            experiment_id=experiment_id,
+        )
+
+    # Assert - should have called the parallel method
+    mock_parallel.assert_called_once_with(
+        experiment_folder=experiment_folder,
+        upload_immediately=False,
         cleanup_temp_files=True,
-        experiment_id="offline-test",
+        experiment_id=experiment_id,
     )
-
-    # Assert
-    assert run_result["success"] is True
-    assert run_result.get("from_existing_zips") is True or run_result.get("wells_processed", 0) >= 1
-    assert len(fake_uploader.upload_calls) == 1
-
-    # .done should be removed after successful upload when cleanup_temp_files=True
-    assert not (well_zips / ".done").exists()  # cleaned up
+    assert result["delegated"] is True

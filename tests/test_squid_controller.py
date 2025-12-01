@@ -1669,10 +1669,6 @@ async def test_experiment_reset(sim_controller_fixture):
         experiment_name = "test_reset_experiment"
         controller.experiment_manager.create_experiment(experiment_name, well_plate_type='96')
 
-        # Create some well canvases in the experiment
-        well_canvas = controller.experiment_manager.get_well_canvas('A', 1, '96')
-        assert well_canvas is not None
-
         # List well canvases to verify they exist
         well_list = controller.experiment_manager.list_well_canvases()
         assert well_list["total_count"] > 0
@@ -1712,24 +1708,6 @@ async def test_well_canvas_management(sim_controller_fixture):
 
         # Create an experiment
         controller.experiment_manager.create_experiment(experiment_name, well_plate_type='96')
-
-        # Test getting well canvas
-        well_canvas = controller.experiment_manager.get_well_canvas('A', 1, '96')
-        assert well_canvas is not None
-        assert hasattr(well_canvas, 'well_row')
-        assert hasattr(well_canvas, 'well_column')
-        assert well_canvas.well_row == 'A'
-        assert well_canvas.well_column == 1
-
-        print("   ✓ Created well canvas for A1")
-
-        # Test getting another well canvas
-        well_canvas_2 = controller.experiment_manager.get_well_canvas('B', 2, '96')
-        assert well_canvas_2 is not None
-        assert well_canvas_2.well_row == 'B'
-        assert well_canvas_2.well_column == 2
-
-        print("   ✓ Created well canvas for B2")
 
         # Test listing well canvases
         well_list = controller.experiment_manager.list_well_canvases()
@@ -1866,14 +1844,6 @@ async def test_experiment_error_handling(sim_controller_fixture):
             print("   ✓ set_active_experiment correctly raised ValueError for non-existent experiment")
         except RuntimeError:
             print("   ✓ set_active_experiment correctly raised RuntimeError for non-existent experiment")
-
-        # Test that get_well_canvas raises error when no active experiment
-        try:
-            controller.experiment_manager.get_well_canvas('A', 1, '96')
-            assert False, "Should have raised error when no active experiment"
-        except RuntimeError as e:
-            assert "no active experiment" in str(e).lower()
-            print("   ✓ get_well_canvas correctly raised RuntimeError when no active experiment")
 
         print("✅ Experiment error handling tests passed!")
         break
