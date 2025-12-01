@@ -155,7 +155,7 @@ class OfflineProcessor:
             
         Returns:
             Sorted list of Path objects like:
-            [experiment_id-20250822T143055, experiment_id-20250822T163022, ...]
+            [experiment_id-20250822T143055, experiment_id_2025-08-22_14-30-55, ...]
         """
 
         from squid_control.control.config import CONFIG
@@ -165,10 +165,19 @@ class OfflineProcessor:
         if not base_path.exists():
             raise FileNotFoundError(f"Base path does not exist: {base_path}")
 
-        pattern = f"{experiment_id}-*"
-        print(f"Using pattern: {pattern}")
-        folders = sorted(base_path.glob(pattern))
-        print(f"Found {len(folders)} folders matching pattern: {[f.name for f in folders]}")
+        # Search for both hyphen and underscore separators
+        # e.g., 'test-drug-20250822T143055' or 'test-drug_2025-08-22_14-30-55'
+        pattern_hyphen = f"{experiment_id}-*"
+        pattern_underscore = f"{experiment_id}_*"
+        print(f"Using patterns: {pattern_hyphen} and {pattern_underscore}")
+        
+        folders_hyphen = list(base_path.glob(pattern_hyphen))
+        folders_underscore = list(base_path.glob(pattern_underscore))
+        
+        # Combine and deduplicate
+        all_folders = set(folders_hyphen + folders_underscore)
+        folders = sorted(all_folders)
+        print(f"Found {len(folders)} folders matching patterns: {[f.name for f in folders]}")
 
         # Filter to only directories that contain a '0' subfolder
         valid_folders = []
