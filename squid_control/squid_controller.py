@@ -14,7 +14,7 @@ from squid_control.control.camera import get_camera
 from squid_control.control.config import *
 from squid_control.control.config import ChannelMapper
 from squid_control.control.utils import rotate_and_flip_image
-from squid_control.stitching.zarr_canvas import WellZarrCanvas, ZarrCanvas
+from squid_control.stitching.zarr_canvas import ZarrCanvas
 
 _is_simulation_mode = (
     "--simulation" in sys.argv or
@@ -824,6 +824,57 @@ class SquidController:
 
         return result
 
+    def get_well_center(self, well_row: str, well_column: int, well_plate_type: str = '96'):
+        """
+        Get the center coordinates for a specific well.
+        
+        Args:
+            well_row: Well row letter (e.g., 'A', 'B')
+            well_column: Well column number (e.g., 1, 2, 3)
+            well_plate_type: Well plate type ('6', '12', '24', '96', '384')
+            
+        Returns:
+            dict: Well center information with 'center_x_mm', 'center_y_mm', 'well_diameter_mm'
+        """
+        # Get well plate format configuration
+        if well_plate_type == '6':
+            wellplate_format = WELLPLATE_FORMAT_6
+        elif well_plate_type == '12':
+            wellplate_format = WELLPLATE_FORMAT_12
+        elif well_plate_type == '24':
+            wellplate_format = WELLPLATE_FORMAT_24
+        elif well_plate_type == '96':
+            wellplate_format = WELLPLATE_FORMAT_96
+        elif well_plate_type == '384':
+            wellplate_format = WELLPLATE_FORMAT_384
+        else:
+            wellplate_format = WELLPLATE_FORMAT_96
+            
+        # Apply well plate offset for hardware mode
+        if self.is_simulation:
+            x_offset = 0
+            y_offset = 0
+        else:
+            x_offset = CONFIG.WELLPLATE_OFFSET_X_MM
+            y_offset = CONFIG.WELLPLATE_OFFSET_Y_MM
+            
+        # Convert row letter to index (A=0, B=1, etc.)
+        row_index = ord(well_row.upper()) - ord('A')
+        col_index = well_column - 1  # Convert to 0-based
+        
+        # Calculate well center
+        center_x = wellplate_format.A1_X_MM + x_offset + col_index * wellplate_format.WELL_SPACING_MM
+        center_y = wellplate_format.A1_Y_MM + y_offset + row_index * wellplate_format.WELL_SPACING_MM
+        
+        return {
+            'center_x_mm': center_x,
+            'center_y_mm': center_y,
+            'well_diameter_mm': wellplate_format.WELL_SIZE_MM,
+            'well_row': well_row,
+            'well_column': well_column,
+            'well_plate_type': well_plate_type
+        }
+
     def move_x_to_limited(self, x):
 
         x_pos_before,y_pos_before, z_pos_before, *_ = self.navigationController.update_pos(microcontroller=self.microcontroller)
@@ -1213,14 +1264,14 @@ class SquidController:
                                         timepoint=0, experiment_name=None, wells_to_scan=None,
                                         well_plate_type='96', well_padding_mm=1.0):
         """
-        Region scan with live stitching to well-specific OME-Zarr canvases.
-        Scans specified wells one by one, creating individual zarr canvases for each well.
+        Region scan with live stitching to single experiment OME-Zarr canvas.
+        Scans specified wells one by one, writing all data to the single experiment canvas.
         
         Args:
             start_x_mm (float, optional): Starting X position in mm (relative to well center).
-                If None, the grid will be centered around the well center (similar to plate_scan behavior).
+                If None, the grid will be centered around the well center.
             start_y_mm (float, optional): Starting Y position in mm (relative to well center).
-                If None, the grid will be centered around the well center (similar to plate_scan behavior).
+                If None, the grid will be centered around the well center.
             Nx (int): Number of positions in X
             Ny (int): Number of positions in Y
             dx_mm (float): Interval between positions in X (mm)
@@ -1233,7 +1284,7 @@ class SquidController:
             experiment_name (str, optional): Name of the experiment to use. If None, uses active experiment or creates "default"
             wells_to_scan (list): List of well strings (e.g., ['A1', 'B2']) or (row, column) tuples. If None, scans single well at current position
             well_plate_type (str): Well plate type ('6', '12', '24', '96', '384')
-            well_padding_mm (float): Padding around well in mm
+            well_padding_mm (float): Padding around well in mm (for metadata only)
         """
         if illumination_settings is None:
             illumination_settings = [
@@ -1267,6 +1318,20 @@ class SquidController:
         # Map channel names to indices
         channel_map = ChannelMapper.get_human_to_id_map()
 
+        # Get the single experiment canvas
+        canvas = self.experiment_manager.get_canvas()
+
+        # Validate channels are available in canvas
+        for settings in illumination_settings:
+            channel_name = settings['channel']
+            if channel_name not in canvas.channel_to_zarr_index:
+                logger.error(f"Requested channel '{channel_name}' not found in canvas!")
+                logger.error(f"Available channels: {list(canvas.channel_to_zarr_index.keys())}")
+                raise ValueError(f"Channel '{channel_name}' not available in canvas")
+
+        # Start stitching once for the entire scan
+        await canvas.start_stitching()
+
         # Start scanning wells one by one
         try:
             self.is_busy = True
@@ -1281,38 +1346,27 @@ class SquidController:
 
                 logger.info(f"Scanning well {well_row}{well_column} ({well_idx + 1}/{len(wells_to_scan)})")
 
-                # Get well canvas for this well
-                canvas = self.experiment_manager.get_well_canvas(well_row, well_column, well_plate_type, well_padding_mm)
-
-                # Validate channels are available in this canvas
-                for settings in illumination_settings:
-                    channel_name = settings['channel']
-                    if channel_name not in canvas.channel_to_zarr_index:
-                        logger.error(f"Requested channel '{channel_name}' not found in well canvas!")
-                        logger.error(f"Available channels: {list(canvas.channel_to_zarr_index.keys())}")
-                        raise ValueError(f"Channel '{channel_name}' not available in well canvas")
-
-                # Start stitching for this well
-                await canvas.start_stitching()
-
                 # Move to well center first
                 await self.move_to_well_async(well_row, well_column, well_plate_type)
 
-                # Get well center coordinates for relative positioning
-                well_center_x = canvas.well_center_x
-                well_center_y = canvas.well_center_y
+                # Get well center coordinates using helper function
+                well_center_info = self.get_well_center(well_row, well_column, well_plate_type)
+                well_center_x = well_center_info['center_x_mm']
+                well_center_y = well_center_info['center_y_mm']
 
                 # Calculate start positions if not provided (center the grid around well center)
-                # This matches the behavior of plate_scan which centers the grid automatically
-                if start_x_mm is None:
+                local_start_x = start_x_mm
+                local_start_y = start_y_mm
+                
+                if local_start_x is None:
                     # Center the grid: total width = (Nx - 1) * dx_mm, so start at -width/2
-                    start_x_mm = -(Nx - 1) * dx_mm / 2.0
-                    logger.info(f"start_x_mm not provided, centering grid: start_x_mm = {start_x_mm:.3f} mm")
+                    local_start_x = -(Nx - 1) * dx_mm / 2.0
+                    logger.info(f"start_x_mm not provided, centering grid: start_x_mm = {local_start_x:.3f} mm")
 
-                if start_y_mm is None:
+                if local_start_y is None:
                     # Center the grid: total height = (Ny - 1) * dy_mm, so start at -height/2
-                    start_y_mm = -(Ny - 1) * dy_mm / 2.0
-                    logger.info(f"start_y_mm not provided, centering grid: start_y_mm = {start_y_mm:.3f} mm")
+                    local_start_y = -(Ny - 1) * dy_mm / 2.0
+                    logger.info(f"start_y_mm not provided, centering grid: start_y_mm = {local_start_y:.3f} mm")
 
                 try:
                     # Scan pattern: snake pattern for efficiency
@@ -1335,8 +1389,8 @@ class SquidController:
                                 x_idx = Nx - 1 - j
 
                             # Calculate absolute position (well center + relative offset)
-                            absolute_x_mm = well_center_x + start_x_mm + x_idx * dx_mm
-                            absolute_y_mm = well_center_y + start_y_mm + i * dy_mm
+                            absolute_x_mm = well_center_x + local_start_x + x_idx * dx_mm
+                            absolute_y_mm = well_center_y + local_start_y + i * dy_mm
 
                             # Move to position
                             self.navigationController.move_x_to(absolute_x_mm)
@@ -1377,25 +1431,22 @@ class SquidController:
                                     logger.error(f"Channel mapping error: {e}")
                                     continue
 
-                                # Snap image using global channel ID with cropping applied (same as quick scan)
+                                # Snap image using global channel ID with cropping applied
                                 image = await self.snap_image(global_channel_idx, intensity, exposure_time, full_frame=False)
 
                                 # Convert to 8-bit if needed
                                 if image.dtype != np.uint8:
-                                    # Scale to 8-bit
                                     if image.dtype == np.uint16:
                                         image = (image / 256).astype(np.uint8)
                                     else:
                                         image = image.astype(np.uint8)
 
-                                # Add to stitching queue using the new well-based routing method (like quick scan)
-                                await self._add_image_to_zarr_normal_well_based(
+                                # Add to stitching queue using absolute stage coordinates
+                                await canvas.add_image_async(
                                     image, actual_x_mm, actual_y_mm,
-                                    zarr_channel_idx=zarr_channel_idx,
-                                    timepoint=timepoint,
-                                    well_plate_type=well_plate_type,
-                                    well_padding_mm=well_padding_mm,
-                                    channel_name=channel_name
+                                    channel_idx=zarr_channel_idx,
+                                    z_idx=0,
+                                    timepoint=timepoint
                                 )
 
                                 logger.debug(f'Added image at position ({actual_x_mm:.2f}, {actual_y_mm:.2f}) for well {well_row}{well_column}, channel {channel_name}, timepoint={timepoint}')
@@ -1429,109 +1480,84 @@ class SquidController:
         self._restore_original_velocity(CONFIG.MAX_VELOCITY_X_MM, CONFIG.MAX_VELOCITY_Y_MM)
         return {"success": True, "message": "Scan stop requested"}
 
-    async def _add_image_to_zarr_quick_well_based(self, image: np.ndarray, x_mm: float, y_mm: float,
-                                                 zarr_channel_idx: int, timepoint: int = 0,
-                                                 well_plate_type='96', well_padding_mm=1.0, channel_name='BF LED matrix full'):
+    async def _add_image_to_canvas_async(self, image: np.ndarray, x_mm: float, y_mm: float,
+                                          channel_name: str = 'BF LED matrix full', timepoint: int = 0,
+                                          quick_scan: bool = True):
         """
-        Add image to well canvas stitching queue for quick scan - only updates scales 1-5 (skips scale 0).
-        The input image should already be at scale1 resolution (1/4 of original).
+        Add image to experiment canvas stitching queue.
         
         Args:
-            image: Processed image at scale1 resolution
-            x_mm: Absolute X position in mm
-            y_mm: Absolute Y position in mm
-            zarr_channel_idx: Zarr channel index
+            image: Processed image (at scale1 resolution for quick_scan, original for normal scan)
+            x_mm: Absolute X position in mm (stage coordinates)
+            y_mm: Absolute Y position in mm (stage coordinates)
+            channel_name: Channel name for the image
             timepoint: Timepoint index
-            well_plate_type: Well plate type
-            well_padding_mm: Well padding in mm
-            channel_name: Channel name for validation
+            quick_scan: If True, only updates scales 1-5 (skips scale 0). If False, updates all scales.
+        
+        Returns:
+            str: Result message
         """
-        logger.info(f'ZARR_QUEUE: Attempting to queue image at position ({x_mm:.2f}, {y_mm:.2f}), timepoint={timepoint}, channel={channel_name}')
+        logger.debug(f'ZARR_QUEUE: Queueing image at ({x_mm:.2f}, {y_mm:.2f}), channel={channel_name}, timepoint={timepoint}')
 
-        # Determine which well this position belongs to using padded boundaries for stitching
-        well_info = self.get_well_from_position(well_plate_type, x_mm, y_mm, well_padding_mm)
+        # Get the single experiment canvas
+        canvas = self.experiment_manager.get_canvas()
+        if canvas is None:
+            logger.error("ZARR_QUEUE: No active canvas found")
+            return "No active canvas"
 
-        logger.info(f'ZARR_QUEUE: Well detection result - status={well_info["position_status"]}, well={well_info.get("well_id", "None")}, distance={well_info["distance_from_center"]:.2f}mm')
+        # Validate channel exists in canvas
+        if channel_name not in canvas.channel_to_zarr_index:
+            logger.warning(f"ZARR_QUEUE: Channel '{channel_name}' not found. Available: {list(canvas.channel_to_zarr_index.keys())}")
+            return f"Channel {channel_name} not found"
+        
+        # Get the zarr channel index
+        channel_idx = canvas.get_zarr_channel_index(channel_name)
 
-        if well_info["position_status"] == "in_well":
-            well_row = well_info["row"]
-            well_column = well_info["column"]
+        # Start stitching for canvas if not already active
+        if not canvas.is_stitching:
+            logger.info(f'ZARR_QUEUE: Starting stitching for canvas')
+            await canvas.start_stitching()
 
-            logger.info(f'ZARR_QUEUE: Position is inside well {well_row}{well_column}')
+        # Add to stitching queue
+        try:
+            queue_item = {
+                'image': image.copy(),
+                'x_mm': x_mm,
+                'y_mm': y_mm,
+                'channel_idx': channel_idx,
+                'z_idx': 0,
+                'timepoint': timepoint,
+                'timestamp': time.time(),
+                'quick_scan': quick_scan
+            }
 
-            # Get or create well canvas
-            try:
-                well_canvas = self.experiment_manager.get_well_canvas(well_row, well_column, well_plate_type, well_padding_mm)
-                logger.info(f'ZARR_QUEUE: Got well canvas for {well_row}{well_column}, stitching_active={well_canvas.is_stitching}')
-            except Exception as e:
-                logger.error(f"ZARR_QUEUE: Failed to get well canvas for {well_row}{well_column}: {e}")
-                return f"Failed to get well canvas: {e}"
+            await canvas.preprocessing_queue.put(queue_item)
+            logger.debug(f'ZARR_QUEUE: Queued image at ({x_mm:.2f}, {y_mm:.2f}), queue_size={canvas.preprocessing_queue.qsize()}')
+            return f"Queued at ({x_mm:.2f}, {y_mm:.2f})"
 
-            # Validate channel exists in this well canvas and get the correct zarr_channel_idx for this specific canvas
-            if channel_name not in well_canvas.channel_to_zarr_index:
-                logger.warning(f"ZARR_QUEUE: Channel '{channel_name}' not found in well canvas {well_row}{well_column}")
-                logger.warning(f"ZARR_QUEUE: Available channels: {list(well_canvas.channel_to_zarr_index.keys())}")
-                return f"Channel {channel_name} not found"
-            
-            # Get the zarr channel index for this specific well canvas
-            # This is important because different well canvases may have different channel mappings
-            well_canvas_zarr_channel_idx = well_canvas.get_zarr_channel_index(channel_name)
-            logger.info(f'ZARR_QUEUE: Using zarr_channel_idx={well_canvas_zarr_channel_idx} for channel "{channel_name}" in well {well_row}{well_column}')
-
-            # Start stitching for this well canvas if not already active
-            if not well_canvas.is_stitching:
-                logger.info(f'ZARR_QUEUE: Starting stitching for well canvas {well_row}{well_column}')
-                await well_canvas.start_stitching()
-
-            # Note: WellZarrCanvas will handle coordinate conversion internally
-            logger.info(f'ZARR_QUEUE: Using absolute coordinates: ({x_mm:.2f}, {y_mm:.2f}), well_center: ({well_canvas.well_center_x:.2f}, {well_canvas.well_center_y:.2f})')
-
-            # Add to stitching queue with quick_scan flag
-            try:
-                queue_item = {
-                    'image': image.copy(),
-                    'x_mm': x_mm,  # Use absolute coordinates - WellZarrCanvas will convert to well-relative
-                    'y_mm': y_mm,  # Use absolute coordinates - WellZarrCanvas will convert to well-relative
-                    'channel_idx': well_canvas_zarr_channel_idx,  # Use the channel index from this specific well canvas
-                    'z_idx': 0,
-                    'timepoint': timepoint,
-                    'timestamp': time.time(),
-                    'quick_scan': True  # Flag to indicate this is for quick scan (scales 1-5 only)
-                }
-
-                # Check queue size before adding
-                queue_size_before = well_canvas.preprocessing_queue.qsize()
-                await well_canvas.preprocessing_queue.put(queue_item)
-                queue_size_after = well_canvas.preprocessing_queue.qsize()
-
-                logger.info(f'ZARR_QUEUE: Successfully queued image for well {well_row}{well_column} at absolute coords ({x_mm:.2f}, {y_mm:.2f})')
-                logger.info(f'ZARR_QUEUE: Queue size before={queue_size_before}, after={queue_size_after}')
-                return f"Queued for well {well_row}{well_column}"
-
-            except Exception as e:
-                logger.error(f"ZARR_QUEUE: Failed to add image to stitching queue for well {well_row}{well_column}: {e}")
-                return f"Failed to queue: {e}"
-        else:
-            # Image is outside wells - log and skip
-            logger.warning(f'ZARR_QUEUE: Image at ({x_mm:.2f}, {y_mm:.2f}) is {well_info["position_status"]} - skipping')
-            return f"Position outside well: {well_info['position_status']}"
-
+        except Exception as e:
+            logger.error(f"ZARR_QUEUE: Failed to queue image: {e}")
+            return f"Failed to queue: {e}"
+    
     def debug_stitching_status(self):
-        """Debug method to check stitching status of all well canvases."""
-        logger.info("STITCHING_DEBUG: Checking stitching status for all well canvases")
+        """Debug method to check stitching status of experiment canvas."""
+        logger.info("STITCHING_DEBUG: Checking stitching status for experiment canvas")
 
-        if hasattr(self, 'experiment_manager') and hasattr(self.experiment_manager, 'well_canvases'):
-            for well_id, well_canvas in self.experiment_manager.well_canvases.items():
-                queue_size = well_canvas.preprocessing_queue.qsize()
-                is_stitching = well_canvas.is_stitching
-                logger.info(f"STITCHING_DEBUG: Well {well_id} - stitching_active={is_stitching}, queue_size={queue_size}")
+        if hasattr(self, 'experiment_manager'):
+            canvas = self.experiment_manager.get_canvas()
+            if canvas is not None:
+                queue_size = canvas.preprocessing_queue.qsize()
+                is_stitching = canvas.is_stitching
+                logger.info(f"STITCHING_DEBUG: Canvas - stitching_active={is_stitching}, queue_size={queue_size}")
 
                 # Check if stitching task is running
-                if hasattr(well_canvas, 'stitching_task'):
-                    task_done = well_canvas.stitching_task.done() if well_canvas.stitching_task else True
-                    logger.info(f"STITCHING_DEBUG: Well {well_id} - stitching_task_done={task_done}")
+                if hasattr(canvas, 'stitching_task'):
+                    task_done = canvas.stitching_task.done() if canvas.stitching_task else True
+                    logger.info(f"STITCHING_DEBUG: Canvas - stitching_task_done={task_done}")
+            else:
+                logger.warning("STITCHING_DEBUG: No canvas found in experiment manager")
         else:
-            logger.warning("STITCHING_DEBUG: No well canvases found in experiment manager")
+            logger.warning("STITCHING_DEBUG: No experiment manager found")
 
     def _cleanup_zarr_directory(self):
         # Clean up .zarr folders within ZARR_PATH directory on startup
@@ -1772,145 +1798,26 @@ class SquidController:
 
         return self.zarr_canvas
 
-    def get_well_canvas(self, well_row: str, well_column: int, well_plate_type: str = '96',
-                       padding_mm: float = 1.0):
+    def get_canvas(self, experiment_name: str = None):
         """
-        Get or create a well-specific canvas.
+        Get the canvas for an experiment.
         
         Args:
-            well_row: Well row (e.g., 'A', 'B')
-            well_column: Well column (e.g., 1, 2, 3)
-            well_plate_type: Well plate type ('6', '12', '24', '96', '384')
-            padding_mm: Padding around well in mm
+            experiment_name: Optional experiment name. Uses current if None.
             
         Returns:
-            WellZarrCanvas: The well-specific canvas
+            ZarrCanvas: The experiment canvas
         """
-        well_id = f"{well_row}{well_column}_{well_plate_type}"
-
-        if well_id not in self.well_canvases:
-            # Create new well canvas
-            zarr_path = os.getenv('ZARR_PATH', '/tmp/zarr_canvas')
-            all_channels = ChannelMapper.get_all_human_names()
-
-            canvas = WellZarrCanvas(
-                well_row=well_row,
-                well_column=well_column,
-                well_plate_type=well_plate_type,
-                padding_mm=padding_mm,
-                base_path=zarr_path,
-                pixel_size_xy_um=self.pixel_size_xy,
-                channels=all_channels,
-                rotation_angle_deg=CONFIG.STITCHING_ROTATION_ANGLE_DEG,
-                initial_timepoints=20,
-                timepoint_expansion_chunk=10
-            )
-
-            self.well_canvases[well_id] = canvas
-            logger.info(f"Created well canvas for {well_row}{well_column} ({well_plate_type})")
-
-        return self.well_canvases[well_id]
-
-    def create_well_canvas(self, well_row: str, well_column: int, well_plate_type: str = '96',
-                          padding_mm: float = 1.0):
+        return self.experiment_manager.get_canvas(experiment_name)
+    
+    def list_canvases(self):
         """
-        Create a new well-specific canvas (replaces existing if present).
-        
-        Args:
-            well_row: Well row (e.g., 'A', 'B')
-            well_column: Well column (e.g., 1, 2, 3)
-            well_plate_type: Well plate type ('6', '12', '24', '96', '384')
-            padding_mm: Padding around well in mm
-            
-        Returns:
-            dict: Information about the created canvas
-        """
-        well_id = f"{well_row}{well_column}_{well_plate_type}"
-
-        # Close existing canvas if present
-        if well_id in self.well_canvases:
-            self.well_canvases[well_id].close()
-            logger.info(f"Closed existing well canvas for {well_row}{well_column}")
-
-        # Create new canvas
-        canvas = self.get_well_canvas(well_row, well_column, well_plate_type, padding_mm)
-
-        return {
-            "well_id": well_id,
-            "well_row": well_row,
-            "well_column": well_column,
-            "well_plate_type": well_plate_type,
-            "padding_mm": padding_mm,
-            "canvas_path": str(canvas.zarr_path),
-            "message": f"Created well canvas for {well_row}{well_column}"
-        }
-
-    def list_well_canvases(self):
-        """
-        List all active well canvases.
+        List all experiment canvases (via list_experiments).
         
         Returns:
-            dict: Information about all well canvases
+            dict: Information about all experiments and their canvases
         """
-        canvases = []
-
-        for well_id, canvas in self.well_canvases.items():
-            well_info = canvas.get_well_info()
-            canvases.append({
-                "well_id": well_id,
-                "well_row": canvas.well_row,
-                "well_column": canvas.well_column,
-                "well_plate_type": canvas.well_plate_type,
-                "canvas_path": str(canvas.zarr_path),
-                "well_center_x_mm": canvas.well_center_x,
-                "well_center_y_mm": canvas.well_center_y,
-                "padding_mm": canvas.padding_mm,
-                "channels": len(canvas.channels),
-                "timepoints": len(canvas.available_timepoints)
-            })
-
-        return {
-            "well_canvases": canvases,
-            "total_count": len(canvases)
-        }
-
-    def remove_well_canvas(self, well_row: str, well_column: int, well_plate_type: str = '96'):
-        """
-        Remove a well-specific canvas.
-        
-        Args:
-            well_row: Well row (e.g., 'A', 'B')
-            well_column: Well column (e.g., 1, 2, 3)
-            well_plate_type: Well plate type
-            
-        Returns:
-            dict: Information about the removed canvas
-        """
-        well_id = f"{well_row}{well_column}_{well_plate_type}"
-
-        if well_id not in self.well_canvases:
-            raise ValueError(f"Well canvas for {well_row}{well_column} ({well_plate_type}) not found")
-
-        canvas = self.well_canvases[well_id]
-        canvas.close()
-        del self.well_canvases[well_id]
-
-        # Also remove from disk
-        try:
-            import shutil
-            if canvas.zarr_path.exists():
-                shutil.rmtree(canvas.zarr_path)
-                logger.info(f"Removed well canvas directory: {canvas.zarr_path}")
-        except Exception as e:
-            logger.warning(f"Failed to remove well canvas directory: {e}")
-
-        return {
-            "well_id": well_id,
-            "well_row": well_row,
-            "well_column": well_column,
-            "well_plate_type": well_plate_type,
-            "message": f"Removed well canvas for {well_row}{well_column}"
-        }
+        return self.experiment_manager.list_experiments()
 
     def _convert_well_strings_to_tuples(self, wells_to_scan):
         """
@@ -1960,81 +1867,6 @@ class SquidController:
 
         return converted_wells
 
-    async def _add_image_to_zarr_normal_well_based(self, image: np.ndarray, x_mm: float, y_mm: float,
-                                                 zarr_channel_idx: int, timepoint: int = 0,
-                                                 well_plate_type='96', well_padding_mm=1.0, channel_name='BF LED matrix full'):
-        """
-        Add image to well canvas stitching queue for normal scan - updates all scales (0-5).
-        Uses the same routing logic as quick scan but with full scale processing.
-        
-        Args:
-            image: Processed image (original resolution)
-            x_mm: Absolute X position in mm
-            y_mm: Absolute Y position in mm
-            zarr_channel_idx: Zarr channel index
-            timepoint: Timepoint index
-            well_plate_type: Well plate type
-            well_padding_mm: Well padding in mm
-            channel_name: Channel name for validation
-        """
-        logger.info(f'ZARR_NORMAL: Attempting to queue image at position ({x_mm:.2f}, {y_mm:.2f}), timepoint={timepoint}, channel={channel_name}')
-
-        # Determine which well this position belongs to using padded boundaries for stitching
-        well_info = self.get_well_from_position(well_plate_type, x_mm, y_mm, well_padding_mm)
-
-        logger.info(f'ZARR_NORMAL: Well detection result - status={well_info["position_status"]}, well={well_info.get("well_id", "None")}, distance={well_info["distance_from_center"]:.2f}mm')
-
-        if well_info["position_status"] == "in_well":
-            well_row = well_info["row"]
-            well_column = well_info["column"]
-
-            logger.info(f'ZARR_NORMAL: Position is inside well {well_row}{well_column}')
-
-            # Get or create well canvas
-            try:
-                well_canvas = self.experiment_manager.get_well_canvas(well_row, well_column, well_plate_type, well_padding_mm)
-                logger.info(f'ZARR_NORMAL: Got well canvas for {well_row}{well_column}, stitching_active={well_canvas.is_stitching}')
-            except Exception as e:
-                logger.error(f"ZARR_NORMAL: Failed to get well canvas for {well_row}{well_column}: {e}")
-                return f"Failed to get well canvas: {e}"
-
-            # Validate channel exists in this well canvas
-            if channel_name not in well_canvas.channel_to_zarr_index:
-                logger.warning(f"ZARR_NORMAL: Channel '{channel_name}' not found in well canvas {well_row}{well_column}")
-                logger.warning(f"ZARR_NORMAL: Available channels: {list(well_canvas.channel_to_zarr_index.keys())}")
-                return f"Channel {channel_name} not found"
-
-            logger.info(f'ZARR_NORMAL: Well center: ({well_canvas.well_center_x:.2f}, {well_canvas.well_center_y:.2f})')
-
-            # Add to stitching queue with normal scan flag (all scales)
-            try:
-                queue_item = {
-                    'image': image.copy(),
-                    'x_mm': x_mm,  # Use absolute coordinates - WellZarrCanvas will convert to well-relative (same as quick scan)
-                    'y_mm': y_mm,  # Use absolute coordinates - WellZarrCanvas will convert to well-relative (same as quick scan)
-                    'channel_idx': zarr_channel_idx,
-                    'z_idx': 0,
-                    'timepoint': timepoint,
-                    'timestamp': time.time(),
-                    'quick_scan': False  # Flag to indicate this is normal scan (all scales)
-                }
-
-                # Check queue size before adding
-                queue_size_before = well_canvas.preprocessing_queue.qsize()
-                await well_canvas.preprocessing_queue.put(queue_item)
-                queue_size_after = well_canvas.preprocessing_queue.qsize()
-
-                logger.info(f'ZARR_NORMAL: Queue size before={queue_size_before}, after={queue_size_after}')
-                return f"Queued for well {well_row}{well_column}"
-
-            except Exception as e:
-                logger.error(f"ZARR_NORMAL: Failed to add image to stitching queue for well {well_row}{well_column}: {e}")
-                return f"Failed to queue: {e}"
-        else:
-            # Image is outside wells - log and skip
-            logger.warning(f'ZARR_NORMAL: Image at ({x_mm:.2f}, {y_mm:.2f}) is {well_info["position_status"]} - skipping')
-            return f"Position outside well: {well_info['position_status']}"
-
     def ensure_active_experiment(self, experiment_name: str = None):
         """
         Ensure there's an active experiment, creating a default one if needed.
@@ -2055,18 +1887,15 @@ class SquidController:
                 self.experiment_manager.create_experiment(experiment_name)
                 logger.info(f"Created new experiment '{experiment_name}'")
 
-    def _check_well_canvas_exists(self, well_row: str, well_column: int, well_plate_type: str = '96', experiment_name: str = None):
+    def _check_canvas_exists(self, experiment_name: str = None):
         """
-        Check if a well canvas exists on disk for the specified experiment.
+        Check if the experiment canvas exists on disk.
         
         Args:
-            well_row: Well row (e.g., 'A', 'B')
-            well_column: Well column (e.g., 1, 2, 3)
-            well_plate_type: Well plate type ('6', '12', '24', '96', '384')
             experiment_name: Name of the experiment to check (default: None uses current experiment)
             
         Returns:
-            bool: True if the well canvas exists on disk, False otherwise
+            bool: True if the canvas exists on disk, False otherwise
         """
         target_experiment = experiment_name if experiment_name is not None else self.experiment_manager.current_experiment
         if target_experiment is None:
@@ -2074,10 +1903,15 @@ class SquidController:
 
         # Calculate the expected canvas path
         experiment_path = self.experiment_manager.base_path / target_experiment
-        fileset_name = f"well_{well_row}{well_column}_{well_plate_type}"
-        canvas_path = experiment_path / f"{fileset_name}.zarr"
+        canvas_path = experiment_path / "data.zarr"
 
         return canvas_path.exists()
+    
+    # Backward compatibility alias
+    def _check_well_canvas_exists(self, well_row: str = None, well_column: int = None, 
+                                   well_plate_type: str = '96', experiment_name: str = None):
+        """Backward compatibility wrapper for _check_canvas_exists."""
+        return self._check_canvas_exists(experiment_name)
 
     def get_stitched_region(self, center_x_mm: float, center_y_mm: float,
                            width_mm: float, height_mm: float,
@@ -2086,19 +1920,18 @@ class SquidController:
                            timepoint: int = 0, well_padding_mm: float = 2.0,
                            experiment_name: str = None):
         """
-        Get a stitched region that may span multiple wells by determining which wells 
-        are needed and combining their data.
+        Get a region from the single experiment canvas using absolute stage coordinates.
         
         Args:
             center_x_mm: Center X position in absolute stage coordinates (mm)
             center_y_mm: Center Y position in absolute stage coordinates (mm)
             width_mm: Width of region in mm
             height_mm: Height of region in mm
-            well_plate_type: Well plate type ('6', '12', '24', '96', '384')
+            well_plate_type: Well plate type (for backward compatibility, ignored)
             scale_level: Scale level (0=full res, 1=1/4, 2=1/16, etc)
             channel_name: Name of channel to retrieve
             timepoint: Timepoint index (default 0)
-            well_padding_mm: Padding around wells in mm
+            well_padding_mm: Padding (for backward compatibility, ignored)
             experiment_name: Name of the experiment to retrieve data from (default: None uses current experiment)
             
         Returns:
@@ -2111,294 +1944,50 @@ class SquidController:
                 logger.error("No experiment specified and no current experiment set")
                 return None
 
-            logger.info(f"Getting stitched region from experiment '{target_experiment}'")
+            logger.info(f"Getting region from experiment '{target_experiment}' at "
+                       f"center=({center_x_mm:.2f}, {center_y_mm:.2f}), size=({width_mm:.2f}x{height_mm:.2f})")
 
-            # Calculate the bounding box of the requested region
-            half_width = width_mm / 2.0
-            half_height = height_mm / 2.0
-
-            region_min_x = center_x_mm - half_width
-            region_max_x = center_x_mm + half_width
-            region_min_y = center_y_mm - half_height
-            region_max_y = center_y_mm + half_height
-
-            logger.info(f"Requested region: center=({center_x_mm:.2f}, {center_y_mm:.2f}), "
-                       f"size=({width_mm:.2f}x{height_mm:.2f}), "
-                       f"bounds=({region_min_x:.2f}-{region_max_x:.2f}, {region_min_y:.2f}-{region_max_y:.2f})")
-
-            # Get well plate format configuration
-            if well_plate_type == '6':
-                wellplate_format = WELLPLATE_FORMAT_6
-                max_rows = 2  # A-B
-                max_cols = 3  # 1-3
-            elif well_plate_type == '12':
-                wellplate_format = WELLPLATE_FORMAT_12
-                max_rows = 3  # A-C
-                max_cols = 4  # 1-4
-            elif well_plate_type == '24':
-                wellplate_format = WELLPLATE_FORMAT_24
-                max_rows = 4  # A-D
-                max_cols = 6  # 1-6
-            elif well_plate_type == '96':
-                wellplate_format = WELLPLATE_FORMAT_96
-                max_rows = 8  # A-H
-                max_cols = 12  # 1-12
-            elif well_plate_type == '384':
-                wellplate_format = WELLPLATE_FORMAT_384
-                max_rows = 16  # A-P
-                max_cols = 24  # 1-24
-            else:
-                wellplate_format = WELLPLATE_FORMAT_96
-                max_rows = 8
-                max_cols = 12
-                well_plate_type = '96'
-
-            # Apply well plate offset for hardware mode
-            if self.is_simulation:
-                x_offset = 0
-                y_offset = 0
-            else:
-                x_offset = CONFIG.WELLPLATE_OFFSET_X_MM
-                y_offset = CONFIG.WELLPLATE_OFFSET_Y_MM
-
-            # Find all wells that intersect with the requested region
-            wells_to_query = []
-            well_regions = []
-
-            for row_idx in range(max_rows):
-                for col_idx in range(max_cols):
-                    # Calculate well center position
-                    well_center_x = wellplate_format.A1_X_MM + x_offset + col_idx * wellplate_format.WELL_SPACING_MM
-                    well_center_y = wellplate_format.A1_Y_MM + y_offset + row_idx * wellplate_format.WELL_SPACING_MM
-
-                    # Calculate well boundaries with padding
-                    well_radius = wellplate_format.WELL_SIZE_MM / 2.0
-                    padded_radius = well_radius + well_padding_mm
-
-                    well_min_x = well_center_x - padded_radius
-                    well_max_x = well_center_x + padded_radius
-                    well_min_y = well_center_y - padded_radius
-                    well_max_y = well_center_y + padded_radius
-
-                    # Check if this well intersects with the requested region
-                    if (well_max_x >= region_min_x and well_min_x <= region_max_x and
-                        well_max_y >= region_min_y and well_min_y <= region_max_y):
-
-                        well_row = chr(ord('A') + row_idx)
-                        well_column = col_idx + 1
-
-                        # Calculate the intersection region in well-relative coordinates
-                        intersection_min_x = max(region_min_x, well_min_x)
-                        intersection_max_x = min(region_max_x, well_max_x)
-                        intersection_min_y = max(region_min_y, well_min_y)
-                        intersection_max_y = min(region_max_y, well_max_y)
-
-                        # Convert to well-relative coordinates
-                        well_rel_center_x = ((intersection_min_x + intersection_max_x) / 2.0) - well_center_x
-                        well_rel_center_y = ((intersection_min_y + intersection_max_y) / 2.0) - well_center_y
-                        well_rel_width = intersection_max_x - intersection_min_x
-                        well_rel_height = intersection_max_y - intersection_min_y
-
-                        wells_to_query.append((well_row, well_column))
-                        well_regions.append({
-                            'well_row': well_row,
-                            'well_column': well_column,
-                            'well_center_x': well_center_x,
-                            'well_center_y': well_center_y,
-                            'well_rel_center_x': well_rel_center_x,
-                            'well_rel_center_y': well_rel_center_y,
-                            'well_rel_width': well_rel_width,
-                            'well_rel_height': well_rel_height,
-                            'abs_min_x': intersection_min_x,
-                            'abs_max_x': intersection_max_x,
-                            'abs_min_y': intersection_min_y,
-                            'abs_max_y': intersection_max_y
-                        })
-
-            if not wells_to_query:
-                logger.warning("No wells found that intersect with requested region")
+            # Get the single experiment canvas
+            canvas = self.experiment_manager.get_canvas(target_experiment)
+            if canvas is None:
+                logger.error(f"Canvas not found for experiment '{target_experiment}'")
                 return None
 
-            logger.info(f"Found {len(wells_to_query)} wells that intersect with requested region: {wells_to_query}")
+            # Convert center coordinates to pixel coordinates
+            center_x_px, center_y_px = canvas.stage_to_pixel_coords(center_x_mm, center_y_mm, scale_level)
 
-            # If only one well, get the region directly
-            if len(wells_to_query) == 1:
-                well_info = well_regions[0]
-                well_row = well_info['well_row']
-                well_column = well_info['well_column']
+            # Calculate pixel dimensions for the requested region
+            scale_factor = 4 ** scale_level
+            width_px = int(width_mm * 1000 / canvas.pixel_size_xy_um / scale_factor)
+            height_px = int(height_mm * 1000 / canvas.pixel_size_xy_um / scale_factor)
 
-                # Check if the well canvas exists
-                if not self._check_well_canvas_exists(well_row, well_column, well_plate_type, target_experiment):
-                    logger.warning(f"Well canvas for {well_row}{well_column} ({well_plate_type}) does not exist in experiment '{target_experiment}'")
-                    return None
+            # Get channel index
+            try:
+                channel_idx = canvas.get_zarr_channel_index(channel_name)
+            except ValueError as e:
+                logger.warning(f"Channel '{channel_name}' not found: {e}")
+                return None
 
-                # Get well canvas and extract region
-                canvas = self.experiment_manager.get_well_canvas(well_row, well_column, well_plate_type, well_padding_mm, target_experiment)
-
-                # Calculate absolute coordinates for the intersection region
-                intersection_center_x = (well_info['abs_min_x'] + well_info['abs_max_x']) / 2.0
-                intersection_center_y = (well_info['abs_min_y'] + well_info['abs_max_y']) / 2.0
-                intersection_width = well_info['abs_max_x'] - well_info['abs_min_x']
-                intersection_height = well_info['abs_max_y'] - well_info['abs_min_y']
-
-                # CRITICAL: Use pixel-based read to get exact bounds and ensure alignment
-                # Convert to pixel coordinates using canvas coordinate system
-                intersection_center_x_px, intersection_center_y_px = canvas.stage_to_pixel_coords(
-                    intersection_center_x, intersection_center_y, scale_level
-                )
-
-                # Calculate pixel dimensions for the intersection region
-                scale_factor = 4 ** scale_level
-                intersection_width_px = int(intersection_width * 1000 / canvas.pixel_size_xy_um / scale_factor)
-                intersection_height_px = int(intersection_height * 1000 / canvas.pixel_size_xy_um / scale_factor)
-
-                # Get channel index for pixel-based read
-                try:
-                    channel_idx = canvas.get_zarr_channel_index(channel_name)
-                except ValueError as e:
-                    logger.warning(f"Channel '{channel_name}' not found in well {well_row}{well_column}: {e}")
-                    return None
-
-                # Use pixel-based read to get exact bounds
-                region, read_bounds = canvas.get_canvas_region_pixels(
-                    intersection_center_x_px, intersection_center_y_px,
-                    intersection_width_px, intersection_height_px,
-                    scale=scale_level, channel_idx=channel_idx, timepoint=timepoint
-                )
-
-                if region is None or read_bounds is None:
-                    logger.warning(f"Failed to get region from well {well_row}{well_column}")
-                    return None
-
-                logger.info(f"Retrieved single-well region from {well_row}{well_column}, shape: {region.shape}, "
-                           f"read bounds x=[{read_bounds['x_start']}:{read_bounds['x_end']}], "
-                           f"y=[{read_bounds['y_start']}:{read_bounds['y_end']}]")
-                return region
-
-            # Multiple wells - need to stitch them together
-            logger.info(f"Stitching regions from {len(wells_to_query)} wells")
-
-            # Get first canvas to determine pixel size for output image (use canvas pixel size for consistency)
-            first_canvas = self.experiment_manager.get_well_canvas(
-                well_regions[0]['well_row'], well_regions[0]['well_column'],
-                well_plate_type, well_padding_mm, target_experiment
+            # Read region directly from canvas
+            region, read_bounds = canvas.get_canvas_region_pixels(
+                center_x_px, center_y_px,
+                width_px, height_px,
+                scale=scale_level, channel_idx=channel_idx, timepoint=timepoint
             )
-            canvas_pixel_size_um = first_canvas.pixel_size_xy_um
 
-            # Calculate the output image dimensions at the requested scale using canvas pixel size
-            scale_factor = 4 ** scale_level  # Each scale level is 4x smaller
-            output_width_pixels = int(width_mm * 1000 / canvas_pixel_size_um / scale_factor)
-            output_height_pixels = int(height_mm * 1000 / canvas_pixel_size_um / scale_factor)
+            if region is None:
+                logger.warning(f"Failed to get region from canvas")
+                return None
 
-            # Create output image
-            output_image = np.zeros((output_height_pixels, output_width_pixels), dtype=np.uint8)
-
-            logger.info(f"Output image size: {output_width_pixels}x{output_height_pixels} pixels "
-                       f"(using canvas pixel size {canvas_pixel_size_um}µm, scale {scale_level})")
-
-            # Process each well and place its data in the output image
-            for well_info in well_regions:
-                well_row = well_info['well_row']
-                well_column = well_info['well_column']
-
-                # Check if the well canvas exists
-                if not self._check_well_canvas_exists(well_row, well_column, well_plate_type, target_experiment):
-                    continue
-
-                # Get well canvas and extract region
-                canvas = self.experiment_manager.get_well_canvas(well_row, well_column, well_plate_type, well_padding_mm, target_experiment)
-
-                # Calculate absolute coordinates for the intersection region
-                intersection_center_x = (well_info['abs_min_x'] + well_info['abs_max_x']) / 2.0
-                intersection_center_y = (well_info['abs_min_y'] + well_info['abs_max_y']) / 2.0
-                intersection_width = well_info['abs_max_x'] - well_info['abs_min_x']
-                intersection_height = well_info['abs_max_y'] - well_info['abs_min_y']
-
-                # CRITICAL: Use pixel-based read to get exact bounds and ensure alignment
-                # Convert to pixel coordinates using canvas coordinate system
-                intersection_center_x_px, intersection_center_y_px = canvas.stage_to_pixel_coords(
-                    intersection_center_x, intersection_center_y, scale_level
-                )
-
-                # Calculate pixel dimensions for the intersection region
-                intersection_width_px = int(intersection_width * 1000 / canvas.pixel_size_xy_um / scale_factor)
-                intersection_height_px = int(intersection_height * 1000 / canvas.pixel_size_xy_um / scale_factor)
-
-                # Get channel index for pixel-based read
-                try:
-                    channel_idx = canvas.get_zarr_channel_index(channel_name)
-                except ValueError as e:
-                    logger.warning(f"Channel '{channel_name}' not found in well {well_row}{well_column}: {e}")
-                    continue
-
-                # Use pixel-based read to get exact bounds
-                well_region, read_bounds = canvas.get_canvas_region_pixels(
-                    intersection_center_x_px, intersection_center_y_px,
-                    intersection_width_px, intersection_height_px,
-                    scale=scale_level, channel_idx=channel_idx, timepoint=timepoint
-                )
-
-                if well_region is None or read_bounds is None:
-                    logger.warning(f"Failed to get region from well {well_row}{well_column} - skipping")
-                    continue
-
-                # Calculate where to place this region in the output image
-                # Use canvas pixel size for consistency with read operation
-                rel_min_x = well_info['abs_min_x'] - region_min_x
-                rel_min_y = well_info['abs_min_y'] - region_min_y
-
-                # Convert to pixel coordinates using canvas pixel size (consistent with read)
-                start_x_px = int(rel_min_x * 1000 / canvas_pixel_size_um / scale_factor)
-                start_y_px = int(rel_min_y * 1000 / canvas_pixel_size_um / scale_factor)
-
-                # Ensure we don't go out of bounds
-                start_x_px = max(0, min(start_x_px, output_width_pixels))
-                start_y_px = max(0, min(start_y_px, output_height_pixels))
-
-                # Use exact read bounds to determine placement
-                # The well_region might be slightly different size due to canvas bounds
-                actual_read_width = read_bounds['x_end'] - read_bounds['x_start']
-                actual_read_height = read_bounds['y_end'] - read_bounds['y_start']
-
-                end_x_px = min(start_x_px + actual_read_width, output_width_pixels)
-                end_y_px = min(start_y_px + actual_read_height, output_height_pixels)
-
-                # Crop the well region if needed to fit in output
-                well_width = end_x_px - start_x_px
-                well_height = end_y_px - start_y_px
-
-                # Ensure we're using the correct region size
-                if well_region.shape[0] != actual_read_height or well_region.shape[1] != actual_read_width:
-                    logger.debug(f"Well {well_row}{well_column}: Region shape mismatch - "
-                               f"expected {actual_read_height}x{actual_read_width}, got {well_region.shape}")
-                    # Crop to match actual read bounds
-                    well_region = well_region[:actual_read_height, :actual_read_width]
-
-                if well_width > 0 and well_height > 0:
-                    # Ensure we don't exceed the actual region size
-                    crop_height = min(well_height, well_region.shape[0])
-                    crop_width = min(well_width, well_region.shape[1])
-
-                    cropped_well_region = well_region[:crop_height, :crop_width]
-
-                    # Adjust end coordinates to match cropped size
-                    end_x_px = start_x_px + crop_width
-                    end_y_px = start_y_px + crop_height
-
-                    output_image[start_y_px:end_y_px, start_x_px:end_x_px] = cropped_well_region
-
-                    logger.info(f"Placed region from well {well_row}{well_column} at ({start_x_px}, {start_y_px}) "
-                               f"with size ({crop_width}, {crop_height}), "
-                               f"read bounds x=[{read_bounds['x_start']}:{read_bounds['x_end']}], "
-                               f"y=[{read_bounds['y_start']}:{read_bounds['y_end']}]")
-
-            logger.info(f"Successfully stitched region from {len(well_regions)} wells, "
-                       f"output shape: {output_image.shape}")
-
-            return output_image
+            logger.info(f"Retrieved region shape: {region.shape}, "
+                       f"bounds x=[{read_bounds['x_start']}:{read_bounds['x_end']}], "
+                       f"y=[{read_bounds['y_start']}:{read_bounds['y_end']}]")
+            return region
 
         except Exception as e:
             logger.error(f"Error getting stitched region: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     def initialize_experiment_if_needed(self, experiment_name: str = None):
@@ -2544,7 +2133,7 @@ class SquidController:
                     # Check if it's time for next frame
                     if current_time - last_frame_time >= frame_interval:
                         frame_acquired = await self._acquire_and_process_frame(
-                            zarr_channel_idx, timepoint, well_plate_type, well_padding_mm, channel_name
+                            channel_name, timepoint
                         )
                         if frame_acquired:
                             stripe_frames += 1
@@ -2565,8 +2154,7 @@ class SquidController:
 
         return total_frames
 
-    async def _acquire_and_process_frame(self, zarr_channel_idx, timepoint=0,
-                                       well_plate_type='96', well_padding_mm=1.0, channel_name='BF LED matrix full'):
+    async def _acquire_and_process_frame(self, channel_name='BF LED matrix full', timepoint=0):
         """Acquire a single frame and add it to the stitching queue for quick scan."""
         # Get position before frame acquisition
         pos_before_x_mm, pos_before_y_mm, pos_before_z_mm, _ = self.navigationController.update_pos(self.microcontroller)
@@ -2635,13 +2223,13 @@ class SquidController:
             processed_img = self._process_frame_for_stitching(gray_img)
             logger.info(f'FRAME_ACQ: Image processed for stitching, new shape={processed_img.shape}, dtype={processed_img.dtype}, min={processed_img.min()}, max={processed_img.max()}')
 
-            # Add to stitching queue for quick scan (using well-based approach)
-            result = await self._add_image_to_zarr_quick_well_based(
+            # Add to stitching queue for quick scan
+            result = await self._add_image_to_canvas_async(
                 processed_img, avg_x_mm, avg_y_mm,
-                zarr_channel_idx, timepoint, well_plate_type, well_padding_mm, channel_name
+                channel_name, timepoint, quick_scan=True
             )
 
-            logger.info(f'FRAME_ACQ: Frame processing completed at position ({avg_x_mm:.2f}, {avg_y_mm:.2f}), timepoint={timepoint}, result={result}')
+            logger.debug(f'FRAME_ACQ: Frame processed at ({avg_x_mm:.2f}, {avg_y_mm:.2f}), result={result}')
             return True
         else:
             logger.warning(f'FRAME_ACQ: Camera frame is None at position ({avg_x_mm:.2f}, {avg_y_mm:.2f})')
@@ -2867,11 +2455,8 @@ class SquidController:
                     current_time = time.time()
                     if current_time - last_frame_time >= frame_interval:
                         # Acquire and process frame
-                        # Note: zarr_channel_idx (0) is a placeholder - the actual channel index
-                        # will be determined by _add_image_to_zarr_quick_well_based based on the detected well
                         success = await self._acquire_and_process_frame(
-                            0, timepoint,  # zarr_channel_idx=0 (placeholder, recalculated per well)
-                            well_plate_type, well_padding_mm, channel_name
+                            channel_name, timepoint
                         )
                         
                         if success:
@@ -2906,16 +2491,13 @@ class SquidController:
             # Restore original velocity settings
             self._restore_original_velocity(original_velocity_x, original_velocity_y)
             
-            # Stop stitching for all active well canvases that were created during the scan
-            logger.info('Stopping stitching for all active well canvases from region scan')
-            for well_id, well_canvas in self.experiment_manager.well_canvases.items():
-                if well_canvas.is_stitching:
-                    logger.info(f'Stopping stitching for well canvas {well_id}, queue_size={well_canvas.preprocessing_queue.qsize()}')
-                    await well_canvas.stop_stitching()
-                    # Activate channels that have data
-                    logger.info(f'Activating channels with data for well {well_id}')
-                    well_canvas.activate_channels_with_data()
-                    logger.info(f'Stopped stitching for well canvas {well_id}')
+            # Stop stitching for the experiment canvas
+            canvas = self.experiment_manager.get_canvas()
+            if canvas is not None and canvas.is_stitching:
+                logger.info(f'Stopping stitching for canvas, queue_size={canvas.preprocessing_queue.qsize()}')
+                await canvas.stop_stitching()
+                canvas.activate_channels_with_data()
+                logger.info('Stopped stitching for canvas')
             
             # Additional delay for zarr operations to complete
             logger.info('Waiting for all zarr operations to complete...')

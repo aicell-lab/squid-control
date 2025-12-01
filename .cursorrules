@@ -823,7 +823,6 @@ python squid_control/run_mirror_service.py [options]
 ### Experiment Management
 - **Experiment Creation**: Use `create_experiment()` with optional well initialization
 - **Active Experiment**: Always ensure active experiment before operations using `ensure_active_experiment()`
-- **Well Canvas Lifecycle**: Use `ExperimentManager.get_well_canvas()` for automatic canvas creation/access
 - **Multi-Well Operations**: Support scanning multiple wells in single operation with `wells_to_scan` parameter
 
 ### Export & Storage Guidelines

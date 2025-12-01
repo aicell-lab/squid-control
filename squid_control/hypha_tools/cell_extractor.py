@@ -15,7 +15,67 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from squid_control.control.config import (
+    WELLPLATE_FORMAT_6,
+    WELLPLATE_FORMAT_12,
+    WELLPLATE_FORMAT_24,
+    WELLPLATE_FORMAT_96,
+    WELLPLATE_FORMAT_384,
+)
+
 logger = logging.getLogger(__name__)
+
+
+def get_well_center(well_row: str, well_column: int, well_plate_type: str = '96', is_simulation: bool = True):
+    """
+    Get the center coordinates for a specific well.
+    
+    Args:
+        well_row: Well row letter (e.g., 'A', 'B')
+        well_column: Well column number (e.g., 1, 2, 3)
+        well_plate_type: Well plate type ('6', '12', '24', '96', '384')
+        is_simulation: Whether running in simulation mode (affects offset)
+        
+    Returns:
+        dict: Well center information with 'center_x_mm', 'center_y_mm', 'well_diameter_mm'
+    """
+    from squid_control.control.config import CONFIG
+    
+    # Get well plate format configuration
+    if well_plate_type == '6':
+        wellplate_format = WELLPLATE_FORMAT_6
+    elif well_plate_type == '12':
+        wellplate_format = WELLPLATE_FORMAT_12
+    elif well_plate_type == '24':
+        wellplate_format = WELLPLATE_FORMAT_24
+    elif well_plate_type == '96':
+        wellplate_format = WELLPLATE_FORMAT_96
+    elif well_plate_type == '384':
+        wellplate_format = WELLPLATE_FORMAT_384
+    else:
+        wellplate_format = WELLPLATE_FORMAT_96
+        
+    # Apply well plate offset for hardware mode
+    if is_simulation:
+        x_offset = 0
+        y_offset = 0
+    else:
+        x_offset = getattr(CONFIG, 'WELLPLATE_OFFSET_X_MM', 0)
+        y_offset = getattr(CONFIG, 'WELLPLATE_OFFSET_Y_MM', 0)
+        
+    # Convert row letter to index (A=0, B=1, etc.)
+    row_index = ord(well_row.upper()) - ord('A')
+    col_index = well_column - 1  # Convert to 0-based
+    
+    # Calculate well center
+    center_x = wellplate_format.A1_X_MM + x_offset + col_index * wellplate_format.WELL_SPACING_MM
+    center_y = wellplate_format.A1_Y_MM + y_offset + row_index * wellplate_format.WELL_SPACING_MM
+    
+    return {
+        'center_x_mm': center_x,
+        'center_y_mm': center_y,
+        'well_diameter_mm': wellplate_format.WELL_SIZE_MM,
+    }
 
 
 def parse_wkt_polygon(wkt_string: str) -> List[List[float]]:
@@ -149,17 +209,20 @@ def extract_cell_image_from_experiment(
         width_mm_padded = width_mm * (1 + padding_percent)
         height_mm_padded = height_mm * (1 + padding_percent)
         
-        # Get well canvas to access well center coordinates
-        well_row, well_col = well_id[0], int(well_id[1:])
-        canvas = experiment_manager.get_well_canvas(well_row, well_col, well_plate_type, experiment_name=experiment_name)
+        # Get the single experiment canvas
+        canvas = experiment_manager.get_canvas(experiment_name)
         
         if canvas is None:
-            raise ValueError(f"Cannot get canvas for well {well_id}")
+            raise ValueError(f"Cannot get canvas for experiment {experiment_name}")
+        
+        # Get well center coordinates to convert well-relative to stage coordinates
+        well_row, well_col = well_id[0], int(well_id[1:])
+        well_center = get_well_center(well_row, well_col, well_plate_type)
         
         # Convert well-relative coordinates to stage coordinates
         # Well center is at (0, 0) in well-relative coordinates
-        center_x_stage = canvas.well_center_x + center_x_well_relative
-        center_y_stage = canvas.well_center_y + center_y_well_relative
+        center_x_stage = well_center['center_x_mm'] + center_x_well_relative
+        center_y_stage = well_center['center_y_mm'] + center_y_well_relative
         
         logger.debug(f"Extracting cell: bbox_mm={bbox_mm}, center_stage=({center_x_stage:.3f}, {center_y_stage:.3f}), size=({width_mm_padded:.3f}, {height_mm_padded:.3f})")
         

@@ -589,18 +589,21 @@ async def segment_well_region_grid_based(
     }
 
     try:
-        # Get well canvas from source experiment
-        canvas = experiment_manager.get_well_canvas(
-            well_row, well_column, well_plate_type, well_padding_mm, source_experiment
-        )
+        # Get the single experiment canvas
+        canvas = experiment_manager.get_canvas(source_experiment)
+        if canvas is None:
+            raise ValueError(f"Cannot get canvas for experiment {source_experiment}")
 
-        # Get well center coordinates and canvas bounds
-        well_info = canvas.get_well_info()
-        center_x = well_info['well_info']['well_center_x_mm']
-        center_y = well_info['well_info']['well_center_y_mm']
-        well_diameter = well_info['well_info']['well_diameter_mm']
-        canvas_width_mm = well_info['canvas_info']['canvas_width_mm']
-        canvas_height_mm = well_info['canvas_info']['canvas_height_mm']
+        # Get well center coordinates using helper function
+        from squid_control.hypha_tools.cell_extractor import get_well_center
+        well_center = get_well_center(well_row, well_column, well_plate_type)
+        center_x = well_center['center_x_mm']
+        center_y = well_center['center_y_mm']
+        well_diameter = well_center['well_diameter_mm']
+        
+        # Use well diameter + padding for canvas bounds
+        canvas_width_mm = well_diameter + 2 * well_padding_mm
+        canvas_height_mm = well_diameter + 2 * well_padding_mm
 
         # Calculate tile size (use minimum to ensure tiles fit)
         base_tile_size_mm = min(canvas_width_mm, canvas_height_mm, well_diameter) / grid_size
@@ -1075,20 +1078,20 @@ async def segment_experiment_wells(
                 results['wells_failed'].append(well_id)
                 continue
 
-            # Get source canvas to check if it has data
-            try:
-                source_canvas = experiment_manager.get_well_canvas(
-                    well_row, well_column, well_plate_type, well_padding_mm, source_experiment
-                )
-            except Exception as e:
-                logger.warning(f"⚠️  Failed to open source well canvas for well {well_id}: {e}")
+            # Get the single experiment canvas
+            source_canvas = experiment_manager.get_canvas(source_experiment)
+            if source_canvas is None:
+                logger.warning(f"⚠️  No canvas found for experiment {source_experiment}")
                 logger.warning(f"   Skipping well {well_id}")
                 results['failed_wells'] += 1
                 results['wells_failed'].append(well_id)
                 continue
 
-            # Check if source canvas has data by reading a sample region at scale 4 (high scale = fast check)
-            # Scale 4 is very downsampled, so it's quick to read and gives a good indication if data exists
+            # Check if canvas has data in the well region by reading a sample at high scale (fast check)
+            # Use well center coordinates to check the specific well region
+            from squid_control.hypha_tools.cell_extractor import get_well_center
+            well_center = get_well_center(well_row, well_column, well_plate_type)
+            
             try:
                 # Check if scale 4 exists (some canvases may have fewer scales)
                 max_scale = min(4, len(source_canvas.zarr_arrays) - 1) if hasattr(source_canvas, 'zarr_arrays') and source_canvas.zarr_arrays else 0
@@ -1098,11 +1101,13 @@ async def segment_experiment_wells(
                     zarr_array = source_canvas.zarr_arrays[max_scale]
                     canvas_height, canvas_width = zarr_array.shape[3], zarr_array.shape[4]
                     
-                    # Read a small region from the center at scale 4 (or highest available scale)
-                    # Use a small region (e.g., 100x100 pixels) for fast checking
-                    sample_size = max(50, min(100, canvas_width // 4, canvas_height // 4))  # At least 50px, max 100px
-                    center_x_px = canvas_width // 2
-                    center_y_px = canvas_height // 2
+                    # Convert well center to pixel coordinates for the sample check
+                    center_x_px, center_y_px = source_canvas.stage_to_pixel_coords(
+                        well_center['center_x_mm'], well_center['center_y_mm'], max_scale
+                    )
+                    
+                    # Read a small region from the well center for fast checking
+                    sample_size = 100
                     
                     # Read sample region asynchronously to avoid blocking
                     sample_region, _ = await asyncio.to_thread(
@@ -1681,20 +1686,13 @@ async def process_segmentation_for_similarity_search(
         logger.info("📤 Preparing objects for upload (multi-threaded)...")
         timestamp = datetime.utcnow().isoformat() + "Z"
         
-        # Get pixel size from experiment (use first cell's well to get canvas)
+        # Get pixel size from experiment canvas
         pixel_size_um = 0.333  # Default fallback
         try:
-            if extracted_metadata:
-                first_well_id = extracted_metadata[0]['well_id']
-                well_row, well_col = first_well_id[0], int(first_well_id[1:])
-                canvas = experiment_manager.get_well_canvas(
-                    well_row, well_col, 
-                    well_plate_type="96",
-                    experiment_name=source_experiment
-                )
-                if canvas:
-                    pixel_size_um = canvas.pixel_size_xy_um
-                    logger.info(f"Using pixel size: {pixel_size_um} µm")
+            canvas = experiment_manager.get_canvas(source_experiment)
+            if canvas:
+                pixel_size_um = canvas.pixel_size_xy_um
+                logger.info(f"Using pixel size: {pixel_size_um} µm")
         except Exception as e:
             logger.warning(f"Failed to get pixel size from canvas, using default {pixel_size_um} µm: {e}")
         

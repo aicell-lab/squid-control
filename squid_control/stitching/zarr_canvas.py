@@ -31,10 +31,11 @@ if not logger.handlers:
     logger.addHandler(handler)
     logger.propagate = False  # Prevent double logging
 
-class WellZarrCanvasBase:
+class ZarrCanvas:
     """
-    Base class for well-specific zarr canvas functionality.
-    Contains the core stitching and zarr management functionality without single-canvas assumptions.
+    Zarr canvas for storing microscope images with absolute stage coordinates.
+    Supports multi-scale pyramid generation and async stitching.
+    Uses OME-NGFF format compatible with zarrita.js and vizarr.
     """
 
     def __init__(self, base_path: str, pixel_size_xy_um: float, stage_limits: Dict[str, float],
@@ -1465,37 +1466,6 @@ class WellZarrCanvasBase:
             self.zarr_array = None
         logger.info(f"Closed well canvas: {self.fileset_name}")
 
-    def export_to_zip(self, zip_path):
-        """
-        Export the well canvas to a ZIP file.
-        
-        Args:
-            zip_path (str): Path to the output ZIP file
-        """
-
-        try:
-            # Check if the zarr path exists
-            if not self.zarr_path.exists():
-                logger.warning(f"Zarr path does not exist: {self.zarr_path}")
-                return
-
-            # Create the ZIP file directly from the existing zarr data
-            with zipfile.ZipFile(zip_path, 'w', allowZip64=True, compression=zipfile.ZIP_STORED) as zf:
-                # Walk through the zarr directory and add all files
-                for root, dirs, files in os.walk(self.zarr_path):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        # Calculate relative path for the ZIP
-                        relative_path = os.path.relpath(file_path, self.zarr_path.parent)
-                        # Use forward slashes for ZIP paths and ensure it starts with "data.zarr/"
-                        arcname = "data.zarr/" + relative_path.replace(os.sep, '/').split('/', 1)[-1]
-                        zf.write(file_path, arcname)
-
-            logger.info(f"Exported well canvas to ZIP: {zip_path}")
-
-        except Exception as e:
-            logger.error(f"Failed to export well canvas to ZIP: {e}")
-            raise
 
     def save_preview(self, action_ID: str = "canvas_preview"):
         """Save a preview image of the canvas at different scales."""
@@ -1524,271 +1494,7 @@ class WellZarrCanvasBase:
         except Exception as e:
             logger.warning(f"Failed to save preview: {e}")
 
-    def _flush_and_sync_zarr_arrays(self):
-        """
-        Flush and synchronize all zarr arrays to ensure all data is written to disk.
-        This is critical before ZIP export to prevent race conditions.
-        """
-        try:
-            with self.zarr_lock:
-                if hasattr(self, 'zarr_arrays'):
-                    for scale, zarr_array in self.zarr_arrays.items():
-                        try:
-                            # Flush any pending writes to disk
-                            if hasattr(zarr_array, 'flush'):
-                                zarr_array.flush()
-                            # Sync the underlying store
-                            if hasattr(zarr_array.store, 'sync'):
-                                zarr_array.store.sync()
-                            logger.debug(f"Flushed and synced zarr array scale {scale}")
-                        except Exception as e:
-                            logger.warning(f"Error flushing zarr array scale {scale}: {e}")
 
-                # Also shutdown and recreate the thread pool to ensure all tasks are complete
-                if hasattr(self, 'executor'):
-                    self.executor.shutdown(wait=True)
-                    self.executor = ThreadPoolExecutor(max_workers=4)
-                    logger.info("Thread pool shutdown and recreated to ensure all zarr operations complete")
-
-                # Give the filesystem a moment to complete any pending I/O
-                time.sleep(0.1)
-
-                logger.info("All zarr arrays flushed and synchronized")
-
-        except Exception as e:
-            logger.error(f"Error during zarr flush and sync: {e}")
-            raise RuntimeError(f"Failed to flush zarr arrays: {e}")
-
-    def export_as_zip_file(self) -> str:
-        """
-        Export the entire zarr canvas as a zip file to a temporary file.
-        Uses robust ZIP64 creation that's compatible with S3 ZIP parsers.
-        Avoids memory corruption by writing directly to file.
-        
-        Returns:
-            str: Path to the temporary ZIP file (caller must clean up)
-        """
-        import os
-        import zipfile
-
-        # Create temporary file for ZIP creation in ZARR_PATH to avoid memory issues
-        # Ensure base_path exists
-        self.base_path.mkdir(parents=True, exist_ok=True)
-        temp_fd, temp_path = tempfile.mkstemp(suffix='.zip', prefix='zarr_export_', dir=str(self.base_path))
-
-        try:
-            # Close file descriptor immediately to avoid issues
-            os.close(temp_fd)
-            temp_fd = None  # Mark as closed
-
-            # CRITICAL: Ensure all zarr operations are complete before ZIP export
-            logger.info("Preparing zarr canvas for ZIP export...")
-            self._flush_and_sync_zarr_arrays()
-
-            # Force ZIP64 format explicitly for compatibility with S3 parser
-            # Use minimal compression for reliability with many small files
-            zip_kwargs = {
-                'mode': 'w',
-                'compression': zipfile.ZIP_STORED,  # No compression for reliability
-                'allowZip64': True,
-                'strict_timestamps': False  # Handle timestamp edge cases
-            }
-
-            # Create ZIP file with explicit ZIP64 support
-            with zipfile.ZipFile(temp_path, **zip_kwargs) as zip_file:
-                logger.info("Creating ZIP archive with explicit ZIP64 support...")
-
-                # Build file list first to validate and count
-                files_to_add = []
-                total_size = 0
-
-                for root, dirs, files in os.walk(self.zarr_path):
-                    for file in files:
-                        file_path = Path(root) / file
-
-                        # Skip files that don't exist or can't be read
-                        if not file_path.exists() or not file_path.is_file():
-                            logger.warning(f"Skipping non-existent or non-file: {file_path}")
-                            continue
-
-                        try:
-                            # Verify file is readable and get size
-                            file_size = file_path.stat().st_size
-                            total_size += file_size
-
-                            # Create relative path for ZIP archive
-                            relative_path = file_path.relative_to(self.zarr_path)
-                            # Use forward slashes for ZIP compatibility (standard requirement)
-                            arcname = "data.zarr/" + str(relative_path).replace(os.sep, '/')
-
-                            files_to_add.append((file_path, arcname, file_size))
-
-                        except OSError as e:
-                            logger.warning(f"Skipping unreadable file {file_path}: {e}")
-                            continue
-
-                logger.info(f"Validated {len(files_to_add)} files for ZIP archive (total: {total_size / (1024*1024):.1f} MB)")
-
-                # Check if we need ZIP64 format (more than 65535 files or 4GB total)
-                needs_zip64 = len(files_to_add) >= 65535 or total_size >= (4 * 1024 * 1024 * 1024)
-                if needs_zip64:
-                    logger.info(f"ZIP64 format required: {len(files_to_add)} files, {total_size / (1024*1024):.1f} MB")
-
-                # Add files to ZIP in sorted order for consistent central directory
-                files_to_add.sort(key=lambda x: x[1])  # Sort by arcname
-
-                processed_files = 0
-                for file_path, arcname, file_size in files_to_add:
-                    try:
-                        # Add file with explicit error handling
-                        zip_file.write(file_path, arcname=arcname)
-                        processed_files += 1
-
-                        # Progress logging every 1000 files
-                        if processed_files % 1000 == 0:
-                            logger.info(f"ZIP progress: {processed_files}/{len(files_to_add)} files processed")
-
-                    except Exception as e:
-                        logger.error(f"Failed to add file to ZIP: {file_path} -> {arcname}: {e}")
-                        continue
-
-                # Add metadata with proper JSON formatting
-                metadata = {
-                    "canvas_info": {
-                        "pixel_size_xy_um": self.pixel_size_xy_um,
-                        "rotation_angle_deg": self.rotation_angle_deg,
-                        "stage_limits": self.stage_limits,
-                        "channels": self.channels,
-                        "num_scales": self.num_scales,
-                        "canvas_size_px": {
-                            "width": self.canvas_width_px,
-                            "height": self.canvas_height_px
-                        },
-                        "export_timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
-                        "squid_canvas_version": "1.0",
-                        "zip_format": "ZIP64" if needs_zip64 else "standard"
-                    }
-                }
-
-                metadata_json = json.dumps(metadata, indent=2, ensure_ascii=False)
-                zip_file.writestr("squid_canvas_metadata.json", metadata_json.encode('utf-8'))
-                processed_files += 1
-
-                logger.info(f"ZIP creation completed: {processed_files} files processed")
-
-            # Get file size for validation
-            zip_size_mb = os.path.getsize(temp_path) / (1024 * 1024)
-
-            # Enhanced ZIP validation specifically for S3 compatibility
-            with open(temp_path, 'rb') as f:
-                zip_content_for_validation = f.read()
-            self._validate_zip_structure_for_s3(zip_content_for_validation)
-
-            logger.info(f"ZIP export successful: {zip_size_mb:.2f} MB, {processed_files} files")
-            return temp_path
-
-        except Exception as e:
-            logger.error(f"Failed to export zarr canvas as zip: {e}")
-            # Clean up temp file on error
-            try:
-                if 'temp_path' in locals() and os.path.exists(temp_path):
-                    os.unlink(temp_path)
-            except Exception:
-                pass
-            raise RuntimeError(f"Cannot export zarr canvas: {e}")
-        finally:
-            # Clean up file descriptor if still open
-            if temp_fd is not None:
-                try:
-                    os.close(temp_fd)
-                except Exception:
-                    pass  # Ignore errors closing fd
-
-    def _validate_zip_structure_for_s3(self, zip_content: bytes) -> None:
-        """
-        Validate ZIP file structure specifically for S3 ZIP parser compatibility.
-        Checks for proper central directory structure and ZIP64 format compliance.
-        
-        Args:
-            zip_content (bytes): The ZIP file content to validate
-            
-        Raises:
-            RuntimeError: If ZIP file structure is incompatible with S3 parser
-        """
-        try:
-            import io
-            import zipfile
-
-            # Basic ZIP file validation
-            zip_buffer = io.BytesIO(zip_content)
-            with zipfile.ZipFile(zip_buffer, 'r') as zip_file:
-                file_list = zip_file.namelist()
-                if not file_list:
-                    raise RuntimeError("ZIP file is empty")
-
-                zip_size_mb = len(zip_content) / (1024 * 1024)
-                file_count = len(file_list)
-
-                logger.info(f"Basic ZIP validation passed: {file_count} files, {zip_size_mb:.2f} MB")
-
-                # Check for ZIP64 indicators (critical for S3 parser)
-                is_zip64 = file_count >= 65535 or zip_size_mb >= 4000
-
-                if is_zip64:
-                    # For ZIP64 files, check that central directory can be found
-                    # This mimics what the S3 ZIP parser does
-                    logger.info("Validating ZIP64 central directory structure...")
-
-                    # Look for ZIP64 signatures in the file
-                    zip64_eocd_locator = b"PK\x06\x07"  # ZIP64 End of Central Directory Locator
-                    zip64_eocd = b"PK\x06\x06"          # ZIP64 End of Central Directory
-                    standard_eocd = b"PK\x05\x06"       # Standard End of Central Directory
-
-                    # Check the last 128KB for these signatures (like S3 parser does)
-                    tail_size = min(128 * 1024, len(zip_content))
-                    tail_data = zip_content[-tail_size:]
-
-                    has_zip64_locator = zip64_eocd_locator in tail_data
-                    has_zip64_eocd = zip64_eocd in tail_data
-                    has_standard_eocd = standard_eocd in tail_data
-
-                    logger.info(f"ZIP64 structure check: locator={has_zip64_locator}, eocd={has_zip64_eocd}, standard_eocd={has_standard_eocd}")
-
-                    # ZIP64 files should have proper directory structures
-                    if not (has_zip64_locator and has_standard_eocd):
-                        logger.warning("ZIP64 format validation issues detected")
-
-                    # Verify we can read file info (this is what S3 parser tries to do)
-                    test_files = min(10, len(file_list))
-                    for i in range(test_files):
-                        try:
-                            info = zip_file.getinfo(file_list[i])
-                            # Try to access file info that S3 parser needs
-                            _ = info.filename
-                            _ = info.file_size
-                            _ = info.compress_size
-                            _ = info.date_time
-                        except Exception as e:
-                            logger.warning(f"File info access issue for {file_list[i]}: {e}")
-
-                # Test random file access (S3 parser does this)
-                test_count = min(5, len(file_list))
-                for i in range(0, len(file_list), max(1, len(file_list) // test_count)):
-                    try:
-                        with zip_file.open(file_list[i]) as f:
-                            # Read just 1 byte to verify file can be opened
-                            f.read(1)
-                    except Exception as e:
-                        logger.warning(f"File access test failed for {file_list[i]}: {e}")
-
-                logger.info("S3-compatible ZIP validation completed successfully")
-
-        except zipfile.BadZipFile as e:
-            logger.error(f"Invalid ZIP file format: {e}")
-            raise RuntimeError(f"Invalid ZIP file format: {e}")
-        except Exception as e:
-            logger.error(f"ZIP validation failed: {e}")
-            raise RuntimeError(f"ZIP validation failed: {e}")
 
     def get_export_info(self) -> dict:
         """
@@ -1910,697 +1616,430 @@ class WellZarrCanvasBase:
 
         logger.info("All zarr operations completed and synchronized")
 
-class WellZarrCanvas(WellZarrCanvasBase):
-    """
-    Well-specific zarr canvas for individual well imaging with well-center-relative coordinates.
-    
-    This class extends WellZarrCanvasBase to provide well-specific functionality:
-    - Well-center-relative coordinate system (0,0 at well center)
-    - Automatic well center calculation from well plate formats
-    - Canvas size based on well diameter + configurable padding
-    - Well-specific fileset naming (well_{row}{column}_{well_plate_type})
-    """
-
-    def __init__(self, well_row: str, well_column: int, well_plate_type: str = '96',
-                 padding_mm: float = 1.0, base_path: str = None,
-                 pixel_size_xy_um: float = 0.333, channels: List[str] = None, **kwargs):
-        """
-        Initialize well-specific canvas.
-        
-        Args:
-            well_row: Well row (e.g., 'A', 'B')
-            well_column: Well column (e.g., 1, 2, 3)
-            well_plate_type: Well plate type ('6', '12', '24', '96', '384')
-            padding_mm: Padding around well in mm (default 2.0)
-            base_path: Base directory for zarr storage
-            pixel_size_xy_um: Pixel size in micrometers
-            channels: List of channel names
-            **kwargs: Additional arguments passed to ZarrCanvas
-        """
-        # Import well plate format classes
-        from squid_control.control.config import (
-            CONFIG,
-        )
-
-        # Get well plate format
-        self.wellplate_format = self._get_wellplate_format(well_plate_type)
-
-        # Store well information
-        self.well_row = well_row
-        self.well_column = well_column
-        self.well_plate_type = well_plate_type
-        self.padding_mm = padding_mm
-
-        # Calculate well center coordinates (absolute stage coordinates)
-        if hasattr(CONFIG, 'WELLPLATE_OFFSET_X_MM') and hasattr(CONFIG, 'WELLPLATE_OFFSET_Y_MM'):
-            # Use offsets if available (hardware mode)
-            x_offset = CONFIG.WELLPLATE_OFFSET_X_MM
-            y_offset = CONFIG.WELLPLATE_OFFSET_Y_MM
-        else:
-            # No offsets (simulation mode)
-            x_offset = 0
-            y_offset = 0
-
-        self.well_center_x = (self.wellplate_format.A1_X_MM + x_offset +
-                             (well_column - 1) * self.wellplate_format.WELL_SPACING_MM)
-        self.well_center_y = (self.wellplate_format.A1_Y_MM + y_offset +
-                             (ord(well_row) - ord('A')) * self.wellplate_format.WELL_SPACING_MM)
-
-        # Calculate canvas size (well diameter + padding)
-        canvas_size_mm = self.wellplate_format.WELL_SIZE_MM + (2 * padding_mm)
-
-        # Define well-relative stage limits (centered around 0,0)
-        stage_limits = {
-            'x_positive': canvas_size_mm / 2,
-            'x_negative': -canvas_size_mm / 2,
-            'y_positive': canvas_size_mm / 2,
-            'y_negative': -canvas_size_mm / 2,
-            'z_positive': 6
-        }
-
-        # Create well-specific fileset name
-        fileset_name = f"well_{well_row}{well_column}_{well_plate_type}"
-
-        # Initialize parent ZarrCanvas with well-specific parameters
-        super().__init__(
-            base_path=base_path,
-            pixel_size_xy_um=pixel_size_xy_um,
-            stage_limits=stage_limits,
-            channels=channels,
-            fileset_name=fileset_name,
-            **kwargs
-        )
-
-        logger.info(f"WellZarrCanvas initialized for well {well_row}{well_column} ({well_plate_type})")
-        logger.info(f"Well center: ({self.well_center_x:.2f}, {self.well_center_y:.2f}) mm")
-        logger.info(f"Canvas size: {canvas_size_mm:.2f} mm, padding: {padding_mm:.2f} mm")
-
-    def _get_wellplate_format(self, well_plate_type: str):
-        """Get well plate format configuration."""
-        from squid_control.control.config import (
-            WELLPLATE_FORMAT_6,
-            WELLPLATE_FORMAT_12,
-            WELLPLATE_FORMAT_24,
-            WELLPLATE_FORMAT_96,
-            WELLPLATE_FORMAT_384,
-        )
-
-        if well_plate_type == '6':
-            return WELLPLATE_FORMAT_6
-        elif well_plate_type == '12':
-            return WELLPLATE_FORMAT_12
-        elif well_plate_type == '24':
-            return WELLPLATE_FORMAT_24
-        elif well_plate_type == '96':
-            return WELLPLATE_FORMAT_96
-        elif well_plate_type == '384':
-            return WELLPLATE_FORMAT_384
-        else:
-            return WELLPLATE_FORMAT_96  # Default
-
-    def stage_to_pixel_coords(self, x_mm: float, y_mm: float, scale: int = 0) -> Tuple[int, int]:
-        """
-        Convert absolute stage coordinates to well-relative pixel coordinates.
-        
-        Args:
-            x_mm: Absolute X position in mm
-            y_mm: Absolute Y position in mm
-            scale: Scale level
-            
-        Returns:
-            Tuple of (x_pixel, y_pixel) coordinates relative to well center
-        """
-        # Convert absolute coordinates to well-relative coordinates
-        well_relative_x = x_mm - self.well_center_x
-        well_relative_y = y_mm - self.well_center_y
-
-        # Use parent's coordinate conversion with well-relative coordinates
-        return super().stage_to_pixel_coords(well_relative_x, well_relative_y, scale)
-
-    def get_well_info(self) -> dict:
-        """
-        Get comprehensive information about this well canvas.
-        
-        Returns:
-            dict: Well information including coordinates, size, and metadata
-        """
-        return {
-            "well_info": {
-                "row": self.well_row,
-                "column": self.well_column,
-                "well_id": f"{self.well_row}{self.well_column}",
-                "well_plate_type": self.well_plate_type,
-                "well_center_x_mm": self.well_center_x,
-                "well_center_y_mm": self.well_center_y,
-                "well_diameter_mm": self.wellplate_format.WELL_SIZE_MM,
-                "well_spacing_mm": self.wellplate_format.WELL_SPACING_MM,
-                "padding_mm": self.padding_mm
-            },
-            "canvas_info": {
-                "canvas_width_mm": self.stage_limits['x_positive'] - self.stage_limits['x_negative'],
-                "canvas_height_mm": self.stage_limits['y_positive'] - self.stage_limits['y_negative'],
-                "coordinate_system": "well_relative",
-                "origin": "well_center",
-                "canvas_width_px": self.canvas_width_px,
-                "canvas_height_px": self.canvas_height_px,
-                "pixel_size_xy_um": self.pixel_size_xy_um
-            }
-        }
-
 
 class ExperimentManager:
     """
-    Manages experiment folders containing well-specific zarr canvases.
-    
-    Each experiment is a folder containing multiple well canvases:
-    ZARR_PATH/experiment_name/A1_96.zarr, A2_96.zarr, etc.
-    
-    This replaces the single-canvas system with a well-separated approach.
+    Manages experiments with single zarr canvas per experiment.
+    Each experiment has one flat canvas covering the full stage area.
     """
-
-    def __init__(self, base_path: str, pixel_size_xy_um: float):
+    
+    def __init__(self, base_path: str, pixel_size_xy_um: float, stage_limits: Dict[str, float] = None):
         """
         Initialize the experiment manager.
         
         Args:
-            base_path: Base directory for zarr storage (from ZARR_PATH env variable)
+            base_path: Base directory for experiment storage
             pixel_size_xy_um: Pixel size in micrometers
+            stage_limits: Optional stage limits dict. If None, uses defaults from CONFIG.
         """
         self.base_path = Path(base_path)
         self.pixel_size_xy_um = pixel_size_xy_um
-        self.current_experiment = None  # Current experiment name
-        self.well_canvases = {}  # {well_id: WellZarrCanvas} for current experiment
-
-        # Ensure base directory exists
+        
+        # Get stage limits from CONFIG if not provided
+        if stage_limits is None:
+            try:
+                from squid_control.control.config import CONFIG
+                self.stage_limits = {
+                    'x_positive': CONFIG.STAGE_LIMITS.X_POSITIVE,
+                    'x_negative': CONFIG.STAGE_LIMITS.X_NEGATIVE,
+                    'y_positive': CONFIG.STAGE_LIMITS.Y_POSITIVE,
+                    'y_negative': CONFIG.STAGE_LIMITS.Y_NEGATIVE
+                }
+            except Exception as e:
+                logger.warning(f"Could not load stage limits from CONFIG: {e}. Using defaults.")
+                self.stage_limits = {
+                    'x_positive': 120.0,
+                    'x_negative': 0.0,
+                    'y_positive': 86.0,
+                    'y_negative': 0.0
+                }
+        else:
+            self.stage_limits = stage_limits
+        
+        # Current active experiment
+        self.current_experiment = None
+        self.current_experiment_name = None  # Alias for backward compatibility
+        
+        # Single canvas per experiment
+        self._canvas: ZarrCanvas = None
+        
+        # Legacy well_canvases dict for backward compatibility
+        self.well_canvases: Dict[str, ZarrCanvas] = {}
+        
+        # Ensure base path exists
         self.base_path.mkdir(parents=True, exist_ok=True)
-
-        # Set 'default' as the default experiment
-        self._ensure_default_experiment()
-
+        
         logger.info(f"ExperimentManager initialized at {self.base_path}")
-
-    def _ensure_default_experiment(self):
+    
+    def create_experiment(self, experiment_name: str, well_plate_type: str = "96",
+                          well_padding_mm: float = 1.0, initialize_all_wells: bool = False) -> Dict:
         """
-        Ensure that a 'default' experiment exists and is set as the current experiment.
-        Creates the experiment if it doesn't exist.
-        """
-        default_experiment_name = 'default'
-        default_experiment_path = self.base_path / default_experiment_name
-
-        # Create default experiment if it doesn't exist
-        if not default_experiment_path.exists():
-            default_experiment_path.mkdir(parents=True, exist_ok=True)
-            logger.info(f"Created default experiment '{default_experiment_name}'")
-
-        # Set as current experiment
-        self.current_experiment = default_experiment_name
-        logger.info(f"Set '{default_experiment_name}' as default experiment")
-
-    @property
-    def current_experiment_name(self) -> str:
-        """Get the current experiment name."""
-        return self.current_experiment
-
-    def create_experiment(self, experiment_name: str, well_plate_type: str = '96',
-                         well_padding_mm: float = 1.0, initialize_all_wells: bool = False):
-        """
-        Create a new experiment folder and optionally initialize all well canvases.
+        Create a new experiment with a single zarr canvas.
         
         Args:
-            experiment_name: Name of the experiment
-            well_plate_type: Well plate type ('6', '12', '24', '96', '384')
-            well_padding_mm: Padding around each well in mm
-            initialize_all_wells: If True, create canvases for all wells in the plate
+            experiment_name: Name for the experiment
+            well_plate_type: Well plate format (for metadata only)
+            well_padding_mm: Padding around wells (for metadata only)
+            initialize_all_wells: Ignored (backward compatibility)
             
         Returns:
-            dict: Information about the created experiment
+            Dict with success status, experiment name, path, and creation timestamp
         """
         experiment_path = self.base_path / experiment_name
-
+        
         if experiment_path.exists():
-            raise ValueError(f"Experiment '{experiment_name}' already exists")
-
-        # Create experiment directory
-        experiment_path.mkdir(parents=True, exist_ok=True)
-
-        # Set as current experiment
+            logger.warning(f"Experiment '{experiment_name}' already exists, using existing")
+        else:
+            experiment_path.mkdir(parents=True, exist_ok=True)
+            logger.info(f"Created new experiment: {experiment_name}")
+        
+        # Set as active experiment
         self.current_experiment = experiment_name
-        self.well_canvases = {}
-
-        logger.info(f"Created experiment '{experiment_name}' at {experiment_path}")
-
-        # Optionally initialize all wells
-        initialized_wells = []
-        if initialize_all_wells:
-            well_positions = self._get_all_well_positions(well_plate_type)
-            for well_row, well_column in well_positions:
-                try:
-                    canvas = self.get_well_canvas(well_row, well_column, well_plate_type, well_padding_mm)
-                    initialized_wells.append(f"{well_row}{well_column}")
-                except Exception as e:
-                    logger.warning(f"Failed to initialize well {well_row}{well_column}: {e}")
-
-        return {
+        self.current_experiment_name = experiment_name
+        
+        # Get all available channels
+        try:
+            from squid_control.control.config import ChannelMapper
+            all_channels = ChannelMapper.get_all_human_names()
+        except Exception:
+            all_channels = ['BF LED matrix full']
+        
+        # Create single canvas for this experiment
+        self._canvas = ZarrCanvas(
+            base_path=str(experiment_path),
+            pixel_size_xy_um=self.pixel_size_xy_um,
+            stage_limits=self.stage_limits,
+            channels=all_channels,
+            fileset_name="data",
+            initialize_new=True
+        )
+        
+        # Save experiment metadata
+        metadata = {
             "experiment_name": experiment_name,
-            "experiment_path": str(experiment_path),
             "well_plate_type": well_plate_type,
-            "initialized_wells": initialized_wells,
-            "total_wells": len(initialized_wells) if initialize_all_wells else 0
+            "well_padding_mm": well_padding_mm,
+            "pixel_size_xy_um": self.pixel_size_xy_um,
+            "stage_limits": self.stage_limits,
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S")
         }
-
-    def set_active_experiment(self, experiment_name: str):
+        metadata_path = experiment_path / "experiment_metadata.json"
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        return {
+            "success": True,
+            "experiment_name": experiment_name,
+            "path": str(experiment_path),
+            "created_at": metadata["created_at"]
+        }
+    
+    def set_active_experiment(self, experiment_name: str) -> Dict:
         """
-        Set the active experiment.
+        Set an existing experiment as active.
         
         Args:
-            experiment_name: Name of the experiment to activate
+            experiment_name: Name of existing experiment
             
         Returns:
-            dict: Information about the activated experiment
+            Dict with success status
         """
         experiment_path = self.base_path / experiment_name
-
+        
         if not experiment_path.exists():
-            raise ValueError(f"Experiment '{experiment_name}' not found")
-
-        # Close current well canvases
-        for canvas in self.well_canvases.values():
-            canvas.close()
-
-        # Set new experiment
+            raise ValueError(f"Experiment '{experiment_name}' does not exist")
+        
         self.current_experiment = experiment_name
-        self.well_canvases = {}
-
-        logger.info(f"Set active experiment to '{experiment_name}'")
-
+        self.current_experiment_name = experiment_name
+        
+        # Load or create canvas
+        zarr_path = experiment_path / "data.zarr"
+        if zarr_path.exists():
+            # Get all available channels
+            try:
+                from squid_control.control.config import ChannelMapper
+                all_channels = ChannelMapper.get_all_human_names()
+            except Exception:
+                all_channels = ['BF LED matrix full']
+            
+            self._canvas = ZarrCanvas(
+                base_path=str(experiment_path),
+                pixel_size_xy_um=self.pixel_size_xy_um,
+                stage_limits=self.stage_limits,
+                channels=all_channels,
+                fileset_name="data",
+                initialize_new=False  # Open existing
+            )
+        else:
+            self._canvas = None
+        
+        logger.info(f"Set active experiment: {experiment_name}")
+        
         return {
+            "success": True,
             "experiment_name": experiment_name,
-            "experiment_path": str(experiment_path),
-            "message": f"Activated experiment '{experiment_name}'"
+            "path": str(experiment_path)
         }
-
-    def list_experiments(self):
+    
+    def get_canvas(self, experiment_name: str = None) -> ZarrCanvas:
         """
-        List all available experiments.
+        Get the canvas for an experiment.
+        
+        Args:
+            experiment_name: Optional experiment name. Uses current if None.
+            
+        Returns:
+            ZarrCanvas instance
+        """
+        target_experiment = experiment_name or self.current_experiment
+        
+        if target_experiment is None:
+            raise ValueError("No active experiment. Create or set one first.")
+        
+        # If requesting different experiment, switch to it
+        if target_experiment != self.current_experiment:
+            self.set_active_experiment(target_experiment)
+        
+        # Create canvas if doesn't exist
+        if self._canvas is None:
+            experiment_path = self.base_path / target_experiment
+            
+            try:
+                from squid_control.control.config import ChannelMapper
+                all_channels = ChannelMapper.get_all_human_names()
+            except Exception:
+                all_channels = ['BF LED matrix full']
+            
+            self._canvas = ZarrCanvas(
+                base_path=str(experiment_path),
+                pixel_size_xy_um=self.pixel_size_xy_um,
+                stage_limits=self.stage_limits,
+                channels=all_channels,
+                fileset_name="data",
+                initialize_new=True
+            )
+        
+        return self._canvas
+    
+    def list_experiments(self) -> Dict:
+        """
+        List all experiments.
         
         Returns:
-            dict: List of experiments and their information
+            Dict with list of experiments and metadata
         """
         experiments = []
-
-        try:
-            for item in self.base_path.iterdir():
-                if item.is_dir():
-                    # Count well canvases in this experiment
-                    well_count = len([f for f in item.iterdir() if f.is_dir() and f.suffix == '.zarr'])
-
-                    experiments.append({
+        
+        for item in self.base_path.iterdir():
+            if item.is_dir():
+                # Check if it's a valid experiment (has zarr or metadata)
+                zarr_path = item / "data.zarr"
+                metadata_path = item / "experiment_metadata.json"
+                
+                if zarr_path.exists() or metadata_path.exists():
+                    exp_info = {
                         "name": item.name,
                         "path": str(item),
-                        "is_active": item.name == self.current_experiment,
-                        "well_count": well_count
-                    })
-        except Exception as e:
-            logger.error(f"Error listing experiments: {e}")
-
+                        "has_data": zarr_path.exists()
+                    }
+                    
+                    # Get size if zarr exists
+                    if zarr_path.exists():
+                        try:
+                            total_size = sum(f.stat().st_size for f in zarr_path.rglob('*') if f.is_file())
+                            exp_info["size_mb"] = total_size / (1024 * 1024)
+                        except Exception:
+                            exp_info["size_mb"] = 0
+                    
+                    experiments.append(exp_info)
+        
         return {
             "experiments": experiments,
             "active_experiment": self.current_experiment,
             "total_count": len(experiments)
         }
-
-    def remove_experiment(self, experiment_name: str):
+    
+    def get_experiment_info(self, experiment_name: str) -> Dict:
         """
-        Remove an experiment and all its well canvases.
+        Get detailed info about an experiment.
         
         Args:
-            experiment_name: Name of the experiment to remove
+            experiment_name: Name of experiment
             
         Returns:
-            dict: Information about the removed experiment
+            Dict with experiment metadata and canvas info
         """
-        if experiment_name == self.current_experiment:
-            raise ValueError(f"Cannot remove active experiment '{experiment_name}'. Please switch to another experiment first.")
-
         experiment_path = self.base_path / experiment_name
-
+        
         if not experiment_path.exists():
-            raise ValueError(f"Experiment '{experiment_name}' not found")
-
-        # Remove experiment directory and all contents
-        shutil.rmtree(experiment_path)
-
-        logger.info(f"Removed experiment '{experiment_name}'")
-
-        return {
+            raise ValueError(f"Experiment '{experiment_name}' does not exist")
+        
+        info = {
             "experiment_name": experiment_name,
-            "message": f"Removed experiment '{experiment_name}'"
+            "path": str(experiment_path),
+            "zarr_path": str(experiment_path / "data.zarr"),
+            "is_active": experiment_name == self.current_experiment
         }
-
-    def reset_experiment(self, experiment_name: str = None):
-        """
-        Reset an experiment by removing all well canvases but keeping the folder.
         
-        Args:
-            experiment_name: Name of the experiment to reset (default: current experiment)
+        # Load metadata if exists
+        metadata_path = experiment_path / "experiment_metadata.json"
+        if metadata_path.exists():
+            with open(metadata_path) as f:
+                info["metadata"] = json.load(f)
+        
+        # Get canvas info if exists
+        zarr_path = experiment_path / "data.zarr"
+        if zarr_path.exists():
+            try:
+                total_size = sum(f.stat().st_size for f in zarr_path.rglob('*') if f.is_file())
+                info["total_size_mb"] = total_size / (1024 * 1024)
+                info["file_count"] = sum(1 for f in zarr_path.rglob('*') if f.is_file())
+            except Exception:
+                info["total_size_mb"] = 0
+                info["file_count"] = 0
             
-        Returns:
-            dict: Information about the reset experiment
-        """
-        if experiment_name is None:
-            experiment_name = self.current_experiment
-
-        if experiment_name is None:
-            raise ValueError("No experiment specified and no active experiment")
-
-        experiment_path = self.base_path / experiment_name
-
-        if not experiment_path.exists():
-            raise ValueError(f"Experiment '{experiment_name}' not found")
-
-        # Close well canvases if this is the active experiment
-        if experiment_name == self.current_experiment:
-            for canvas in self.well_canvases.values():
-                canvas.close()
-            self.well_canvases = {}
-
-        # Remove all .zarr directories in the experiment folder
-        removed_count = 0
-        for item in experiment_path.iterdir():
-            if item.is_dir() and item.suffix == '.zarr':
-                import shutil
-                shutil.rmtree(item)
-                removed_count += 1
-
-        # If this is the active experiment, also deactivate all channels in active canvases
-        if experiment_name == self.current_experiment:
-            for canvas in self.well_canvases.values():
+            # Try to load OME-Zarr metadata for backward compatibility
+            zattrs_path = zarr_path / ".zattrs"
+            if zattrs_path.exists():
                 try:
-                    canvas.deactivate_all_channels()
-                except Exception as e:
-                    logger.warning(f"Failed to deactivate channels in canvas: {e}")
-
-        logger.info(f"Reset experiment '{experiment_name}', removed {removed_count} well canvases")
-
-        return {
-            "experiment_name": experiment_name,
-            "removed_wells": removed_count,
-            "message": f"Reset experiment '{experiment_name}'"
-        }
-
-    def get_well_canvas(self, well_row: str, well_column: int, well_plate_type: str = '96',
-                       padding_mm: float = 1.0, experiment_name: str = None):
+                    with open(zattrs_path) as f:
+                        zattrs = json.load(f)
+                    if "omero" in zattrs:
+                        info["omero"] = zattrs["omero"]
+                except Exception:
+                    pass
+        
+        # For backward compatibility, include empty well_canvases list
+        info["well_canvases"] = []
+        info["well_count"] = 0
+        info["total_wells"] = 0
+        
+        return info
+    
+    def remove_experiment(self, experiment_name: str) -> Dict:
         """
-        Get or create a well canvas for the specified experiment.
+        Remove an experiment and all its data.
         
         Args:
-            well_row: Well row (e.g., 'A', 'B')
-            well_column: Well column (e.g., 1, 2, 3)
-            well_plate_type: Well plate type ('6', '12', '24', '96', '384')
-            padding_mm: Padding around well in mm
-            experiment_name: Name of the experiment to get canvas from (default: None uses current experiment)
+            experiment_name: Name of experiment to remove
             
         Returns:
-            WellZarrCanvas: The well-specific canvas
+            Dict with success status
         """
-        target_experiment = experiment_name if experiment_name is not None else self.current_experiment
-        if target_experiment is None:
-            raise RuntimeError("No experiment specified and no active experiment. Create or set an experiment first.")
-
-        well_id = f"{well_row}{well_column}_{well_plate_type}"
-
-        # If requesting from current experiment, use cached canvases
-        if target_experiment == self.current_experiment and well_id in self.well_canvases:
-            return self.well_canvases[well_id]
-
-        # For different experiments or new canvases, create/load directly
-        experiment_path = self.base_path / target_experiment
-
-        # Ensure experiment directory exists
-        if not experiment_path.exists():
-            raise ValueError(f"Experiment '{target_experiment}' does not exist")
-
-        from squid_control.control.config import CONFIG, ChannelMapper
-        all_channels = ChannelMapper.get_all_human_names()
-
-        canvas = WellZarrCanvas(
-            well_row=well_row,
-            well_column=well_column,
-            well_plate_type=well_plate_type,
-            padding_mm=padding_mm,
-            base_path=str(experiment_path),  # Use experiment folder as base
-            pixel_size_xy_um=self.pixel_size_xy_um,
-            channels=all_channels,
-            rotation_angle_deg=CONFIG.STITCHING_ROTATION_ANGLE_DEG,
-            initial_timepoints=20,
-            timepoint_expansion_chunk=10
-        )
-
-        # Only cache if it's for the current experiment
-        if target_experiment == self.current_experiment:
-            self.well_canvases[well_id] = canvas
-            logger.info(f"Created and cached well canvas {well_row}{well_column} for current experiment '{self.current_experiment}'")
-        else:
-            logger.info(f"Created well canvas {well_row}{well_column} for experiment '{target_experiment}' (not cached)")
-
-        return canvas
-
-    def list_well_canvases(self):
-        """
-        List all well canvases in the current experiment.
+        experiment_path = self.base_path / experiment_name
         
-        Returns:
-            dict: Information about well canvases
+        if not experiment_path.exists():
+            raise ValueError(f"Experiment '{experiment_name}' does not exist")
+        
+        # Close canvas if it's the current one
+        if self.current_experiment == experiment_name:
+            if self._canvas:
+                self._canvas.close()
+                self._canvas = None
+            self.current_experiment = None
+            self.current_experiment_name = None
+        
+        # Remove the directory
+        shutil.rmtree(experiment_path)
+        
+        logger.info(f"Removed experiment: {experiment_name}")
+        
+        return {
+            "success": True,
+            "experiment_name": experiment_name,
+            "message": f"Experiment '{experiment_name}' has been removed"
+        }
+    
+    def reset_experiment(self, experiment_name: str) -> Dict:
         """
-        if self.current_experiment is None:
+        Reset an experiment by clearing all data but keeping the structure.
+        
+        Args:
+            experiment_name: Name of experiment to reset
+            
+        Returns:
+            Dict with success status
+        """
+        experiment_path = self.base_path / experiment_name
+        
+        if not experiment_path.exists():
+            raise ValueError(f"Experiment '{experiment_name}' does not exist")
+        
+        # Close canvas if it's the current one
+        if self.current_experiment == experiment_name and self._canvas:
+            self._canvas.close()
+            self._canvas = None
+        
+        # Remove zarr data
+        zarr_path = experiment_path / "data.zarr"
+        if zarr_path.exists():
+            shutil.rmtree(zarr_path)
+        
+        logger.info(f"Reset experiment: {experiment_name}")
+        
+        return {
+            "success": True,
+            "experiment_name": experiment_name,
+            "message": f"Experiment '{experiment_name}' has been reset"
+        }
+    
+    def list_well_canvases(self, experiment_name: str = None) -> Dict:
+        """
+        List well canvases for an experiment.
+        For backward compatibility - returns single canvas info.
+        
+        Args:
+            experiment_name: Experiment name (uses current if None)
+            
+        Returns:
+            Dict with well_canvases list, experiment_name, and total_count
+        """
+        target_experiment = experiment_name or self.current_experiment
+        
+        if target_experiment is None:
             return {
                 "well_canvases": [],
                 "experiment_name": None,
                 "total_count": 0
             }
-
-        canvases = []
-
-        # List active canvases
-        for well_id, canvas in self.well_canvases.items():
-            well_info = canvas.get_well_info()
-            canvases.append({
-                "well_id": well_id,
-                "well_row": canvas.well_row,
-                "well_column": canvas.well_column,
-                "well_plate_type": canvas.well_plate_type,
-                "canvas_path": str(canvas.zarr_path),
-                "well_center_x_mm": canvas.well_center_x,
-                "well_center_y_mm": canvas.well_center_y,
-                "padding_mm": canvas.padding_mm,
-                "channels": len(canvas.channels),
-                "timepoints": len(canvas.available_timepoints),
-                "status": "active"
-            })
-
-        # List canvases on disk (in experiment folder)
-        experiment_path = self.base_path / self.current_experiment
-        for item in experiment_path.iterdir():
-            if item.is_dir() and item.suffix == '.zarr':
-                well_name = item.stem  # e.g., "well_A1_96"
-                if well_name not in [c["well_id"] for c in canvases]:
-                    canvases.append({
-                        "well_id": well_name,
-                        "canvas_path": str(item),
-                        "status": "on_disk"
-                    })
-
-        return {
-            "well_canvases": canvases,
-            "experiment_name": self.current_experiment,
-            "total_count": len(canvases)
-        }
-
-    def get_experiment_info(self, experiment_name: str = None):
-        """
-        Get detailed information about an experiment.
         
-        Args:
-            experiment_name: Name of the experiment (default: current experiment)
+        experiment_path = self.base_path / target_experiment
+        zarr_path = experiment_path / "data.zarr"
+        
+        if zarr_path.exists():
+            # Return single canvas info formatted as if it were a well canvas
+            try:
+                total_size = sum(f.stat().st_size for f in zarr_path.rglob('*') if f.is_file())
+                size_mb = total_size / (1024 * 1024)
+            except Exception:
+                size_mb = 0
             
-        Returns:
-            dict: Detailed experiment information including OME-Zarr metadata
-        """
-        if experiment_name is None:
-            experiment_name = self.current_experiment
-
-        if experiment_name is None:
-            raise ValueError("No experiment specified and no active experiment")
-
-        experiment_path = self.base_path / experiment_name
-
-        if not experiment_path.exists():
-            raise ValueError(f"Experiment '{experiment_name}' not found")
-
-        # Count well canvases and collect OME-Zarr metadata
-        well_canvases = []
-        total_size_bytes = 0
-        omero_metadata = None
-
-        for item in experiment_path.iterdir():
-            if item.is_dir() and item.suffix == '.zarr':
-                try:
-                    # Calculate size
-                    size_bytes = sum(f.stat().st_size for f in item.rglob('*') if f.is_file())
-                    total_size_bytes += size_bytes
-
-                    # Try to read OME-Zarr metadata from the first well canvas
-                    if omero_metadata is None:
-                        try:
-                            zarr_path = item / '.zattrs'
-                            if zarr_path.exists():
-                                with open(zarr_path) as f:
-                                    attrs = json.load(f)
-
-                                # Extract OME-Zarr metadata
-                                if 'omero' in attrs:
-                                    omero_metadata = attrs['omero']
-                                    logger.debug(f"Found OME-Zarr metadata in {item.name}")
-                        except Exception as e:
-                            logger.debug(f"Could not read OME-Zarr metadata from {item}: {e}")
-
-                    well_canvases.append({
-                        "name": item.stem,
-                        "path": str(item),
-                        "size_bytes": size_bytes,
-                        "size_mb": size_bytes / (1024 * 1024)
-                    })
-                except Exception as e:
-                    logger.warning(f"Error getting info for {item}: {e}")
-
-        # Prepare the result dictionary
-        result = {
-            "experiment_name": experiment_name,
-            "experiment_path": str(experiment_path),
-            "is_active": experiment_name == self.current_experiment,
-            "well_canvases": well_canvases,
-            "total_wells": len(well_canvases),
-            "total_size_bytes": total_size_bytes,
-            "total_size_mb": total_size_bytes / (1024 * 1024)
-        }
-
-        # Add OME-Zarr metadata if available
-        if omero_metadata is not None:
-            result["omero"] = omero_metadata
-        else:
-            # Provide default OME-Zarr structure if no metadata found
-            result["omero"] = {
-                "channels": [
-                    {
-                        "active": True,
-                        "coefficient": 1.0,
-                        "color": "FFFFFF",
-                        "family": "linear",
-                        "label": "BF LED matrix full",
-                        "window": {
-                            "end": 255,
-                            "start": 0
-                        }
-                    },
-                    {
-                        "active": True,
-                        "coefficient": 1.0,
-                        "color": "0000FF",
-                        "family": "linear",
-                        "label": "Fluorescence 405 nm Ex",
-                        "window": {
-                            "end": 255,
-                            "start": 0
-                        }
-                    },
-                    {
-                        "active": True,
-                        "coefficient": 1.0,
-                        "color": "00FF00",
-                        "family": "linear",
-                        "label": "Fluorescence 488 nm Ex",
-                        "window": {
-                            "end": 255,
-                            "start": 0
-                        }
-                    },
-                    {
-                        "active": True,
-                        "coefficient": 1.0,
-                        "color": "FF00FF",
-                        "family": "linear",
-                        "label": "Fluorescence 638 nm Ex",
-                        "window": {
-                            "end": 255,
-                            "start": 0
-                        }
-                    },
-                    {
-                        "active": True,
-                        "coefficient": 1.0,
-                        "color": "FF0000",
-                        "family": "linear",
-                        "label": "Fluorescence 561 nm Ex",
-                        "window": {
-                            "end": 255,
-                            "start": 0
-                        }
-                    },
-                    {
-                        "active": True,
-                        "coefficient": 1.0,
-                        "color": "00FFFF",
-                        "family": "linear",
-                        "label": "Fluorescence 730 nm Ex",
-                        "window": {
-                            "end": 255,
-                            "start": 0
-                        }
-                    }
-                ],
-                "id": 1,
-                "name": f"Squid Microscope Live Stitching ({experiment_name})",
-                "rdefs": {
-                    "defaultT": 0,
-                    "defaultZ": 0,
-                    "model": "color"
-                }
+            return {
+                "well_canvases": [{
+                    "well_id": "full_stage",
+                    "canvas_path": str(zarr_path),
+                    "size_mb": size_mb
+                }],
+                "experiment_name": target_experiment,
+                "total_count": 1
             }
-
-        return result
-
-    def _get_all_well_positions(self, well_plate_type: str):
-        """Get all well positions for a given plate type."""
-
-        if well_plate_type == '6':
-            max_rows, max_cols = 2, 3  # A-B, 1-3
-        elif well_plate_type == '12':
-            max_rows, max_cols = 3, 4  # A-C, 1-4
-        elif well_plate_type == '24':
-            max_rows, max_cols = 4, 6  # A-D, 1-6
-        elif well_plate_type == '96':
-            max_rows, max_cols = 8, 12  # A-H, 1-12
-        elif well_plate_type == '384':
-            max_rows, max_cols = 16, 24  # A-P, 1-24
-        else:
-            max_rows, max_cols = 8, 12  # Default to 96-well
-
-        positions = []
-        for row_idx in range(max_rows):
-            for col_idx in range(max_cols):
-                row_letter = chr(ord('A') + row_idx)
-                col_number = col_idx + 1
-                positions.append((row_letter, col_number))
-
-        return positions
-
+        
+        return {
+            "well_canvases": [],
+            "experiment_name": target_experiment,
+            "total_count": 0
+        }
+    
     def close(self):
-        """Close all well canvases and clean up resources."""
-        for canvas in self.well_canvases.values():
-            canvas.close()
-        self.well_canvases = {}
+        """Close all resources."""
+        if self._canvas:
+            self._canvas.close()
+            self._canvas = None
+        
+        self.well_canvases.clear()
         logger.info("ExperimentManager closed")
 
 
-# Alias for backward compatibility
-ZarrCanvas = WellZarrCanvasBase
+# Backward compatibility aliases
+WellZarrCanvasBase = ZarrCanvas
+WellZarrCanvas = ZarrCanvas
