@@ -316,9 +316,9 @@ class OfflineProcessor:
         # Create mapping from zarr names (used in filenames) to human names (expected by canvas)
         filename_to_human_mapping = {}
 
-        # Get all channel info and create zarr_name -> human_name mapping
+        # Get all channel info and create canonical_name -> human_name mapping
         for channel_info in ChannelMapper.CHANNELS.values():
-            filename_to_human_mapping[channel_info.zarr_name] = channel_info.human_name
+            filename_to_human_mapping[channel_info.canonical_name] = channel_info.human_name
 
         print(f"Filename to human name mapping: {filename_to_human_mapping}")
         return filename_to_human_mapping

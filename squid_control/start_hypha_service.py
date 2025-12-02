@@ -1070,7 +1070,7 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def snap(self, exposure_time: Optional[int]=Field(None, description="Camera exposure time in milliseconds (range: 1-900). If None, uses current microscope setting."), channel: Optional[int]=Field(None, description="Illumination channel: 0=Brightfield, 11=405nm, 12=488nm, 13=638nm, 14=561nm, 15=730nm. If None, uses current microscope channel."), intensity: Optional[int]=Field(None, description="LED illumination intensity percentage (range: 0-100). If None, uses current microscope setting."), context=None):
+    async def snap(self, exposure_time: Optional[int]=Field(None, description="Camera exposure time in milliseconds (range: 1-900). If None, uses current microscope setting."), channel: Optional[str]=Field(None, description="Channel canonical name (e.g., 'BF_LED_matrix_full', 'Fluorescence_405_nm_Ex', 'Fluorescence_488_nm_Ex', 'Fluorescence_638_nm_Ex', 'Fluorescence_561_nm_Ex', 'Fluorescence_730_nm_Ex'). If None, uses current microscope channel."), intensity: Optional[int]=Field(None, description="LED illumination intensity percentage (range: 0-100). If None, uses current microscope setting."), context=None):
         """
         Capture a single microscope image and save it to artifact manager with public access.
         Returns: HTTP URL string pointing to the captured 2048x2048 PNG image with public read access.
@@ -1092,20 +1092,34 @@ class MicroscopeHyphaService:
             await asyncio.sleep(0.1)
 
         try:
-            # Get current settings if parameters are None
+            # Convert channel (canonical name string) to channel_id (int) if provided, otherwise use current channel
             if channel is None:
-                channel = self.squidController.current_channel
-                logger.info(f"Using current channel: {channel}")
+                channel_id = self.squidController.current_channel
+                # Get canonical name from current channel for metadata
+                try:
+                    channel = ChannelMapper.id_to_zarr_name(channel_id)
+                    logger.info(f"Using current channel: {channel_id} ({channel})")
+                except ValueError:
+                    logger.warning(f"Current channel {channel_id} has no canonical name mapping")
+                    channel = None
+            else:
+                # Convert channel (canonical name string) to channel_id (int)
+                try:
+                    channel_id = ChannelMapper.zarr_name_to_id(channel)
+                    logger.info(f"Using channel: {channel_id} ({channel})")
+                except ValueError:
+                    valid_names = ChannelMapper.get_all_zarr_names()
+                    raise Exception(f"Invalid channel: {channel}. Valid channel names are: {valid_names}")
             
             # Get channel parameter name to access current intensity and exposure
-            param_name = self.channel_param_map.get(channel)
+            param_name = self.channel_param_map.get(channel_id)
             if param_name is None:
-                raise Exception(f"Invalid channel: {channel}. Valid channels are: {list(self.channel_param_map.keys())}")
+                raise Exception(f"Invalid channel ID: {channel_id}. Valid channel IDs are: {list(self.channel_param_map.keys())}")
             
             # Get current intensity and exposure from channel parameters
             current_params = getattr(self, param_name, [50, 100])  # Default fallback
             if not (isinstance(current_params, list) and len(current_params) == 2):
-                logger.warning(f"Parameter {param_name} for channel {channel} was not a list of two items. Using defaults.")
+                logger.warning(f"Parameter {param_name} for channel {channel_id} was not a list of two items. Using defaults.")
                 current_params = [50, 100]
             
             if intensity is None:
@@ -1118,12 +1132,12 @@ class MicroscopeHyphaService:
                 logger.info(f"Using current exposure_time: {exposure_time}")
 
             # Update current channel and parameters
-            self.squidController.current_channel = channel
+            self.squidController.current_channel = channel_id
             if param_name:
                 setattr(self, param_name, [intensity, exposure_time])
 
             # Capture image
-            gray_img = await self.squidController.snap_image(channel, intensity, exposure_time)
+            gray_img = await self.squidController.snap_image(channel_id, intensity, exposure_time)
             logger.info('The image is snapped')
             # Image is already uint8 from snap_image method
             # Resize the image to a standard size
@@ -1140,6 +1154,7 @@ class MicroscopeHyphaService:
             status = self.get_status()
             metadata = {
                 "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+                "channel_id": channel_id,
                 "channel": channel,
                 "intensity": intensity,
                 "exposure_time": exposure_time,
