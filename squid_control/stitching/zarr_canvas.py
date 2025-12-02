@@ -1662,10 +1662,10 @@ class ExperimentManager:
             try:
                 from squid_control.control.config import CONFIG
                 self.stage_limits = {
-                    'x_positive': CONFIG.STAGE_LIMITS.X_POSITIVE,
-                    'x_negative': CONFIG.STAGE_LIMITS.X_NEGATIVE,
-                    'y_positive': CONFIG.STAGE_LIMITS.Y_POSITIVE,
-                    'y_negative': CONFIG.STAGE_LIMITS.Y_NEGATIVE
+                    'x_positive': CONFIG.SOFTWARE_POS_LIMIT.X_POSITIVE,
+                    'x_negative': CONFIG.SOFTWARE_POS_LIMIT.X_NEGATIVE,
+                    'y_positive': CONFIG.SOFTWARE_POS_LIMIT.Y_POSITIVE,
+                    'y_negative': CONFIG.SOFTWARE_POS_LIMIT.Y_NEGATIVE
                 }
             except Exception as e:
                 logger.warning(f"Could not load stage limits from CONFIG: {e}. Using defaults.")
@@ -1803,12 +1803,15 @@ class ExperimentManager:
             "path": str(experiment_path)
         }
     
-    def get_canvas(self, experiment_name: str = None) -> ZarrCanvas:
+    def get_canvas(self, experiment_name: str = None, initialize_new: bool = True) -> ZarrCanvas:
         """
         Get the canvas for an experiment.
         
         Args:
             experiment_name: Optional experiment name. Uses current if None.
+            initialize_new: If True, create a new canvas (deletes existing). 
+                           If False, open existing canvas without reinitializing.
+                           Use False when resuming to preserve existing data!
             
         Returns:
             ZarrCanvas instance
@@ -1838,7 +1841,7 @@ class ExperimentManager:
                 stage_limits=self.stage_limits,
                 channels=all_channels,
                 fileset_name="data",
-                initialize_new=True
+                initialize_new=initialize_new
             )
         
         return self._canvas
