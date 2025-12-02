@@ -348,6 +348,9 @@ class FakeCanvas:
             "Fluorescence 561 nm Ex": 2
         }
         self.images_added = 0
+        self.is_stitching = False
+        import asyncio
+        self.preprocessing_queue = asyncio.Queue(maxsize=1000)  # Create queue immediately
     
     def get_zarr_channel_index(self, channel_name: str) -> int:
         return self.channel_to_zarr_index.get(channel_name, 0)
@@ -358,6 +361,12 @@ class FakeCanvas:
             "canvas_dimensions": {"width": 1024, "height": 1024},
             "num_scales": 6
         }
+    
+    async def start_stitching(self):
+        """Fake start_stitching method for testing."""
+        # Set is_stitching to False immediately so _wait_for_stitching_completion exits quickly
+        # The wait loop checks `if not canvas.is_stitching: break` first
+        self.is_stitching = False
 
 
 @pytest_asyncio.fixture
@@ -659,7 +668,9 @@ async def test_process_experiment_run_parallel_returns_positions(temp_saving_pat
 
     # Assert - should have positions_processed, not wells_processed
     assert result["success"] is True
-    assert "positions_processed" in result or "error" in result
+    assert "positions_processed" in result
+    assert isinstance(result["positions_processed"], int)
+    assert result["positions_processed"] >= 0
 
 
 @pytest.mark.asyncio  
