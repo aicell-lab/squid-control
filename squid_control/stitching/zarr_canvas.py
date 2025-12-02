@@ -93,7 +93,9 @@ class ZarrCanvas:
         self.num_scales = self._calculate_num_scales()
 
         # Thread pool for async zarr operations
-        self.executor = ThreadPoolExecutor(max_workers=4)
+        # Use most CPU cores for preprocessing (leave 1 for system)
+        num_workers = max(4, os.cpu_count() - 1) if os.cpu_count() else 4
+        self.executor = ThreadPoolExecutor(max_workers=num_workers)
 
         # Lock for thread-safe zarr access
         self.zarr_lock = threading.RLock()
@@ -861,7 +863,11 @@ class ZarrCanvas:
         timepoint = preprocessed_data['timepoint']
         is_quick_scan = preprocessed_data['is_quick_scan']
 
-        # Ensure timepoint exists in our tracking list
+        # MINIMAL LOCK SCOPE: Only hold lock for metadata operations
+        # Zarr arrays support concurrent writes to different regions, so we don't need
+        # the lock for actual array writes - this enables true parallelism
+        
+        # Step 1: Ensure timepoint exists (needs lock for metadata)
         if timepoint not in self.available_timepoints:
             with self.zarr_lock:
                 if timepoint not in self.available_timepoints:
@@ -869,74 +875,82 @@ class ZarrCanvas:
                     self.available_timepoints.sort()
                     self._update_timepoint_metadata()
 
+        # Step 2: Ensure zarr arrays are sized correctly (needs lock for potential resize)
         with self.zarr_lock:
-            # Ensure zarr arrays are sized correctly for this timepoint (lazy expansion)
             self._ensure_timepoint_exists_in_zarr(timepoint)
+            # Get zarr array references while holding lock (just references, very fast)
+            zarr_arrays_snapshot = {scale: self.zarr_arrays[scale] for scale in self.zarr_arrays}
 
-            # Write each preprocessed scale to zarr
-            for scale_data in preprocessed_data['preprocessed_scales']:
-                scale = scale_data['scale']
-                scaled_image = scale_data['scaled_image']
-                x_px = scale_data['x_px']
-                y_px = scale_data['y_px']
+        # Step 3: Write to zarr arrays WITHOUT holding the lock
+        # Zarr supports concurrent writes to different spatial regions
+        for scale_data in preprocessed_data['preprocessed_scales']:
+            scale = scale_data['scale']
+            scaled_image = scale_data['scaled_image']
+            x_px = scale_data['x_px']
+            y_px = scale_data['y_px']
 
-                # Get the zarr array for this scale
-                zarr_array = self.zarr_arrays[scale]
+            # Get the zarr array for this scale (from snapshot)
+            zarr_array = zarr_arrays_snapshot.get(scale)
+            if zarr_array is None:
+                continue
 
-                # Double-check zarr array dimensions
-                if channel_idx >= zarr_array.shape[1]:
-                    logger.error(f"Channel index {channel_idx} exceeds zarr array channel dimension {zarr_array.shape[1]}")
-                    continue
+            # Double-check zarr array dimensions
+            if channel_idx >= zarr_array.shape[1]:
+                logger.error(f"Channel index {channel_idx} exceeds zarr array channel dimension {zarr_array.shape[1]}")
+                continue
 
-                # Calculate bounds
-                y_start = max(0, y_px - scaled_image.shape[0] // 2)
-                y_end = min(zarr_array.shape[3], y_start + scaled_image.shape[0])
-                x_start = max(0, x_px - scaled_image.shape[1] // 2)
-                x_end = min(zarr_array.shape[4], x_start + scaled_image.shape[1])
+            # Calculate bounds (CPU work, no lock needed)
+            y_start = max(0, y_px - scaled_image.shape[0] // 2)
+            y_end = min(zarr_array.shape[3], y_start + scaled_image.shape[0])
+            x_start = max(0, x_px - scaled_image.shape[1] // 2)
+            x_end = min(zarr_array.shape[4], x_start + scaled_image.shape[1])
 
-                # Crop image if it extends beyond canvas
-                img_y_start = max(0, -y_px + scaled_image.shape[0] // 2)
-                img_y_end = img_y_start + (y_end - y_start)
-                img_x_start = max(0, -x_px + scaled_image.shape[1] // 2)
-                img_x_end = img_x_start + (x_end - x_start)
+            # Crop image if it extends beyond canvas
+            img_y_start = max(0, -y_px + scaled_image.shape[0] // 2)
+            img_y_end = img_y_start + (y_end - y_start)
+            img_x_start = max(0, -x_px + scaled_image.shape[1] // 2)
+            img_x_end = img_x_start + (x_end - x_start)
 
-                # CRITICAL: Always validate bounds before writing to zarr arrays
-                if y_end > y_start and x_end > x_start and img_y_end > img_y_start and img_x_end > img_x_start:
-                    # Additional validation to ensure image slice is within bounds
-                    img_y_end = min(img_y_end, scaled_image.shape[0])
-                    img_x_end = min(img_x_end, scaled_image.shape[1])
+            # CRITICAL: Always validate bounds before writing to zarr arrays
+            if y_end > y_start and x_end > x_start and img_y_end > img_y_start and img_x_end > img_x_start:
+                # Additional validation to ensure image slice is within bounds
+                img_y_end = min(img_y_end, scaled_image.shape[0])
+                img_x_end = min(img_x_end, scaled_image.shape[1])
 
-                    # Final check that we still have valid bounds after clamping
-                    if img_y_end > img_y_start and img_x_end > img_x_start:
-                        try:
-                            # Ensure image is uint8 before writing to zarr
-                            image_to_write = scaled_image[img_y_start:img_y_end, img_x_start:img_x_end]
+                # Final check that we still have valid bounds after clamping
+                if img_y_end > img_y_start and img_x_end > img_x_start:
+                    try:
+                        # Ensure image is uint8 before writing to zarr (CPU work, no lock)
+                        image_to_write = scaled_image[img_y_start:img_y_end, img_x_start:img_x_end]
 
-                            if image_to_write.dtype != np.uint8:
-                                # Convert to uint8 if needed
-                                if image_to_write.dtype == np.uint16:
-                                    image_to_write = (image_to_write / 256).astype(np.uint8)
-                                elif image_to_write.dtype in [np.float32, np.float64]:
-                                    # Normalize float data to 0-255
-                                    if image_to_write.max() > image_to_write.min():
-                                        image_to_write = ((image_to_write - image_to_write.min()) /
-                                                        (image_to_write.max() - image_to_write.min()) * 255).astype(np.uint8)
-                                    else:
-                                        image_to_write = np.zeros_like(image_to_write, dtype=np.uint8)
+                        if image_to_write.dtype != np.uint8:
+                            # Convert to uint8 if needed
+                            if image_to_write.dtype == np.uint16:
+                                image_to_write = (image_to_write / 256).astype(np.uint8)
+                            elif image_to_write.dtype in [np.float32, np.float64]:
+                                # Normalize float data to 0-255
+                                if image_to_write.max() > image_to_write.min():
+                                    image_to_write = ((image_to_write - image_to_write.min()) /
+                                                    (image_to_write.max() - image_to_write.min()) * 255).astype(np.uint8)
                                 else:
-                                    image_to_write = image_to_write.astype(np.uint8)
-
-                            # Double-check the final data type
-                            if image_to_write.dtype != np.uint8:
+                                    image_to_write = np.zeros_like(image_to_write, dtype=np.uint8)
+                            else:
                                 image_to_write = image_to_write.astype(np.uint8)
 
+                        # Double-check the final data type
+                        if image_to_write.dtype != np.uint8:
+                            image_to_write = image_to_write.astype(np.uint8)
+
+                        # LOCK ONLY FOR WRITE: Overlapping regions between tiles could cause race conditions
+                        # Lock scope is minimal - only the actual zarr write, not preprocessing
+                        with self.zarr_lock:
                             zarr_array[timepoint, channel_idx, z_idx, y_start:y_end, x_start:x_end] = image_to_write
 
-                        except IndexError as e:
-                            logger.error(f"ZARR_WRITE: IndexError writing to zarr array at scale {scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
-                            logger.error(f"ZARR_WRITE: Zarr array shape: {zarr_array.shape}, trying to access timepoint {timepoint}")
-                        except Exception as e:
-                            logger.error(f"ZARR_WRITE: Error writing to zarr array at scale {scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
+                    except IndexError as e:
+                        logger.error(f"ZARR_WRITE: IndexError writing to zarr array at scale {scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
+                        logger.error(f"ZARR_WRITE: Zarr array shape: {zarr_array.shape}, trying to access timepoint {timepoint}")
+                    except Exception as e:
+                        logger.error(f"ZARR_WRITE: Error writing to zarr array at scale {scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
 
     def add_image_sync(self, image: np.ndarray, x_mm: float, y_mm: float,
                        channel_idx: int = 0, z_idx: int = 0, timepoint: int = 0):
@@ -1168,7 +1182,9 @@ class ZarrCanvas:
         This enables parallel CPU work across multiple threads.
         """
         active_tasks = set()
-        max_concurrent = 4  # Match thread pool size for optimal parallelization
+        # Match thread pool size for optimal parallelization
+        # Use same number as executor workers
+        max_concurrent = max(4, os.cpu_count() - 1) if os.cpu_count() else 4
 
         logger.info(f"Preprocessing loop started (max {max_concurrent} concurrent tasks)")
 
@@ -1329,6 +1345,7 @@ class ZarrCanvas:
         logger.info(f"ZARR_WRITE_PIXELS: Writing image shape={image.shape}, dtype={image.dtype} to all scales, "
                    f"channel={channel_idx}, timepoint={timepoint}, pixel bounds at scale {scale} x=[{x_start_px}:?], y=[{y_start_px}:?]")
 
+        # MINIMAL LOCK SCOPE: Only hold lock for metadata operations
         # Validate timepoint
         if timepoint not in self.available_timepoints:
             with self.zarr_lock:
@@ -1338,118 +1355,121 @@ class ZarrCanvas:
                     self._update_timepoint_metadata()
                     logger.info(f"ZARR_WRITE_PIXELS: Created new timepoint {timepoint}")
 
+        # Step 1: Ensure zarr arrays are sized correctly (needs lock for potential resize)
         with self.zarr_lock:
-            # Ensure zarr arrays are sized correctly for this timepoint (lazy expansion)
             self._ensure_timepoint_exists_in_zarr(timepoint)
+            # Get zarr array references while holding lock (just references, very fast)
+            zarr_arrays_snapshot = {s: self.zarr_arrays[s] for s in self.zarr_arrays}
 
-            # Ensure image is uint8 before processing
-            image_base = image.copy()
-            if image_base.dtype != np.uint8:
-                logger.info(f"ZARR_WRITE_PIXELS: Converting image from {image_base.dtype} to uint8")
-                if image_base.dtype == np.uint16:
-                    image_base = (image_base / 256).astype(np.uint8)
-                elif image_base.dtype in [np.float32, np.float64]:
-                    if image_base.max() > image_base.min():
-                        image_base = ((image_base - image_base.min()) /
-                                    (image_base.max() - image_base.min()) * 255).astype(np.uint8)
-                    else:
-                        image_base = np.zeros_like(image_base, dtype=np.uint8)
+        # Step 2: Prepare image (CPU work, no lock needed)
+        image_base = image.copy()
+        if image_base.dtype != np.uint8:
+            logger.info(f"ZARR_WRITE_PIXELS: Converting image from {image_base.dtype} to uint8")
+            if image_base.dtype == np.uint16:
+                image_base = (image_base / 256).astype(np.uint8)
+            elif image_base.dtype in [np.float32, np.float64]:
+                if image_base.max() > image_base.min():
+                    image_base = ((image_base - image_base.min()) /
+                                (image_base.max() - image_base.min()) * 255).astype(np.uint8)
                 else:
-                    image_base = image_base.astype(np.uint8)
+                    image_base = np.zeros_like(image_base, dtype=np.uint8)
+            else:
+                image_base = image_base.astype(np.uint8)
 
-            # Write to all pyramid scales
-            scales_written = 0
-            for target_scale in range(self.num_scales):
-                try:
-                    # Validate zarr arrays exist for this scale
-                    if not hasattr(self, 'zarr_arrays') or target_scale not in self.zarr_arrays:
-                        logger.error(f"ZARR_WRITE_PIXELS: Zarr arrays not initialized or scale {target_scale} not available")
-                        continue
+        # Step 3: Write to all pyramid scales WITHOUT holding the lock
+        scales_written = 0
+        for target_scale in range(self.num_scales):
+            try:
+                # Validate zarr arrays exist for this scale
+                zarr_array = zarr_arrays_snapshot.get(target_scale)
+                if zarr_array is None:
+                    logger.error(f"ZARR_WRITE_PIXELS: Zarr arrays not initialized or scale {target_scale} not available")
+                    continue
 
-                    zarr_array = self.zarr_arrays[target_scale]
+                # Double-check zarr array dimensions
+                if channel_idx >= zarr_array.shape[1]:
+                    logger.error(f"ZARR_WRITE_PIXELS: Channel index {channel_idx} exceeds zarr array channel dimension {zarr_array.shape[1]}")
+                    continue
 
-                    # Double-check zarr array dimensions
-                    if channel_idx >= zarr_array.shape[1]:
-                        logger.error(f"ZARR_WRITE_PIXELS: Channel index {channel_idx} exceeds zarr array channel dimension {zarr_array.shape[1]}")
-                        continue
+                # Calculate scale factor from reference scale to target scale
+                # If input is at scale 0 and we're writing to scale 1, we need to downsample by 4
+                scale_factor_from_ref = 4 ** (target_scale - scale)
 
-                    # Calculate scale factor from reference scale to target scale
-                    # If input is at scale 0 and we're writing to scale 1, we need to downsample by 4
-                    scale_factor_from_ref = 4 ** (target_scale - scale)
+                # Convert pixel coordinates for this scale
+                x_start_px_scaled = x_start_px // scale_factor_from_ref if scale_factor_from_ref > 1 else x_start_px
+                y_start_px_scaled = y_start_px // scale_factor_from_ref if scale_factor_from_ref > 1 else y_start_px
 
-                    # Convert pixel coordinates for this scale
-                    x_start_px_scaled = x_start_px // scale_factor_from_ref if scale_factor_from_ref > 1 else x_start_px
-                    y_start_px_scaled = y_start_px // scale_factor_from_ref if scale_factor_from_ref > 1 else y_start_px
+                # Downsample image for this scale if needed
+                if target_scale == scale:
+                    # Same scale: use original image
+                    scaled_image = image_base
+                elif target_scale > scale:
+                    # Downscale: downsample image
+                    scale_factor_down = 4 ** (target_scale - scale)
+                    new_width = image_base.shape[1] // scale_factor_down
+                    new_height = image_base.shape[0] // scale_factor_down
+                    scaled_image = cv2.resize(image_base, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
+                else:
+                    # Upscale: this shouldn't happen but handle it
+                    scale_factor_up = 4 ** (scale - target_scale)
+                    new_width = image_base.shape[1] * scale_factor_up
+                    new_height = image_base.shape[0] * scale_factor_up
+                    scaled_image = cv2.resize(image_base, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
 
-                    # Downsample image for this scale if needed
-                    if target_scale == scale:
-                        # Same scale: use original image
-                        scaled_image = image_base
-                    elif target_scale > scale:
-                        # Downscale: downsample image
-                        scale_factor_down = 4 ** (target_scale - scale)
-                        new_width = image_base.shape[1] // scale_factor_down
-                        new_height = image_base.shape[0] // scale_factor_down
-                        scaled_image = cv2.resize(image_base, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
-                    else:
-                        # Upscale: this shouldn't happen but handle it
-                        scale_factor_up = 4 ** (scale - target_scale)
-                        new_width = image_base.shape[1] * scale_factor_up
-                        new_height = image_base.shape[0] * scale_factor_up
-                        scaled_image = cv2.resize(image_base, (new_width, new_height), interpolation=cv2.INTER_NEAREST)
+                # Calculate exact bounds for this scale
+                height, width = scaled_image.shape[:2]
+                x_end_px_scaled = min(zarr_array.shape[4], x_start_px_scaled + width)
+                y_end_px_scaled = min(zarr_array.shape[3], y_start_px_scaled + height)
 
-                    # Calculate exact bounds for this scale
-                    height, width = scaled_image.shape[:2]
-                    x_end_px_scaled = min(zarr_array.shape[4], x_start_px_scaled + width)
-                    y_end_px_scaled = min(zarr_array.shape[3], y_start_px_scaled + height)
+                logger.info(f"ZARR_WRITE_PIXELS: Scale {target_scale} - zarr array shape={zarr_array.shape}, "
+                           f"image size={width}x{height}, calculated bounds x=[{x_start_px_scaled}:{x_end_px_scaled}], "
+                           f"y=[{y_start_px_scaled}:{y_end_px_scaled}]")
 
-                    logger.info(f"ZARR_WRITE_PIXELS: Scale {target_scale} - zarr array shape={zarr_array.shape}, "
-                               f"image size={width}x{height}, calculated bounds x=[{x_start_px_scaled}:{x_end_px_scaled}], "
-                               f"y=[{y_start_px_scaled}:{y_end_px_scaled}]")
+                # Crop image if it extends beyond canvas bounds
+                img_width_actual = x_end_px_scaled - x_start_px_scaled
+                img_height_actual = y_end_px_scaled - y_start_px_scaled
 
-                    # Crop image if it extends beyond canvas bounds
-                    img_width_actual = x_end_px_scaled - x_start_px_scaled
-                    img_height_actual = y_end_px_scaled - y_start_px_scaled
+                # CRITICAL: Always validate bounds before writing to zarr arrays
+                if y_end_px_scaled > y_start_px_scaled and x_end_px_scaled > x_start_px_scaled and img_height_actual > 0 and img_width_actual > 0:
+                    try:
+                        # Crop image to actual bounds
+                        image_to_write = scaled_image[:img_height_actual, :img_width_actual]
 
-                    # CRITICAL: Always validate bounds before writing to zarr arrays
-                    if y_end_px_scaled > y_start_px_scaled and x_end_px_scaled > x_start_px_scaled and img_height_actual > 0 and img_width_actual > 0:
-                        try:
-                            # Crop image to actual bounds
-                            image_to_write = scaled_image[:img_height_actual, :img_width_actual]
+                        # Ensure image is uint8
+                        if image_to_write.dtype != np.uint8:
+                            image_to_write = image_to_write.astype(np.uint8)
 
-                            # Ensure image is uint8
-                            if image_to_write.dtype != np.uint8:
-                                image_to_write = image_to_write.astype(np.uint8)
-
-                            # Write directly to zarr at exact pixel coordinates
-                            logger.info(f"ZARR_WRITE_PIXELS: Writing to scale {target_scale} - zarr array[{timepoint}, {channel_idx}, {z_idx}, "
-                                       f"{y_start_px_scaled}:{y_end_px_scaled}, {x_start_px_scaled}:{x_end_px_scaled}] "
-                                       f"with image shape={image_to_write.shape}")
+                        # Write directly to zarr at exact pixel coordinates
+                        logger.info(f"ZARR_WRITE_PIXELS: Writing to scale {target_scale} - zarr array[{timepoint}, {channel_idx}, {z_idx}, "
+                                   f"{y_start_px_scaled}:{y_end_px_scaled}, {x_start_px_scaled}:{x_end_px_scaled}] "
+                                   f"with image shape={image_to_write.shape}")
+                        # LOCK ONLY FOR WRITE: Overlapping regions could cause race conditions
+                        with self.zarr_lock:
                             zarr_array[timepoint, channel_idx, z_idx, y_start_px_scaled:y_end_px_scaled, x_start_px_scaled:x_end_px_scaled] = image_to_write
 
-                            scales_written += 1
-                        except IndexError as e:
-                            logger.error(f"ZARR_WRITE_PIXELS: ❌ IndexError writing to scale {target_scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
-                            logger.error(f"ZARR_WRITE_PIXELS: Zarr array shape: {zarr_array.shape}, trying to access "
-                                       f"[{timepoint}, {channel_idx}, {z_idx}, {y_start_px_scaled}:{y_end_px_scaled}, {x_start_px_scaled}:{x_end_px_scaled}]")
-                            import traceback
-                            traceback.print_exc()
-                        except Exception as e:
-                            logger.error(f"ZARR_WRITE_PIXELS: ❌ Error writing to scale {target_scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
-                            import traceback
-                            traceback.print_exc()
-                    else:
-                        logger.error(f"ZARR_WRITE_PIXELS: ❌ Invalid bounds for scale {target_scale} - cannot write: "
-                                   f"x_end={x_end_px_scaled} <= x_start={x_start_px_scaled} or "
-                                   f"y_end={y_end_px_scaled} <= y_start={y_start_px_scaled} or "
-                                   f"img_width_actual={img_width_actual} <= 0 or "
-                                   f"img_height_actual={img_height_actual} <= 0")
-                        logger.error(f"ZARR_WRITE_PIXELS: Scale {target_scale} - image shape={scaled_image.shape}, "
-                                   f"zarr array shape={zarr_array.shape}, "
-                                   f"requested bounds x=[{x_start_px_scaled}:{x_start_px_scaled + width}], "
-                                   f"y=[{y_start_px_scaled}:{y_start_px_scaled + height}]")
+                        scales_written += 1
+                    except IndexError as e:
+                        logger.error(f"ZARR_WRITE_PIXELS: ❌ IndexError writing to scale {target_scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
+                        logger.error(f"ZARR_WRITE_PIXELS: Zarr array shape: {zarr_array.shape}, trying to access "
+                                   f"[{timepoint}, {channel_idx}, {z_idx}, {y_start_px_scaled}:{y_end_px_scaled}, {x_start_px_scaled}:{x_end_px_scaled}]")
+                        import traceback
+                        traceback.print_exc()
+                    except Exception as e:
+                        logger.error(f"ZARR_WRITE_PIXELS: ❌ Error writing to scale {target_scale}, channel {channel_idx}, timepoint {timepoint}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                else:
+                    logger.error(f"ZARR_WRITE_PIXELS: ❌ Invalid bounds for scale {target_scale} - cannot write: "
+                               f"x_end={x_end_px_scaled} <= x_start={x_start_px_scaled} or "
+                               f"y_end={y_end_px_scaled} <= y_start={y_start_px_scaled} or "
+                               f"img_width_actual={img_width_actual} <= 0 or "
+                               f"img_height_actual={img_height_actual} <= 0")
+                    logger.error(f"ZARR_WRITE_PIXELS: Scale {target_scale} - image shape={scaled_image.shape}, "
+                               f"zarr array shape={zarr_array.shape}, "
+                               f"requested bounds x=[{x_start_px_scaled}:{x_start_px_scaled + width}], "
+                               f"y=[{y_start_px_scaled}:{y_start_px_scaled + height}]")
 
-                except Exception as e:
+            except Exception as e:
                     logger.error(f"ZARR_WRITE_PIXELS: ❌ Error processing scale {target_scale}: {e}")
                     import traceback
                     traceback.print_exc()
@@ -1597,8 +1617,10 @@ class ZarrCanvas:
             # Shutdown thread pool and wait for all tasks to complete
             if hasattr(self, 'executor'):
                 self.executor.shutdown(wait=True)
-                self.executor = ThreadPoolExecutor(max_workers=4)
-                logger.debug("Thread pool shutdown and recreated after stitching")
+                # Recreate with same worker count as initialization
+                num_workers = max(4, os.cpu_count() - 1) if os.cpu_count() else 4
+                self.executor = ThreadPoolExecutor(max_workers=num_workers)
+                logger.debug(f"Thread pool shutdown and recreated after stitching (workers={num_workers})")
 
             # Flush all zarr arrays to ensure data is written
             if hasattr(self, 'zarr_arrays'):
