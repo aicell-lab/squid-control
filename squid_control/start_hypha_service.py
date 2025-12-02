@@ -1356,7 +1356,7 @@ class MicroscopeHyphaService:
             self.scanning_in_progress = False
             logger.info("Well plate scanning completed, video buffering auto-start is now re-enabled")
 
-    async def scan_flexible_positions(self, positions: List[dict] = None, illumination_settings: List[dict] = None, do_contrast_autofocus: bool = False, do_reflection_af: bool = True, action_ID: str = 'flexibleScan', focus_map_points: List[List[float]] = None, context=None):
+    async def scan_flexible_positions(self, positions: List[dict] = None, illumination_settings: List[dict] = None, do_contrast_autofocus: bool = False, do_reflection_af: bool = True, action_ID: str = 'flexibleScan', focus_map_points: List[List[float]] = None, move_for_autofocus: bool = False, context=None):
         """
         Scan arbitrary positions with individual grid parameters (no well plate constraints).
         
@@ -1382,6 +1382,8 @@ class MicroscopeHyphaService:
                 Example: [[10.0, 10.0], [100.0, 10.0], [55.0, 70.0]]
                 System will move to each point, perform autofocus (based on do_contrast_autofocus/do_reflection_af),
                 record the Z position, and create a focus map. During scanning, Z is interpolated from these 3 points.
+            move_for_autofocus: If True, move 0.2mm in X and Y before reflection autofocus, then move back.
+                If False (default), perform reflection autofocus at current position only.
             
         Returns: Confirmation message
         """
@@ -1432,7 +1434,8 @@ class MicroscopeHyphaService:
                 illumination_settings,
                 do_contrast_autofocus,
                 do_reflection_af,
-                action_ID
+                action_ID,
+                move_for_autofocus
             )
 
             logger.info("Flexible position scanning completed")
@@ -3482,6 +3485,7 @@ class MicroscopeHyphaService:
           * name (str, optional): Position name (default: 'position_N')
         - illumination_settings (List[dict]): Illumination settings
         - focus_map_points (List[List[float]], optional): 3 reference points [[x,y,z], [x,y,z], [x,y,z]] in mm for focus interpolation
+        - move_for_autofocus (bool, optional): If True, move 0.2mm in X and Y before reflection autofocus, then move back. If False (default), perform reflection autofocus at current position only.
         
         For 'full_zarr':
         - start_x_mm, start_y_mm (float, optional): Starting position in mm (relative to well center).
@@ -3607,6 +3611,7 @@ class MicroscopeHyphaService:
                 positions = config.get('positions')
                 illumination_settings = config.get('illumination_settings')
                 focus_map_points = config.get('focus_map_points', None)
+                move_for_autofocus = config.get('move_for_autofocus', False)
                 
                 # Validate required parameters
                 if positions is None or len(positions) == 0:
@@ -3625,6 +3630,7 @@ class MicroscopeHyphaService:
                     do_reflection_af=do_reflection_af,
                     action_ID=action_ID,
                     focus_map_points=focus_map_points,
+                    move_for_autofocus=move_for_autofocus,
                     context=context
                 )
 

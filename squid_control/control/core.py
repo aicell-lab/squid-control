@@ -2346,20 +2346,28 @@ class MultiPointWorker:
                                     self.autofocusController.wait_till_autofocus_has_completed()
                                 else:
                                     # Use laser autofocus as normal
-                                    if (
-                                        self.navigationController.get_pid_control_flag(
-                                            2
-                                        )
-                                        is False
-                                    ):
-                                        self.microscope.laserAutofocusController.move_to_target(
-                                            0
-                                        )
-                                        self.microscope.laserAutofocusController.move_to_target(
-                                            0
-                                        )  # for stepper in open loop mode, repeat the operation to counter backlash
+                                    # Check if movement-based autofocus is requested
+                                    if self.move_for_autofocus:
+                                        # Move 0.2mm in X/Y, measure, move back, then adjust Z
+                                        if (
+                                            self.navigationController.get_pid_control_flag(
+                                                2
+                                            )
+                                            is False
+                                        ):
+                                            self.microscope.laserAutofocusController.move_to_target(
+                                                0
+                                            )
+                                            self.microscope.laserAutofocusController.move_to_target(
+                                                0
+                                            )  # for stepper in open loop mode, repeat the operation to counter backlash
+                                        else:
+                                            self.microscope.laserAutofocusController.move_to_target(
+                                                0
+                                            )
                                     else:
-                                        self.microscope.laserAutofocusController.move_to_target(
+                                        # Perform autofocus at current position without X/Y movement
+                                        self.microscope.laserAutofocusController.move_to_target_no_movement(
                                             0
                                         )
                             except:
@@ -2884,6 +2892,7 @@ class MultiPointController:
         self.deltat = 0
         self.contrast_autofocus = False
         self.do_reflection_af = False
+        self.move_for_autofocus = False
         self.gen_focus_map = False
         self.focus_map_storage = []
         self.already_using_fmap = False
@@ -3828,6 +3837,33 @@ class LaserAutofocusController:
         return displacement_um
 
     def move_to_target(self, target_um):
+        # move by distance 0.2,0.2 mm in x and y direction
+        self.navigationController.move_x(0.2)
+        self.navigationController.move_y(0.2)
+        self.microcontroller.wait_till_operation_is_completed()
+        current_displacement_um = self.measure_displacement()
+        # move back to the original position
+        self.navigationController.move_x(-0.2)
+        self.navigationController.move_y(-0.2)
+        self.microcontroller.wait_till_operation_is_completed()
+        um_to_move = target_um - current_displacement_um
+        # limit the range of movement
+        um_to_move = min(um_to_move, 200)
+        um_to_move = max(um_to_move, -200)
+        self.navigationController.move_z(um_to_move / 1000)
+        self.wait_till_operation_is_completed()
+        # update the displacement measurement
+        self.measure_displacement()
+
+    def move_to_target_no_movement(self, target_um):
+        """
+        Perform reflection autofocus without moving stage in X/Y directions.
+        Measures displacement at current position and adjusts Z accordingly.
+        
+        Args:
+            target_um: Target displacement in micrometers (typically 0)
+        """
+        # Measure displacement at current position (no X/Y movement)
         current_displacement_um = self.measure_displacement()
         um_to_move = target_um - current_displacement_um
         # limit the range of movement

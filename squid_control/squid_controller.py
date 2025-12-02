@@ -557,7 +557,7 @@ class SquidController:
         """Stop the plate scan that saves raw images - alias for stop_plate_scan"""
         self.stop_plate_scan()
 
-    def flexible_position_scan(self, positions=None, illumination_settings=None, do_contrast_autofocus=False, do_reflection_af=True, action_ID='flexibleScan'):
+    def flexible_position_scan(self, positions=None, illumination_settings=None, do_contrast_autofocus=False, do_reflection_af=True, action_ID='flexibleScan', move_for_autofocus=False):
         """
         Flexible position scanning function that allows arbitrary positions with individual grid parameters.
         No well plate constraints - user specifies exact positions and grid parameters.
@@ -586,6 +586,8 @@ class SquidController:
             do_contrast_autofocus (bool): Whether to perform contrast-based autofocus
             do_reflection_af (bool): Whether to perform reflection-based autofocus
             action_ID (str): Identifier for this scan
+            move_for_autofocus (bool): If True, move 0.2mm in X and Y before reflection autofocus, then move back.
+                If False (default), perform reflection autofocus at current position only.
         """
         if positions is None or len(positions) == 0:
             logger.error("No positions provided for flexible scan")
@@ -670,6 +672,7 @@ class SquidController:
         self.multipointController.set_base_path(CONFIG.DEFAULT_SAVING_PATH)
         self.multipointController.contrast_autofocus = do_contrast_autofocus
         self.multipointController.do_reflection_af = do_reflection_af
+        self.multipointController.move_for_autofocus = move_for_autofocus
         
         # Set NX=1, NY=1, NZ=1 since we've already expanded the grid
         self.multipointController.set_NX(1)
