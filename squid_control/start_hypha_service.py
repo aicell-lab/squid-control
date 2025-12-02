@@ -1198,7 +1198,39 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to close illumination: {e}")
             raise e
 
-    async def scan_plate_save_raw_images(self, well_plate_type: str = "96", illumination_settings: List[dict] = None, do_contrast_autofocus: bool = False, do_reflection_af: bool = True, wells_to_scan: List[str] = None, Nx: int = 3, Ny: int = 3, dx: float = 0.8, dy: float = 0.8, action_ID: str = 'testPlateScan', context=None):
+    def _setup_focus_map(self, focus_map_points: List[List[float]]):
+        """
+        Setup focus map from 3 reference points.
+        
+        Args:
+            focus_map_points: List of 3 points, each point is [x, y, z] in mm
+                Example: [[10.0, 10.0, 5.5], [100.0, 10.0, 5.6], [55.0, 70.0, 5.4]]
+        """
+        if focus_map_points is None or len(focus_map_points) != 3:
+            logger.debug("No valid focus map points provided, skipping focus map setup")
+            return
+        
+        # Clear any existing focus map
+        self.squidController.autofocusController.clear_focus_map()
+        
+        # Add each point to focus map
+        for point in focus_map_points:
+            if len(point) != 3:
+                raise ValueError(f"Each focus map point must have 3 values [x, y, z], got {len(point)}")
+            x, y, z = point
+            self.squidController.autofocusController.focus_map_coords.append((x, y, z))
+            logger.info(f"Added focus map point: ({x}, {y}, {z})")
+        
+        # Enable focus map
+        self.squidController.autofocusController.set_focus_map_use(True)
+        logger.info("Focus map enabled with 3 reference points")
+
+    def _cleanup_focus_map(self):
+        """Clear focus map after scan completes."""
+        self.squidController.autofocusController.clear_focus_map()
+        logger.info("Focus map cleared after scan")
+
+    async def scan_plate_save_raw_images(self, well_plate_type: str = "96", illumination_settings: List[dict] = None, do_contrast_autofocus: bool = False, do_reflection_af: bool = True, wells_to_scan: List[str] = None, Nx: int = 3, Ny: int = 3, dx: float = 0.8, dy: float = 0.8, action_ID: str = 'testPlateScan', focus_map_points: List[List[float]] = None, context=None):
         """
         
         Scan the well plate according to the specified wells with custom illumination settings
@@ -1214,6 +1246,9 @@ class MicroscopeHyphaService:
             dx: Distance between X positions in mm
             dy: Distance between Y positions in mm
             action_ID: Identifier for this scan
+            focus_map_points: List of 3 points [x, y, z] in mm for focus interpolation.
+                Example: [[10.0, 10.0, 5.5], [100.0, 10.0, 5.6], [55.0, 70.0, 5.4]]
+                If provided, focus map will be used instead of full autofocus at each position.
             
         Returns: The message of the action
         """
@@ -1233,6 +1268,10 @@ class MicroscopeHyphaService:
 
             if wells_to_scan is None:
                 wells_to_scan = ['A1']
+
+            # Setup focus map if provided
+            if focus_map_points is not None:
+                self._setup_focus_map(focus_map_points)
 
             # Check if video buffering is active and stop it during scanning
             video_buffering_was_active = self.frame_acquisition_running
@@ -1271,11 +1310,14 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to scan well plate: {e}")
             raise e
         finally:
+            # Cleanup focus map if it was used
+            if focus_map_points is not None:
+                self._cleanup_focus_map()
             # Always reset the scanning flag, regardless of success or failure
             self.scanning_in_progress = False
             logger.info("Well plate scanning completed, video buffering auto-start is now re-enabled")
 
-    async def scan_flexible_positions(self, positions: List[dict] = None, illumination_settings: List[dict] = None, do_contrast_autofocus: bool = False, do_reflection_af: bool = True, action_ID: str = 'flexibleScan', context=None):
+    async def scan_flexible_positions(self, positions: List[dict] = None, illumination_settings: List[dict] = None, do_contrast_autofocus: bool = False, do_reflection_af: bool = True, action_ID: str = 'flexibleScan', focus_map_points: List[List[float]] = None, context=None):
         """
         Scan arbitrary positions with individual grid parameters (no well plate constraints).
         
@@ -1297,9 +1339,13 @@ class MicroscopeHyphaService:
             do_contrast_autofocus: Whether to perform contrast-based autofocus
             do_reflection_af: Whether to perform reflection-based autofocus
             action_ID: Identifier for this scan
+            focus_map_points: List of 3 points [x, y, z] in mm for focus interpolation.
+                Example: [[10.0, 10.0, 5.5], [100.0, 10.0, 5.6], [55.0, 70.0, 5.4]]
+                If provided, focus map will be used instead of full autofocus at each position.
             
         Returns: Confirmation message
         """
+        focus_map_used = False
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -1315,6 +1361,11 @@ class MicroscopeHyphaService:
                     {'channel': 'Fluorescence 488 nm Ex', 'intensity': 27.0, 'exposure_time': 60.0},
                     {'channel': 'Fluorescence 561 nm Ex', 'intensity': 98.0, 'exposure_time': 100.0},
                 ]
+
+            # Setup focus map if provided
+            if focus_map_points is not None:
+                self._setup_focus_map(focus_map_points)
+                focus_map_used = True
 
             # Check if video buffering is active and stop it during scanning
             video_buffering_was_active = self.frame_acquisition_running
@@ -1348,6 +1399,9 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to scan flexible positions: {e}")
             raise e
         finally:
+            # Cleanup focus map if it was used
+            if focus_map_used:
+                self._cleanup_focus_map()
             # Always reset the scanning flag, regardless of success or failure
             self.scanning_in_progress = False
             logger.info("Flexible position scanning completed, video buffering auto-start is now re-enabled")
@@ -3369,6 +3423,7 @@ class MicroscopeHyphaService:
         - wells_to_scan (List[str]): List of wells to scan (e.g., ['A1', 'B2', 'C3'])
         - Nx, Ny (int): Grid dimensions
         - dx, dy (float): Position intervals in mm
+        - focus_map_points (List[List[float]], optional): 3 reference points [[x,y,z], [x,y,z], [x,y,z]] in mm for focus interpolation
         
         For 'raw_image_flexible':
         - positions (List[dict]): List of position dictionaries, each with:
@@ -3383,6 +3438,7 @@ class MicroscopeHyphaService:
           * dz (float, optional): Z spacing in mm (default: 0.01)
           * name (str, optional): Position name (default: 'position_N')
         - illumination_settings (List[dict]): Illumination settings
+        - focus_map_points (List[List[float]], optional): 3 reference points [[x,y,z], [x,y,z], [x,y,z]] in mm for focus interpolation
         
         For 'full_zarr':
         - start_x_mm, start_y_mm (float, optional): Starting position in mm (relative to well center).
@@ -3448,6 +3504,7 @@ class MicroscopeHyphaService:
                 Ny = config.get('Ny', 3)
                 dx = config.get('dx', 0.8)
                 dy = config.get('dy', 0.8)
+                focus_map_points = config.get('focus_map_points', None)
 
                 scan_coro = self._run_scan_with_state_tracking(
                     self.scan_plate_save_raw_images,
@@ -3461,6 +3518,7 @@ class MicroscopeHyphaService:
                     dx=dx,
                     dy=dy,
                     action_ID=action_ID,
+                    focus_map_points=focus_map_points,
                     context=context
                 )
 
@@ -3505,6 +3563,7 @@ class MicroscopeHyphaService:
                 # Extract raw_image_flexible specific parameters
                 positions = config.get('positions')
                 illumination_settings = config.get('illumination_settings')
+                focus_map_points = config.get('focus_map_points', None)
                 
                 # Validate required parameters
                 if positions is None or len(positions) == 0:
@@ -3522,6 +3581,7 @@ class MicroscopeHyphaService:
                     do_contrast_autofocus=do_contrast_autofocus,
                     do_reflection_af=do_reflection_af,
                     action_ID=action_ID,
+                    focus_map_points=focus_map_points,
                     context=context
                 )
 
