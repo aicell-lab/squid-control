@@ -1698,12 +1698,6 @@ class MicroscopeHyphaService:
             service_config.update(squid_plus_endpoints)
             logger.info(f"Registered {len(squid_plus_endpoints)} Squid+ specific endpoints")
 
-        # Only register get_canvas_chunk when not in local mode
-        if not self.is_local:
-            service_config["get_canvas_chunk"] = self.get_canvas_chunk
-            logger.info("Registered get_canvas_chunk service (remote mode)")
-        else:
-            logger.info("Skipped get_canvas_chunk service registration (local mode)")
 
         svc = await server.register_service(service_config)
 
