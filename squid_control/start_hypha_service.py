@@ -1198,15 +1198,13 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to close illumination: {e}")
             raise e
 
-    async def _setup_focus_map(self, focus_map_points: List[List[float]], do_contrast_autofocus: bool = False, do_reflection_af: bool = True):
+    def _setup_focus_map(self, focus_map_points: List[List[float]]):
         """
-        Setup focus map by moving to 3 reference points and performing autofocus at each.
+        Setup focus map from 3 reference points.
         
         Args:
-            focus_map_points: List of 3 points, each point is [x, y] in mm
-                Example: [[10.0, 10.0], [100.0, 10.0], [55.0, 70.0]]
-            do_contrast_autofocus: Use contrast-based autofocus
-            do_reflection_af: Use reflection-based (laser) autofocus
+            focus_map_points: List of 3 points, each point is [x, y, z] in mm
+                Example: [[10.0, 10.0, 5.5], [100.0, 10.0, 5.6], [55.0, 70.0, 5.4]]
         """
         if focus_map_points is None or len(focus_map_points) != 3:
             logger.debug("No valid focus map points provided, skipping focus map setup")
@@ -1215,46 +1213,13 @@ class MicroscopeHyphaService:
         # Clear any existing focus map
         self.squidController.autofocusController.clear_focus_map()
         
-        logger.info(f"Setting up focus map with {len(focus_map_points)} reference points")
-        
-        # Move to each point, autofocus, and record the Z position
-        for i, point in enumerate(focus_map_points):
-            if len(point) < 2:
-                raise ValueError(f"Each focus map point must have at least 2 values [x, y], got {len(point)}")
-            
-            x, y = point[0], point[1]
-            logger.info(f"Focus map point {i+1}/3: Moving to ({x}, {y}) mm")
-            
-            # Move to the position
-            await asyncio.get_event_loop().run_in_executor(
-                None,
-                self.squidController.navigationController.move_to,
-                x, y
-            )
-            # Wait for movement to complete
-            await asyncio.get_event_loop().run_in_executor(
-                None,
-                self.squidController.microcontroller.wait_till_operation_is_completed
-            )
-            
-            # Perform autofocus based on user selection
-            if do_contrast_autofocus:
-                logger.info(f"Focus map point {i+1}/3: Performing contrast autofocus")
-                await self.squidController.contrast_autofocus()
-            elif do_reflection_af:
-                logger.info(f"Focus map point {i+1}/3: Performing reflection autofocus")
-                await self.squidController.reflection_autofocus()
-            else:
-                logger.warning(f"Focus map point {i+1}/3: No autofocus method selected, using current Z")
-            
-            # Get the current position after autofocus
-            x_actual = self.squidController.navigationController.x_pos_mm
-            y_actual = self.squidController.navigationController.y_pos_mm
-            z_actual = self.squidController.navigationController.z_pos_mm
-            
-            # Add to focus map
-            self.squidController.autofocusController.focus_map_coords.append((x_actual, y_actual, z_actual))
-            logger.info(f"Focus map point {i+1}/3: Added ({x_actual:.3f}, {y_actual:.3f}, {z_actual:.3f}) mm")
+        # Add each point to focus map
+        for point in focus_map_points:
+            if len(point) != 3:
+                raise ValueError(f"Each focus map point must have 3 values [x, y, z], got {len(point)}")
+            x, y, z = point
+            self.squidController.autofocusController.focus_map_coords.append((x, y, z))
+            logger.info(f"Added focus map point: ({x}, {y}, {z})")
         
         # Enable focus map
         self.squidController.autofocusController.set_focus_map_use(True)
@@ -1281,10 +1246,9 @@ class MicroscopeHyphaService:
             dx: Distance between X positions in mm
             dy: Distance between Y positions in mm
             action_ID: Identifier for this scan
-            focus_map_points: List of 3 points [x, y] in mm for focus map generation.
-                Example: [[10.0, 10.0], [100.0, 10.0], [55.0, 70.0]]
-                The system will move to each point, perform autofocus (based on do_contrast_autofocus/do_reflection_af),
-                record the Z position, and create a focus map. During scanning, Z is interpolated from these 3 points.
+            focus_map_points: List of 3 points [x, y, z] in mm for focus interpolation.
+                Example: [[10.0, 10.0, 5.5], [100.0, 10.0, 5.6], [55.0, 70.0, 5.4]]
+                If provided, focus map will be used instead of full autofocus at each position.
             
         Returns: The message of the action
         """
@@ -1305,6 +1269,10 @@ class MicroscopeHyphaService:
             if wells_to_scan is None:
                 wells_to_scan = ['A1']
 
+            # Setup focus map if provided
+            if focus_map_points is not None:
+                self._setup_focus_map(focus_map_points)
+
             # Check if video buffering is active and stop it during scanning
             video_buffering_was_active = self.frame_acquisition_running
             if video_buffering_was_active:
@@ -1316,11 +1284,6 @@ class MicroscopeHyphaService:
 
             # Set scanning flag to prevent automatic video buffering restart during scan
             self.scanning_in_progress = True
-
-            # Setup focus map if provided (move to points, autofocus, record Z)
-            if focus_map_points is not None:
-                logger.info("Setting up focus map before scanning...")
-                await self._setup_focus_map(focus_map_points, do_contrast_autofocus, do_reflection_af)
 
             logger.info("Start scanning well plate with custom illumination settings")
 
@@ -1376,10 +1339,9 @@ class MicroscopeHyphaService:
             do_contrast_autofocus: Whether to perform contrast-based autofocus
             do_reflection_af: Whether to perform reflection-based autofocus
             action_ID: Identifier for this scan
-            focus_map_points: List of 3 points [x, y] in mm for focus map generation.
-                Example: [[10.0, 10.0], [100.0, 10.0], [55.0, 70.0]]
-                The system will move to each point, perform autofocus (based on do_contrast_autofocus/do_reflection_af),
-                record the Z position, and create a focus map. During scanning, Z is interpolated from these 3 points.
+            focus_map_points: List of 3 points [x, y, z] in mm for focus interpolation.
+                Example: [[10.0, 10.0, 5.5], [100.0, 10.0, 5.6], [55.0, 70.0, 5.4]]
+                If provided, focus map will be used instead of full autofocus at each position.
             
         Returns: Confirmation message
         """
@@ -1400,6 +1362,11 @@ class MicroscopeHyphaService:
                     {'channel': 'Fluorescence 561 nm Ex', 'intensity': 98.0, 'exposure_time': 100.0},
                 ]
 
+            # Setup focus map if provided
+            if focus_map_points is not None:
+                self._setup_focus_map(focus_map_points)
+                focus_map_used = True
+
             # Check if video buffering is active and stop it during scanning
             video_buffering_was_active = self.frame_acquisition_running
             if video_buffering_was_active:
@@ -1411,12 +1378,6 @@ class MicroscopeHyphaService:
 
             # Set scanning flag to prevent automatic video buffering restart during scan
             self.scanning_in_progress = True
-
-            # Setup focus map if provided (move to points, autofocus, record Z)
-            if focus_map_points is not None:
-                logger.info("Setting up focus map before scanning...")
-                await self._setup_focus_map(focus_map_points, do_contrast_autofocus, do_reflection_af)
-                focus_map_used = True
 
             logger.info(f"Start flexible position scanning with {len(positions)} positions")
 
@@ -3462,8 +3423,7 @@ class MicroscopeHyphaService:
         - wells_to_scan (List[str]): List of wells to scan (e.g., ['A1', 'B2', 'C3'])
         - Nx, Ny (int): Grid dimensions
         - dx, dy (float): Position intervals in mm
-        - focus_map_points (List[List[float]], optional): 3 reference points [[x,y], [x,y], [x,y]] in mm.
-          System will move to each point, autofocus, record Z, then use interpolation during scan.
+        - focus_map_points (List[List[float]], optional): 3 reference points [[x,y,z], [x,y,z], [x,y,z]] in mm for focus interpolation
         
         For 'raw_image_flexible':
         - positions (List[dict]): List of position dictionaries, each with:
@@ -3478,8 +3438,7 @@ class MicroscopeHyphaService:
           * dz (float, optional): Z spacing in mm (default: 0.01)
           * name (str, optional): Position name (default: 'position_N')
         - illumination_settings (List[dict]): Illumination settings
-        - focus_map_points (List[List[float]], optional): 3 reference points [[x,y], [x,y], [x,y]] in mm.
-          System will move to each point, autofocus, record Z, then use interpolation during scan.
+        - focus_map_points (List[List[float]], optional): 3 reference points [[x,y,z], [x,y,z], [x,y,z]] in mm for focus interpolation
         
         For 'full_zarr':
         - start_x_mm, start_y_mm (float, optional): Starting position in mm (relative to well center).
