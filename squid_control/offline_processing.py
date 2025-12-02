@@ -786,7 +786,7 @@ class OfflineProcessor:
                                         max_concurrent_runs: int = 1,
                                         use_parallel_wells: bool = True) -> dict:
         """
-        Parallel stitching and uploading - one folder at a time, 3 wells at a time.
+        Parallel stitching and uploading
         
         Args:
             experiment_id: Experiment ID to search for
@@ -945,55 +945,84 @@ class OfflineProcessor:
 
             print(f"Found {len(all_positions)} positions to process from {len(coordinates_data)} regions")
 
-            # 2. Create temporary experiment for this run
+            # 2. Create/find stitch folder - use consistent name without timestamp for resume capability
             from squid_control.control.config import CONFIG
 
             if CONFIG.DEFAULT_SAVING_PATH and Path(CONFIG.DEFAULT_SAVING_PATH).exists():
                 base_temp_path = Path(CONFIG.DEFAULT_SAVING_PATH)
-                temp_path = base_temp_path / f"offline_stitch_{experiment_folder.name}_{int(time.time())}"
-                temp_path.mkdir(parents=True, exist_ok=True)
-                print(f"Using configured saving path for temporary stitching: {temp_path}")
+                # Use consistent folder name (no timestamp) so we can resume if upload fails
+                temp_path = base_temp_path / f"offline_stitch_{experiment_folder.name}"
             else:
+                # For system temp, we can't easily resume, so use timestamp
                 temp_path = Path(tempfile.mkdtemp(prefix=f"offline_stitch_{experiment_folder.name}_"))
-                print(f"Using system temp directory for stitching: {temp_path}")
-
-            temp_exp_manager = self.create_temp_experiment_manager(str(temp_path))
-
-            # Create a single experiment with one canvas
-            exp_name = experiment_folder.name
-            temp_exp_manager.create_experiment(exp_name)
-            canvas = temp_exp_manager.get_canvas(exp_name)
-
-            # 3. Start stitching before processing images
-            print(f"🚀 Starting stitching pipeline...")
-            await canvas.start_stitching()
-            print(f"✅ Stitching pipeline started")
-
-            # 4. Process all positions into the single canvas using absolute stage coordinates
-            print(f"🚀 Processing {len(all_positions)} positions into single canvas...")
-
-            # Run the image loading in a thread pool so it doesn't block the event loop
-            # This allows the stitching background tasks to run while we load images
-            import concurrent.futures
-            loop = asyncio.get_event_loop()
             
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                # Run the sync function in a separate thread
-                await loop.run_in_executor(
-                    executor,
-                    self._load_and_stitch_well_images_sync,
-                    all_positions, experiment_folder, canvas, channel_mapping
-                )
+            # Check if .done file exists - if so, skip zarr creation and just upload
+            done_file = temp_path / ".done"
+            zarr_already_created = done_file.exists()
+            
+            if zarr_already_created:
+                print(f"✅ Found .done file - zarr already created, skipping to upload")
+                print(f"   Using existing zarr at: {temp_path}")
+                
+                # Load existing canvas
+                temp_exp_manager = self.create_temp_experiment_manager(str(temp_path))
+                exp_name = experiment_folder.name
+                # Don't create new experiment, just get existing canvas
+                temp_exp_manager.current_experiment = exp_name
+                canvas = temp_exp_manager.get_canvas(exp_name)
+                
+                # Get canvas info
+                canvas_info = canvas.get_export_info()
+                total_size_mb = canvas_info.get('total_size_mb', 0)
+                images_processed = len(all_positions)
+            else:
+                # Create new zarr
+                temp_path.mkdir(parents=True, exist_ok=True)
+                print(f"Using stitch folder: {temp_path}")
+                
+                temp_exp_manager = self.create_temp_experiment_manager(str(temp_path))
 
-            # 5. Wait for all images to be processed
-            print(f"⏳ Waiting for stitching queue to drain...")
-            await self._wait_for_stitching_completion(canvas, timeout_seconds=600)  # 10 minute timeout for large datasets
-            print(f"✅ All images processed")
+                # Create a single experiment with one canvas
+                exp_name = experiment_folder.name
+                temp_exp_manager.create_experiment(exp_name)
+                canvas = temp_exp_manager.get_canvas(exp_name)
 
-            # Get canvas size
-            canvas_info = canvas.get_export_info()
-            total_size_mb = canvas_info.get('total_size_mb', 0)
-            images_processed = len(all_positions)
+                # 3. Start stitching before processing images
+                print(f"🚀 Starting stitching pipeline...")
+                await canvas.start_stitching()
+                print(f"✅ Stitching pipeline started")
+
+                # 4. Process all positions into the single canvas using absolute stage coordinates
+                print(f"🚀 Processing {len(all_positions)} positions into single canvas...")
+
+                # Run the image loading in a thread pool so it doesn't block the event loop
+                # This allows the stitching background tasks to run while we load images
+                import concurrent.futures
+                loop = asyncio.get_event_loop()
+                
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    # Run the sync function in a separate thread
+                    await loop.run_in_executor(
+                        executor,
+                        self._load_and_stitch_well_images_sync,
+                        all_positions, experiment_folder, canvas, channel_mapping
+                    )
+
+                # 5. Wait for all images to be processed
+                print(f"⏳ Waiting for stitching queue to drain...")
+                await self._wait_for_stitching_completion(canvas, timeout_seconds=600)  # 10 minute timeout for large datasets
+                print(f"✅ All images processed")
+
+                # Get canvas size
+                canvas_info = canvas.get_export_info()
+                total_size_mb = canvas_info.get('total_size_mb', 0)
+                images_processed = len(all_positions)
+                
+                # Create .done file to mark zarr creation complete
+                done_file.write_text(f"Zarr creation completed at {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                                    f"Positions: {images_processed}\n"
+                                    f"Size: {total_size_mb:.2f} MB\n")
+                print(f"✅ Created .done file - zarr creation complete")
 
             print(f"🎉 Processing complete: {images_processed} positions processed")
 
@@ -1024,17 +1053,17 @@ class OfflineProcessor:
 
                     print(f"  ✅ Dataset upload complete: {upload_result.get('dataset_name')}")
 
-                    # Clean up any existing temporary offline_stitch folders after successful upload
-                    self._cleanup_existing_temp_folders(experiment_folder.name)
+                    # Clean up stitch folder only after successful upload
+                    if cleanup_temp_files:
+                        shutil.rmtree(temp_path, ignore_errors=True)
+                        self.logger.debug(f"Cleaned up temporary files: {temp_path}")
+                        print(f"  🗑️ Cleaned up stitch folder: {temp_path}")
 
                 except Exception as upload_error:
                     print(f"  ❌ Dataset upload failed: {upload_error}")
+                    print(f"  💡 Zarr data preserved at: {temp_path}")
+                    print(f"  💡 Run again to retry upload (will skip zarr creation)")
                     upload_result = None
-
-            # 5. Cleanup temporary files
-            if cleanup_temp_files:
-                shutil.rmtree(temp_path, ignore_errors=True)
-                self.logger.debug(f"Cleaned up temporary files: {temp_path}")
 
             return {
                 "success": True,
