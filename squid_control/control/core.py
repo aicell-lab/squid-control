@@ -2339,22 +2339,29 @@ class MultiPointWorker:
                             self.microscope.laserAutofocusController.set_reference()
                         else:
                             try:
-                                if (
-                                    self.navigationController.get_pid_control_flag(
-                                        2
-                                    )
-                                    is False
-                                ):
-                                    self.microscope.laserAutofocusController.move_to_target(
-                                        0
-                                    )
-                                    self.microscope.laserAutofocusController.move_to_target(
-                                        0
-                                    )  # for stepper in open loop mode, repeat the operation to counter backlash
+                                # Check if focus map is enabled and use it if available
+                                if self.autofocusController.use_focus_map:
+                                    # Use focus map interpolation for faster focusing
+                                    self.autofocusController.autofocus(focus_map_override=False)
+                                    self.autofocusController.wait_till_autofocus_has_completed()
                                 else:
-                                    self.microscope.laserAutofocusController.move_to_target(
-                                        0
-                                    )
+                                    # Use laser autofocus as normal
+                                    if (
+                                        self.navigationController.get_pid_control_flag(
+                                            2
+                                        )
+                                        is False
+                                    ):
+                                        self.microscope.laserAutofocusController.move_to_target(
+                                            0
+                                        )
+                                        self.microscope.laserAutofocusController.move_to_target(
+                                            0
+                                        )  # for stepper in open loop mode, repeat the operation to counter backlash
+                                    else:
+                                        self.microscope.laserAutofocusController.move_to_target(
+                                            0
+                                        )
                             except:
                                 file_ID = (
                                     coordiante_name

@@ -742,7 +742,14 @@ class SquidController:
         if self.is_simulation:
             await self.contrast_autofocus_simulation()
         else:
-            self.laserAutofocusController.move_to_target(0)
+            # Check if focus map is enabled and use it if available
+            if self.autofocusController.use_focus_map:
+                # Use focus map interpolation for faster focusing
+                self.autofocusController.autofocus(focus_map_override=False)
+                self.autofocusController.wait_till_autofocus_has_completed()
+            else:
+                # Use laser autofocus as normal
+                self.laserAutofocusController.move_to_target(0)
 
     def measure_displacement(self):
         self.laserAutofocusController.measure_displacement()
