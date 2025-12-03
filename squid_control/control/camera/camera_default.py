@@ -2,7 +2,6 @@ import os
 import glob
 import time
 import numpy as np
-from PIL import Image
 import sys
 import cv2
 import asyncio
@@ -33,7 +32,6 @@ from squid_control.control.config import CONFIG
 from squid_control.control.camera import TriggerModeSetting
 from scipy.ndimage import gaussian_filter
 from squid_control.control.config import ChannelMapper
-script_dir = os.path.dirname(__file__)
 
 def get_sn_by_model(model_name):
     if not GX_AVAILABLE:
@@ -552,7 +550,6 @@ class Camera_Simulation(object):
         # simulated camera values
         self.simulated_focus = 4
         self.channels = [0, 11, 12, 14, 13]
-        self.image_paths = ChannelMapper.get_id_to_example_image_map()
         
 
 
@@ -856,8 +853,8 @@ class Camera_Simulation(object):
             traceback.print_exc()
             return None
 
-    async def send_trigger(self, x=29.81, y=36.85, dz=0, pixel_size_um=0.333, channel=0, intensity=100, exposure_time=100, magnification_factor=20, performace_mode=False, sample_data_alias="agent-lens/20250824-example-data-20250824-221822"):
-        print(f"Sending trigger with x={x}, y={y}, dz={dz}, pixel_size_um={pixel_size_um}, channel={channel}, intensity={intensity}, exposure_time={exposure_time}, magnification_factor={magnification_factor}, performace_mode={performace_mode}, sample_data_alias={sample_data_alias}")
+    async def send_trigger(self, x=29.81, y=36.85, dz=0, pixel_size_um=0.333, channel=0, intensity=100, exposure_time=100, magnification_factor=20, sample_data_alias="agent-lens/20250824-example-data-20250824-221822"):
+        print(f"Sending trigger with x={x}, y={y}, dz={dz}, pixel_size_um={pixel_size_um}, channel={channel}, intensity={intensity}, exposure_time={exposure_time}, magnification_factor={magnification_factor}, sample_data_alias={sample_data_alias}")
         self.frame_ID += 1
         self.timestamp = time.time()
 
@@ -865,21 +862,12 @@ class Camera_Simulation(object):
         try:
             channel_name = ChannelMapper.id_to_zarr_name(channel)
         except ValueError:
-            channel_name = None
+            raise ValueError(f"Channel {channel} not found in channel mapping")
 
-        if channel_name is None:
-            self.image = np.array(Image.open(os.path.join(script_dir, f"example-data/{self.image_paths[channel]}")))
-            print(f"Channel {channel} not found, returning a random image")
-        
-        elif performace_mode:
-            self.image = np.array(Image.open(os.path.join(script_dir, f"example-data/{self.image_paths[channel]}")))
-            print(f"Using performance mode, example image for channel {channel}")
-        else:
-            self.image = await self.get_image_from_zarr(x, y, channel_name)
-            if self.image is None:
-                # Set default error image if Zarr access fails
-                self.image = np.ones((self.Height, self.Width), dtype=np.uint8) * 128
-                print(f"Failed to get image from Zarr for channel {channel}, using default error image")
+        # Get image from Zarr - raise error if unavailable
+        self.image = await self.get_image_from_zarr(x, y, channel_name)
+        if self.image is None:
+            raise RuntimeError(f"Failed to get image from Zarr for channel {channel} (channel_name={channel_name}) at position ({x}, {y})")
 
         # Apply exposure and intensity scaling
         exposure_factor = max(0.1, exposure_time / 100)  # Ensure minimum factor to prevent black images
@@ -975,8 +963,8 @@ class Camera_Simulation(object):
         
         For zarr visualization, use the vizarr package.
         """
-        # Delegate to regular send_trigger with performace_mode=True (example images)
-        await self.send_trigger(x, y, dz, pixel_size_um, channel, intensity, exposure_time, magnification_factor, performace_mode=True)
+        # Delegate to regular send_trigger
+        await self.send_trigger(x, y, dz, pixel_size_um, channel, intensity, exposure_time, magnification_factor, sample_data_alias=sample_data_alias)
 
 
 
