@@ -206,6 +206,13 @@ async def batch_upload_to_weaviate(
             - solidity: Area / convex hull area (unitless)
             - convexity: Convex hull perimeter / perimeter (unitless)
             
+            Intensity and texture features (None if extraction fails):
+            - brightness: Mean pixel intensity (0-255)
+            - contrast: GLCM contrast (texture variation, unitless)
+            - homogeneity: GLCM homogeneity (texture smoothness, 0-1)
+            - energy: GLCM energy/uniformity (0-1)
+            - correlation: GLCM correlation (texture linearity, -1 to 1)
+            
         application_id: Application ID for the upload
         collection_name: Weaviate collection name (default: "Agentlens")
         retry_attempts: Number of retry attempts on failure (default: 2)
@@ -224,7 +231,8 @@ async def batch_upload_to_weaviate(
         # Morphological features that are always included (may have None values)
         expected_feature_fields = [
             'area', 'perimeter', 'equivalent_diameter', 'bbox_width', 'bbox_height',
-            'aspect_ratio', 'circularity', 'eccentricity', 'solidity', 'convexity'
+            'aspect_ratio', 'circularity', 'eccentricity', 'solidity', 'convexity',
+            'brightness', 'contrast', 'homogeneity', 'energy', 'correlation'
         ]
         
         # Check for missing required fields

@@ -108,15 +108,37 @@ class OfflineProcessor:
             raise Exception("AGENT_LENS_WORKSPACE_TOKEN environment variable not set")
         
         server_url = server_url or "https://hypha.aicell.io"
+        workspace = "agent-lens"
         
         print(f"📤 Creating artifact '{dataset_name}' for upload...")
         
         artifact = AsyncHyphaArtifact(
             artifact_id=dataset_name,
-            workspace="agent-lens",
+            workspace=workspace,
             token=token,
             server_url=server_url
         )
+        
+        # Create the artifact (delete existing if it already exists)
+        try:
+            await artifact.create()
+            print(f"✅ Artifact created: {workspace}/{dataset_name}")
+        except Exception as e:
+            error_str = str(e).lower()
+            if "already exists" in error_str or "fileexistserror" in error_str:
+                print(f"⚠️ Artifact already exists, deleting and recreating...")
+                # Delete the existing artifact
+                from hypha_rpc import connect_to_server
+                server = await connect_to_server({"server_url": server_url, "token": token})
+                artifact_manager = await server.get_service("public/artifact-manager")
+                await artifact_manager.delete(artifact_id=f"{workspace}/{dataset_name}", delete_files=True)
+                server.disconnect()
+                print(f"🗑️ Deleted existing artifact: {workspace}/{dataset_name}")
+                # Now create fresh
+                await artifact.create()
+                print(f"✅ Artifact created: {workspace}/{dataset_name}")
+            else:
+                raise
         
         # Edit mode for staging changes
         await artifact.edit(stage=True)
@@ -132,7 +154,15 @@ class OfflineProcessor:
                 "description": description,
                 "acquisition_settings": acquisition_settings
             }, indent=2)
-            await artifact.put(manifest_content.encode(), "/manifest.json")
+            # Write manifest to a temporary file, then upload (put() expects file paths, not bytes)
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                f.write(manifest_content)
+                temp_manifest_path = f.name
+            try:
+                await artifact.put(temp_manifest_path, "/manifest.json")
+            finally:
+                os.unlink(temp_manifest_path)  # Clean up temp file
         
         # Commit the changes
         await artifact.commit(comment=description or f"Uploaded {dataset_name}")
@@ -966,10 +996,15 @@ class OfflineProcessor:
                 
                 # Load existing canvas
                 temp_exp_manager = self.create_temp_experiment_manager(str(temp_path))
-                exp_name = experiment_folder.name
-                # Don't create new experiment, just get existing canvas
+                # Use "." to avoid creating duplicate subfolder (temp_path already identifies the experiment)
+                exp_name = "."
+                # Don't create new experiment, just get existing canvas (initialize_new=False to preserve data!)
                 temp_exp_manager.current_experiment = exp_name
-                canvas = temp_exp_manager.get_canvas(exp_name)
+                canvas = temp_exp_manager.get_canvas(exp_name, initialize_new=False)
+                
+                # Activate channels that have data (sets "active": true in omero metadata)
+                canvas.activate_channels_with_data()
+                print(f"✅ Channel metadata updated")
                 
                 # Get canvas info
                 canvas_info = canvas.get_export_info()
@@ -983,7 +1018,8 @@ class OfflineProcessor:
                 temp_exp_manager = self.create_temp_experiment_manager(str(temp_path))
 
                 # Create a single experiment with one canvas
-                exp_name = experiment_folder.name
+                # Use "." to avoid creating duplicate subfolder (temp_path already identifies the experiment)
+                exp_name = "."
                 temp_exp_manager.create_experiment(exp_name)
                 canvas = temp_exp_manager.get_canvas(exp_name)
 
@@ -1012,6 +1048,10 @@ class OfflineProcessor:
                 print(f"⏳ Waiting for stitching queue to drain...")
                 await self._wait_for_stitching_completion(canvas, timeout_seconds=600)  # 10 minute timeout for large datasets
                 print(f"✅ All images processed")
+
+                # 6. Activate channels that have data (sets "active": true in omero metadata)
+                canvas.activate_channels_with_data()
+                print(f"✅ Channel metadata updated")
 
                 # Get canvas size
                 canvas_info = canvas.get_export_info()
@@ -1063,7 +1103,8 @@ class OfflineProcessor:
                     print(f"  ❌ Dataset upload failed: {upload_error}")
                     print(f"  💡 Zarr data preserved at: {temp_path}")
                     print(f"  💡 Run again to retry upload (will skip zarr creation)")
-                    upload_result = None
+                    # Re-raise the error so the caller knows upload failed
+                    raise Exception(f"Dataset upload failed for {dataset_name}: {upload_error}") from upload_error
 
             return {
                 "success": True,

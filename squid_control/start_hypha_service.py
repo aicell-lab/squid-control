@@ -279,7 +279,7 @@ class MicroscopeHyphaService:
             'state': 'idle',  # idle, running, completed, failed
             'error_message': None,
             'scan_task': None,  # asyncio.Task for the running scan
-            'saved_data_type': None,  # raw_images, full_zarr, quick_zarr
+            'saved_data_type': None,  # raw_images_well_plate, full_zarr, quick_zarr
         }
 
         # Segmentation state tracking (single segmentation operation at a time)
@@ -1213,7 +1213,75 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to close illumination: {e}")
             raise e
 
-    async def scan_plate_save_raw_images(self, well_plate_type: str = "96", illumination_settings: List[dict] = None, do_contrast_autofocus: bool = False, do_reflection_af: bool = True, wells_to_scan: List[str] = None, Nx: int = 3, Ny: int = 3, dx: float = 0.8, dy: float = 0.8, action_ID: str = 'testPlateScan', context=None):
+    async def _setup_focus_map(self, focus_map_points: List[List[float]], do_contrast_autofocus: bool = False, do_reflection_af: bool = True):
+        """
+        Setup focus map by moving to 3 reference points and performing autofocus at each.
+        
+        Args:
+            focus_map_points: List of 3 points, each point is [x, y] or [x, y, z] in mm
+                Example: [[10.0, 10.0], [100.0, 10.0], [55.0, 70.0]]
+                Z value is optional - will be measured via autofocus if not provided
+            do_contrast_autofocus: Use contrast-based autofocus to measure Z
+            do_reflection_af: Use reflection-based (laser) autofocus to measure Z
+        """
+        if focus_map_points is None or len(focus_map_points) != 3:
+            logger.debug("No valid focus map points provided, skipping focus map setup")
+            return
+        
+        # Clear any existing focus map
+        self.squidController.autofocusController.clear_focus_map()
+        
+        logger.info(f"Setting up focus map with {len(focus_map_points)} reference points")
+        
+        # Move to each point, perform autofocus, and record the Z position
+        for i, point in enumerate(focus_map_points):
+            if len(point) < 2:
+                raise ValueError(f"Each focus map point must have at least 2 values [x, y], got {len(point)}")
+            
+            x, y = point[0], point[1]
+            logger.info(f"Focus map point {i+1}/3: Moving to ({x}, {y}) mm")
+            
+            # Move to the position
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                self.squidController.navigationController.move_to,
+                x, y
+            )
+            # Wait for movement to complete
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                self.squidController.microcontroller.wait_till_operation_is_completed
+            )
+            
+            # Perform autofocus based on user selection
+            if do_contrast_autofocus:
+                logger.info(f"Focus map point {i+1}/3: Performing contrast autofocus")
+                await self.squidController.contrast_autofocus()
+            elif do_reflection_af:
+                logger.info(f"Focus map point {i+1}/3: Performing reflection autofocus")
+                await self.squidController.reflection_autofocus()
+            else:
+                logger.warning(f"Focus map point {i+1}/3: No autofocus method selected, using current Z")
+            
+            # Get the current position after autofocus
+            x_actual = self.squidController.navigationController.x_pos_mm
+            y_actual = self.squidController.navigationController.y_pos_mm
+            z_actual = self.squidController.navigationController.z_pos_mm
+            
+            # Add to focus map
+            self.squidController.autofocusController.focus_map_coords.append((x_actual, y_actual, z_actual))
+            logger.info(f"Focus map point {i+1}/3: Added ({x_actual:.3f}, {y_actual:.3f}, {z_actual:.3f}) mm")
+        
+        # Enable focus map
+        self.squidController.autofocusController.set_focus_map_use(True)
+        logger.info("Focus map enabled with 3 reference points")
+
+    def _cleanup_focus_map(self):
+        """Clear focus map after scan completes."""
+        self.squidController.autofocusController.clear_focus_map()
+        logger.info("Focus map cleared after scan")
+
+    async def scan_plate_save_raw_images(self, well_plate_type: str = "96", illumination_settings: List[dict] = None, do_contrast_autofocus: bool = False, do_reflection_af: bool = True, wells_to_scan: List[str] = None, Nx: int = 3, Ny: int = 3, dx: float = 0.8, dy: float = 0.8, action_ID: str = 'testPlateScan', focus_map_points: List[List[float]] = None, context=None):
         """
         
         Scan the well plate according to the specified wells with custom illumination settings
@@ -1229,10 +1297,14 @@ class MicroscopeHyphaService:
             dx: Distance between X positions in mm
             dy: Distance between Y positions in mm
             action_ID: Identifier for this scan
+            focus_map_points: List of 3 points [x, y] or [x, y, z] in mm for focus map generation.
+                Example: [[10.0, 10.0], [100.0, 10.0], [55.0, 70.0]]
+                System will move to each point, perform autofocus (based on do_contrast_autofocus/do_reflection_af),
+                record the Z position, and create a focus map. During scanning, Z is interpolated from these 3 points.
             
         Returns: The message of the action
         """
-        logger.warning("DEPRECATED: scan_plate_save_raw_images is deprecated and will be removed in a future release. Use scan_start() with saved_data_type='raw_images' instead.")
+        logger.warning("DEPRECATED: scan_plate_save_raw_images is deprecated and will be removed in a future release. Use scan_start() with saved_data_type='raw_images_well_plate' instead.")
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -1248,6 +1320,12 @@ class MicroscopeHyphaService:
 
             if wells_to_scan is None:
                 wells_to_scan = ['A1']
+
+            # Setup focus map if provided (move to points, autofocus, record Z)
+            if focus_map_points is not None:
+                logger.info("Setting up focus map before scanning...")
+                await self._setup_focus_map(focus_map_points, do_contrast_autofocus, do_reflection_af)
+                logger.info("Focus map setup complete")
 
             # Check if video buffering is active and stop it during scanning
             video_buffering_was_active = self.frame_acquisition_running
@@ -1286,9 +1364,107 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to scan well plate: {e}")
             raise e
         finally:
+            # Cleanup focus map if it was used
+            if focus_map_points is not None:
+                self._cleanup_focus_map()
             # Always reset the scanning flag, regardless of success or failure
             self.scanning_in_progress = False
             logger.info("Well plate scanning completed, video buffering auto-start is now re-enabled")
+
+    async def scan_flexible_positions(self, positions: List[dict] = None, illumination_settings: List[dict] = None, do_contrast_autofocus: bool = False, do_reflection_af: bool = True, action_ID: str = 'flexibleScan', focus_map_points: List[List[float]] = None, move_for_autofocus: bool = False, context=None):
+        """
+        Scan arbitrary positions with individual grid parameters (no well plate constraints).
+        
+        Args:
+            positions: List of position dictionaries, each containing:
+                {
+                    'x': 10.0,        # X position in mm (absolute stage coordinate)
+                    'y': 20.0,        # Y position in mm (absolute stage coordinate)
+                    'z': 5.0,         # Z position in mm (absolute stage coordinate, optional)
+                    'Nx': 3,          # Number of X grid points for this position (default: 1)
+                    'Ny': 3,          # Number of Y grid points for this position (default: 1)
+                    'Nz': 1,          # Number of Z grid points for this position (default: 1)
+                    'dx': 0.8,        # X spacing in mm for this position (default: 0.8)
+                    'dy': 0.8,        # Y spacing in mm for this position (default: 0.8)
+                    'dz': 0.01,       # Z spacing in mm for this position (default: 0.01)
+                    'name': 'pos1'    # Optional name for this position (default: 'position_N')
+                }
+            illumination_settings: List of dictionaries with illumination settings
+            do_contrast_autofocus: Whether to perform contrast-based autofocus
+            do_reflection_af: Whether to perform reflection-based autofocus
+            action_ID: Identifier for this scan
+            focus_map_points: List of 3 points [x, y] or [x, y, z] in mm for focus map generation.
+                Example: [[10.0, 10.0], [100.0, 10.0], [55.0, 70.0]]
+                System will move to each point, perform autofocus (based on do_contrast_autofocus/do_reflection_af),
+                record the Z position, and create a focus map. During scanning, Z is interpolated from these 3 points.
+            move_for_autofocus: If True, move 0.2mm in X and Y before reflection autofocus, then move back.
+                If False (default), perform reflection autofocus at current position only.
+            
+        Returns: Confirmation message
+        """
+        focus_map_used = False
+        try:
+            # Check authentication
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+
+            if positions is None or len(positions) == 0:
+                raise ValueError("positions list cannot be empty")
+
+            if illumination_settings is None:
+                logger.warning("No illumination settings provided, using default settings")
+                illumination_settings = [
+                    {'channel': 'BF LED matrix full', 'intensity': 28.0, 'exposure_time': 20.0},
+                    {'channel': 'Fluorescence 488 nm Ex', 'intensity': 27.0, 'exposure_time': 60.0},
+                    {'channel': 'Fluorescence 561 nm Ex', 'intensity': 98.0, 'exposure_time': 100.0},
+                ]
+
+            # Setup focus map if provided (move to points, autofocus, record Z)
+            if focus_map_points is not None:
+                logger.info("Setting up focus map before scanning...")
+                await self._setup_focus_map(focus_map_points, do_contrast_autofocus, do_reflection_af)
+                focus_map_used = True
+                logger.info("Focus map setup complete")
+
+            # Check if video buffering is active and stop it during scanning
+            video_buffering_was_active = self.frame_acquisition_running
+            if video_buffering_was_active:
+                logger.info("Video buffering is active, stopping it temporarily during flexible position scanning")
+                await self.stop_video_buffering()
+                # Wait additional time to ensure camera fully settles after stopping video buffering
+                logger.info("Waiting for camera to settle after stopping video buffering...")
+                await asyncio.sleep(0.5)
+
+            # Set scanning flag to prevent automatic video buffering restart during scan
+            self.scanning_in_progress = True
+
+            logger.info(f"Start flexible position scanning with {len(positions)} positions")
+
+            # Run the blocking flexible_position_scan operation in a separate thread executor
+            # This prevents the asyncio event loop from being blocked during long scans
+            await asyncio.get_event_loop().run_in_executor(
+                None,  # Use default ThreadPoolExecutor
+                self.squidController.flexible_position_scan,
+                positions,
+                illumination_settings,
+                do_contrast_autofocus,
+                do_reflection_af,
+                action_ID,
+                move_for_autofocus
+            )
+
+            logger.info("Flexible position scanning completed")
+            return "Flexible position scanning completed"
+        except Exception as e:
+            logger.error(f"Failed to scan flexible positions: {e}")
+            raise e
+        finally:
+            # Cleanup focus map if it was used
+            if focus_map_used:
+                self._cleanup_focus_map()
+            # Always reset the scanning flag, regardless of success or failure
+            self.scanning_in_progress = False
+            logger.info("Flexible position scanning completed, video buffering auto-start is now re-enabled")
 
     @schema_function(skip_self=True)
     def set_illumination(self, channel: int=Field(0, description="Illumination channel: 0=Brightfield, 11=405nm, 12=488nm, 13=638nm, 14=561nm, 15=730nm"), intensity: int=Field(50, description="LED illumination intensity percentage (range: 0-100)"), context=None):
@@ -2388,14 +2564,36 @@ class MicroscopeHyphaService:
             if not token:
                 raise Exception("AGENT_LENS_WORKSPACE_TOKEN environment variable not set")
             
+            workspace = "agent-lens"
             logger.info(f"Creating artifact '{dataset_name}' for upload")
             
             artifact = AsyncHyphaArtifact(
                 artifact_id=dataset_name,
-                workspace="agent-lens",
+                workspace=workspace,
                 token=token,
                 server_url=self.server_url
             )
+            
+            # Create the artifact (delete existing if it already exists)
+            try:
+                await artifact.create()
+                logger.info(f"Artifact created: {workspace}/{dataset_name}")
+            except Exception as e:
+                error_str = str(e).lower()
+                if "already exists" in error_str or "fileexistserror" in error_str:
+                    logger.warning(f"Artifact already exists, deleting and recreating...")
+                    # Delete the existing artifact using artifact manager
+                    from hypha_rpc import connect_to_server
+                    server = await connect_to_server({"server_url": self.server_url, "token": token})
+                    artifact_manager = await server.get_service("public/artifact-manager")
+                    await artifact_manager.delete(artifact_id=f"{workspace}/{dataset_name}", delete_files=True)
+                    logger.info(f"Deleted existing artifact: {workspace}/{dataset_name}")
+                    server.disconnect()
+                    # Now create fresh
+                    await artifact.create()
+                    logger.info(f"Artifact created: {workspace}/{dataset_name}")
+                else:
+                    raise
             
             # Edit mode for staging changes
             await artifact.edit(stage=True)
@@ -2407,12 +2605,20 @@ class MicroscopeHyphaService:
             # Add manifest with acquisition settings if available
             if acquisition_settings:
                 import json
+                import tempfile
                 manifest_content = json.dumps({
                     "name": experiment_name,
                     "description": description or f"Experiment {experiment_name}",
                     "acquisition_settings": acquisition_settings
                 }, indent=2)
-                await artifact.put(manifest_content.encode(), "/manifest.json")
+                # Write manifest to a temporary file, then upload (put() expects file paths, not bytes)
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                    f.write(manifest_content)
+                    temp_manifest_path = f.name
+                try:
+                    await artifact.put(temp_manifest_path, "/manifest.json")
+                finally:
+                    os.unlink(temp_manifest_path)  # Clean up temp file
             
             # Commit the changes
             await artifact.commit(comment=description or f"Experiment {experiment_name}")
@@ -3254,23 +3460,41 @@ class MicroscopeHyphaService:
                         config: dict = Field(..., description="Scan configuration dictionary containing all scan parameters"),
                         context=None):
         """
-        Launch a background scanning operation with one of three profiles: raw_images, full_zarr, or quick_zarr.
+        Launch a background scanning operation with one of four profiles: raw_images_well_plate, raw_image_flexible, full_zarr, or quick_zarr.
         Returns: Dictionary with success status, profile type, action_ID, and scan state ('running').
         Notes: Scan executes asynchronously. Use scan_get_status() to monitor progress and scan_cancel() to abort.
         
-        Config dictionary must contain 'saved_data_type' (str): 'raw_images', 'full_zarr', or 'quick_zarr'
+        Config dictionary must contain 'saved_data_type' (str): 'raw_images_well_plate', 'raw_image_flexible', 'full_zarr', or 'quick_zarr'
         
         Common parameters:
         - action_ID (str): Unique identifier for this scan operation
-        - well_plate_type (str): Well plate format: '6', '12', '24', '96', or '384'
+        - well_plate_type (str): Well plate format: '6', '12', '24', '96', or '384' (not used for raw_image_flexible)
         - do_contrast_autofocus (bool): Enable contrast-based autofocus
         - do_reflection_af (bool): Enable reflection-based laser autofocus
         
-        For 'raw_images':
+        For 'raw_images_well_plate':
         - illumination_settings (List[dict]): Illumination settings
         - wells_to_scan (List[str]): List of wells to scan (e.g., ['A1', 'B2', 'C3'])
         - Nx, Ny (int): Grid dimensions
         - dx, dy (float): Position intervals in mm
+        - focus_map_points (List[List[float]], optional): 3 reference points [[x,y], [x,y], [x,y]] in mm.
+          System will move to each point, autofocus, record Z, then use interpolation during scan.
+        
+        For 'raw_image_flexible':
+        - positions (List[dict]): List of position dictionaries, each with:
+          * x (float): X position in mm (absolute stage coordinate)
+          * y (float): Y position in mm (absolute stage coordinate)
+          * z (float, optional): Z position in mm (absolute stage coordinate)
+          * Nx (int, optional): Number of X grid points (default: 1)
+          * Ny (int, optional): Number of Y grid points (default: 1)
+          * Nz (int, optional): Number of Z grid points (default: 1)
+          * dx (float, optional): X spacing in mm (default: 0.8)
+          * dy (float, optional): Y spacing in mm (default: 0.8)
+          * dz (float, optional): Z spacing in mm (default: 0.01)
+          * name (str, optional): Position name (default: 'position_N')
+        - illumination_settings (List[dict]): Illumination settings
+        - focus_map_points (List[List[float]], optional): 3 reference points [[x,y,z], [x,y,z], [x,y,z]] in mm for focus interpolation
+        - move_for_autofocus (bool, optional): If True, move 0.2mm in X and Y before reflection autofocus, then move back. If False (default), perform reflection autofocus at current position only.
         
         For 'full_zarr':
         - start_x_mm, start_y_mm (float, optional): Starting position in mm (relative to well center).
@@ -3312,7 +3536,7 @@ class MicroscopeHyphaService:
                 raise ValueError("Config must contain 'saved_data_type' parameter")
 
             # Validate saved_data_type
-            valid_types = ['raw_images', 'full_zarr', 'quick_zarr']
+            valid_types = ['raw_images_well_plate', 'raw_image_flexible', 'full_zarr', 'quick_zarr']
             if saved_data_type not in valid_types:
                 raise ValueError(f"Invalid saved_data_type '{saved_data_type}'. Must be one of: {valid_types}")
 
@@ -3328,14 +3552,15 @@ class MicroscopeHyphaService:
             logger.info(f"Starting unified scan with profile: {saved_data_type}")
 
             # Route to appropriate scan method based on profile
-            if saved_data_type == 'raw_images':
-                # Extract raw_images specific parameters
+            if saved_data_type == 'raw_images_well_plate':
+                # Extract raw_images_well_plate specific parameters
                 illumination_settings = config.get('illumination_settings')
                 wells_to_scan = config.get('wells_to_scan', ['A1'])
                 Nx = config.get('Nx', 3)
                 Ny = config.get('Ny', 3)
                 dx = config.get('dx', 0.8)
                 dy = config.get('dy', 0.8)
+                focus_map_points = config.get('focus_map_points', None)
 
                 scan_coro = self._run_scan_with_state_tracking(
                     self.scan_plate_save_raw_images,
@@ -3349,6 +3574,7 @@ class MicroscopeHyphaService:
                     dx=dx,
                     dy=dy,
                     action_ID=action_ID,
+                    focus_map_points=focus_map_points,
                     context=context
                 )
 
@@ -3386,6 +3612,34 @@ class MicroscopeHyphaService:
                     well_plate_type=well_plate_type,
                     well_padding_mm=well_padding_mm,
                     uploading=uploading,
+                    context=context
+                )
+
+            elif saved_data_type == 'raw_image_flexible':
+                # Extract raw_image_flexible specific parameters
+                positions = config.get('positions')
+                illumination_settings = config.get('illumination_settings')
+                focus_map_points = config.get('focus_map_points', None)
+                move_for_autofocus = config.get('move_for_autofocus', False)
+                
+                # Validate required parameters
+                if positions is None or len(positions) == 0:
+                    raise ValueError("raw_image_flexible scan requires 'positions' parameter with at least one position")
+                
+                # Validate each position has required fields
+                for idx, pos in enumerate(positions):
+                    if 'x' not in pos or 'y' not in pos:
+                        raise ValueError(f"Position {idx} must have 'x' and 'y' coordinates")
+                
+                scan_coro = self._run_scan_with_state_tracking(
+                    self.scan_flexible_positions,
+                    positions=positions,
+                    illumination_settings=illumination_settings,
+                    do_contrast_autofocus=do_contrast_autofocus,
+                    do_reflection_af=do_reflection_af,
+                    action_ID=action_ID,
+                    focus_map_points=focus_map_points,
+                    move_for_autofocus=move_for_autofocus,
                     context=context
                 )
 
@@ -3470,7 +3724,7 @@ class MicroscopeHyphaService:
         """
         Abort the currently running scan operation and return microscope to idle state.
         Returns: Dictionary with success status, confirmation message, and final scan state.
-        Notes: Works with any scan profile (raw_images, full_zarr, quick_zarr). Scan stops gracefully where possible. Partial data may be retained.
+        Notes: Works with any scan profile (raw_images_well_plate, raw_image_flexible, full_zarr, quick_zarr). Scan stops gracefully where possible. Partial data may be retained.
         """
         try:
             # Check authentication

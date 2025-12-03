@@ -2041,7 +2041,7 @@ async def test_scan_start_concurrent_prevention(test_microscope_service):
         # Start first scan
         result1 = await service.scan_start(
             config={
-                "saved_data_type": "raw_images",
+                "saved_data_type": "raw_images_well_plate",
                 "well_plate_type": "96",
                 "Nx": 2,
                 "Ny": 2,
@@ -2086,10 +2086,10 @@ async def test_scan_start_concurrent_prevention(test_microscope_service):
 
 
 async def test_scan_start_raw_images_profile(test_microscope_service):
-    """Test scan_start with raw_images profile."""
+    """Test scan_start with raw_images_well_plate profile."""
     microscope, service = test_microscope_service
     
-    print("Testing scan_start with raw_images profile")
+    print("Testing scan_start with raw_images_well_plate profile")
     
     from unittest.mock import AsyncMock, patch
     
@@ -2097,10 +2097,10 @@ async def test_scan_start_raw_images_profile(test_microscope_service):
     mock_scan = AsyncMock(return_value="Well plate scanning completed")
     
     with patch.object(microscope, 'scan_plate_save_raw_images', new=mock_scan):
-        # Start scan with raw_images profile
+        # Start scan with raw_images_well_plate profile
         result = await service.scan_start(
             config={
-                "saved_data_type": "raw_images",
+                "saved_data_type": "raw_images_well_plate",
                 "well_plate_type": "96",
                 "illumination_settings": [
                     {'channel': 'BF LED matrix full', 'intensity': 50, 'exposure_time': 100}
@@ -2115,7 +2115,7 @@ async def test_scan_start_raw_images_profile(test_microscope_service):
         )
         
         assert result['success'] == True, "Scan should start successfully"
-        assert result['saved_data_type'] == 'raw_images', "Profile should be raw_images"
+        assert result['saved_data_type'] == 'raw_images_well_plate', "Profile should be raw_images_well_plate"
         assert result['state'] == 'running', "State should be running"
         assert result['action_ID'] == 'test_raw_images', "Action ID should match"
         
@@ -2125,7 +2125,7 @@ async def test_scan_start_raw_images_profile(test_microscope_service):
         # Check that status shows running
         status = await service.scan_get_status()
         assert status['state'] in ['running', 'completed'], "State should be running or completed"
-        assert status['saved_data_type'] == 'raw_images', "Profile should be raw_images"
+        assert status['saved_data_type'] == 'raw_images_well_plate', "Profile should be raw_images_well_plate"
         
         # Wait for scan to complete
         await asyncio.sleep(0.5)
@@ -2137,9 +2137,9 @@ async def test_scan_start_raw_images_profile(test_microscope_service):
         final_status = await service.scan_get_status()
         assert final_status['state'] in ['completed', 'idle'], "Scan should be completed"
         
-        print("   ✓ raw_images profile scan completed successfully")
+        print("   ✓ raw_images_well_plate profile scan completed successfully")
     
-    print("✅ scan_start raw_images profile test passed!")
+    print("✅ scan_start raw_images_well_plate profile test passed!")
 
 
 async def test_scan_start_full_zarr_profile(test_microscope_service):
@@ -2214,7 +2214,7 @@ async def test_scan_cancel_functionality(test_microscope_service):
         # Start a scan
         result = await service.scan_start(
             config={
-                "saved_data_type": "raw_images",
+                "saved_data_type": "raw_images_well_plate",
                 "well_plate_type": "96",
                 "Nx": 2,
                 "Ny": 2,
@@ -2290,7 +2290,7 @@ async def test_scan_error_handling(test_microscope_service):
         # Start a scan that will fail
         result = await service.scan_start(
             config={
-                "saved_data_type": "raw_images",
+                "saved_data_type": "raw_images_well_plate",
                 "well_plate_type": "96",
                 "Nx": 2,
                 "Ny": 2,
@@ -2334,7 +2334,7 @@ async def test_scan_state_transitions(test_microscope_service):
         # Start scan -> should transition to running
         result = await service.scan_start(
             config={
-                "saved_data_type": "raw_images",
+                "saved_data_type": "raw_images_well_plate",
                 "well_plate_type": "96",
                 "Nx": 2,
                 "Ny": 2,
@@ -2382,7 +2382,7 @@ async def test_scan_status_persistence(test_microscope_service):
         # Start scan
         await service.scan_start(
             config={
-                "saved_data_type": "raw_images",
+                "saved_data_type": "raw_images_well_plate",
                 "well_plate_type": "96",
                 "Nx": 2,
                 "Ny": 2,
@@ -2406,7 +2406,7 @@ async def test_scan_status_persistence(test_microscope_service):
         
         final_status = await service.scan_get_status()
         assert final_status['state'] == 'completed', "Final state should be completed"
-        assert final_status['saved_data_type'] == 'raw_images', "Profile should persist"
+        assert final_status['saved_data_type'] == 'raw_images_well_plate', "Profile should persist"
         
         print("   ✓ Scan status persisted correctly through multiple checks")
     
@@ -2442,7 +2442,7 @@ async def test_scan_status_in_get_status(test_microscope_service):
         # Start scan
         await service.scan_start(
             config={
-                "saved_data_type": "raw_images",
+                "saved_data_type": "raw_images_well_plate",
                 "well_plate_type": "96",
                 "Nx": 2,
                 "Ny": 2,
@@ -2455,7 +2455,7 @@ async def test_scan_status_in_get_status(test_microscope_service):
         status = await service.get_status()
         
         assert status['scan_status']['state'] in ['running', 'completed'], "Scan should be running"
-        assert status['scan_status']['saved_data_type'] == 'raw_images', "Scan type should be raw_images"
+        assert status['scan_status']['saved_data_type'] == 'raw_images_well_plate', "Scan type should be raw_images_well_plate"
         print(f"   ✓ Running scan status: {status['scan_status']['state']}")
         
         # Wait for completion
@@ -2466,7 +2466,7 @@ async def test_scan_status_in_get_status(test_microscope_service):
         status = await service.get_status()
         
         assert status['scan_status']['state'] == 'completed', "Scan should be completed"
-        assert status['scan_status']['saved_data_type'] == 'raw_images', "Scan type should persist"
+        assert status['scan_status']['saved_data_type'] == 'raw_images_well_plate', "Scan type should persist"
         assert status['scan_status']['error_message'] is None, "No error on successful completion"
         print("   ✓ Completed scan status correct")
     

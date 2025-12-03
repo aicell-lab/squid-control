@@ -1854,6 +1854,12 @@ class AutoFocusController:
 
         self.autofocus_in_progress = True
 
+        # Ensure autofocus parameters are initialized
+        if self.N is None:
+            self.set_N(19)  # Default number of steps
+        if self.deltaZ_usteps is None:
+            self.set_deltaZ(3.048)  # Default step size in um
+
         try:
             if hasattr(self, 'thread') and self.thread and self.thread.is_alive():
                 print('*** autofocus thread is still running ***')
@@ -2275,7 +2281,7 @@ class MultiPointWorker:
                                         if config.name == configuration_name_AF
 
                                 )
-                                self.autofocusController.set_microscope_mode(config_AF)
+                                self.autofocusController.liveController.set_microscope_mode(config_AF)
                                 print(f"autofocus at {coordiante_name}{i}_{j}, configuration: {configuration_name_AF},{config_AF}")
                                 if (
                                     self.FOV_counter
@@ -2286,9 +2292,16 @@ class MultiPointWorker:
                                     self.autofocusController.wait_till_autofocus_has_completed()
                                 # upate z location of scan_coordinates_mm after CONFIG.AF
                                 if len(coordiante_mm) == 3:
-                                    self.scan_coordinates_mm[coordinate_id, 2] = (
-                                        self.navigationController.z_pos_mm
-                                    )
+                                    # Handle both numpy array and list cases
+                                    if isinstance(self.scan_coordinates_mm, np.ndarray):
+                                        self.scan_coordinates_mm[coordinate_id, 2] = (
+                                            self.navigationController.z_pos_mm
+                                        )
+                                    else:
+                                        # For list, convert to list, modify, and update
+                                        coord = list(self.scan_coordinates_mm[coordinate_id])
+                                        coord[2] = self.navigationController.z_pos_mm
+                                        self.scan_coordinates_mm[coordinate_id] = coord
                                     # update the coordinate in the widget
                                     try:
                                         self.microscope.multiPointWidget2._update_z(
@@ -2319,29 +2332,44 @@ class MultiPointWorker:
                                         if config.name == configuration_name_AF
 
                                 )
-                                self.autofocusController.set_microscope_mode(config_AF)
+                                self.autofocusController.liveController.set_microscope_mode(config_AF)
                                 self.autofocusController.autofocus()
                                 self.autofocusController.wait_till_autofocus_has_completed()
                             # set the current plane as reference
                             self.microscope.laserAutofocusController.set_reference()
                         else:
                             try:
-                                if (
-                                    self.navigationController.get_pid_control_flag(
-                                        2
-                                    )
-                                    is False
-                                ):
-                                    self.microscope.laserAutofocusController.move_to_target(
-                                        0
-                                    )
-                                    self.microscope.laserAutofocusController.move_to_target(
-                                        0
-                                    )  # for stepper in open loop mode, repeat the operation to counter backlash
+                                # Check if focus map is enabled and use it if available
+                                if self.autofocusController.use_focus_map:
+                                    # Use focus map interpolation for faster focusing
+                                    self.autofocusController.autofocus(focus_map_override=False)
+                                    self.autofocusController.wait_till_autofocus_has_completed()
                                 else:
-                                    self.microscope.laserAutofocusController.move_to_target(
-                                        0
-                                    )
+                                    # Use laser autofocus as normal
+                                    # Check if movement-based autofocus is requested
+                                    if self.move_for_autofocus:
+                                        # Move 0.2mm in X/Y, measure, move back, then adjust Z
+                                        if (
+                                            self.navigationController.get_pid_control_flag(
+                                                2
+                                            )
+                                            is False
+                                        ):
+                                            self.microscope.laserAutofocusController.move_to_target(
+                                                0
+                                            )
+                                            self.microscope.laserAutofocusController.move_to_target(
+                                                0
+                                            )  # for stepper in open loop mode, repeat the operation to counter backlash
+                                        else:
+                                            self.microscope.laserAutofocusController.move_to_target(
+                                                0
+                                            )
+                                    else:
+                                        # Perform autofocus at current position without X/Y movement
+                                        self.microscope.laserAutofocusController.move_to_target_no_movement(
+                                            0
+                                        )
                             except:
                                 file_ID = (
                                     coordiante_name
@@ -2864,6 +2892,7 @@ class MultiPointController:
         self.deltat = 0
         self.contrast_autofocus = False
         self.do_reflection_af = False
+        self.move_for_autofocus = False
         self.gen_focus_map = False
         self.focus_map_storage = []
         self.already_using_fmap = False
@@ -3808,6 +3837,33 @@ class LaserAutofocusController:
         return displacement_um
 
     def move_to_target(self, target_um):
+        # move by distance 0.2,0.2 mm in x and y direction
+        self.navigationController.move_x(0.2)
+        self.navigationController.move_y(0.2)
+        self.microcontroller.wait_till_operation_is_completed()
+        current_displacement_um = self.measure_displacement()
+        # move back to the original position
+        self.navigationController.move_x(-0.2)
+        self.navigationController.move_y(-0.2)
+        self.microcontroller.wait_till_operation_is_completed()
+        um_to_move = target_um - current_displacement_um
+        # limit the range of movement
+        um_to_move = min(um_to_move, 200)
+        um_to_move = max(um_to_move, -200)
+        self.navigationController.move_z(um_to_move / 1000)
+        self.wait_till_operation_is_completed()
+        # update the displacement measurement
+        self.measure_displacement()
+
+    def move_to_target_no_movement(self, target_um):
+        """
+        Perform reflection autofocus without moving stage in X/Y directions.
+        Measures displacement at current position and adjusts Z accordingly.
+        
+        Args:
+            target_um: Target displacement in micrometers (typically 0)
+        """
+        # Measure displacement at current position (no X/Y movement)
         current_displacement_um = self.measure_displacement()
         um_to_move = target_um - current_displacement_um
         # limit the range of movement
