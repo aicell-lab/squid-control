@@ -420,6 +420,25 @@ class MicroscopeHyphaService:
             if result != "pong":
                 raise RuntimeError(f"Microscope service returned unexpected response: {result}")
 
+            # Check remote server connection and MCP service health
+            if hasattr(self, 'remote_server') and self.remote_server is not None:
+                try:
+                    mcp_service_id = f"{self.service_id}-mcp"
+                    mcp_svc = await self.remote_server.get_service(mcp_service_id)
+                    if mcp_svc is None:
+                        logger.warning("MCP service not found on remote server")
+                    else:
+                        mcp_result = await mcp_svc.ping()
+                        if mcp_result != "pong":
+                            logger.warning(f"MCP service returned unexpected response: {mcp_result}")
+                        else:
+                            logger.info("Remote server MCP service is healthy")
+                except Exception as remote_error:
+                    logger.warning(f"Remote server health check failed: {str(remote_error)}")
+                    # Don't raise an error for remote server issues as it's not critical for basic operation
+            else:
+                logger.info("Remote server not initialized, skipping remote health check")
+
             # Check artifact manager connection if available
             if self.artifact_manager is not None:
                 try:
@@ -1886,6 +1905,63 @@ class MicroscopeHyphaService:
 
         logger.info(f"You can also test the service via the HTTP proxy: {self.server_url}{server.config.workspace}/services/{id}")
 
+    async def start_hypha_mcp_service(self, server, service_id, run_in_executor=None):
+        """
+        Register a streamlined MCP service with only essential endpoints for MCP/chatbot control.
+        This service contains only 7 essential endpoints to reduce complexity for chatbot integrations.
+        """
+        # Default to True for production, False for tests (identified by "test" in service_id)
+        if run_in_executor is None:
+            run_in_executor = "test" not in service_id.lower()
+
+        # Build the MCP service configuration
+        # Always require context for proper authentication and schema generation
+        visibility = "public" if self.is_simulation else "protected"
+        require_context = True  # Always require context for consistent schema
+
+        # Generate description for MCP service
+        if self.is_simulation:
+            description = "A streamlined MCP microscope control service for the Squid automated microscope operating in simulation mode. This service provides essential endpoints for chatbot/MCP control: stage positioning, image capture, well navigation, and autofocus. Optimized for natural language control interfaces."
+        elif self.is_squid_plus:
+            description = "A streamlined MCP microscope control service for the Squid+ automated microscope. This service provides essential endpoints for chatbot/MCP control: stage positioning, image capture, well navigation, and autofocus. Optimized for natural language control interfaces."
+        else:
+            description = "A streamlined MCP microscope control service for the Squid automated microscope. This service provides essential endpoints for chatbot/MCP control: stage positioning, image capture, well navigation, and autofocus. Optimized for natural language control interfaces."
+
+        mcp_service_id = f"{service_id}-mcp"
+        
+        service_config = {
+            "name": "Microscope Control Service (MCP)",
+            "id": mcp_service_id,
+            "description": description,
+            "config": {
+                "visibility": visibility,
+                "require_context": require_context,  # Always require context
+                "run_in_executor": run_in_executor
+            },
+            "type": "service",
+            "ping": self.ping,
+            "is_service_healthy": self.is_service_healthy,
+            # MCP endpoints only (7 essential endpoints for chatbot control)
+            "move_by_distance": self.move_by_distance,
+            "snap": self.snap,
+            "navigate_to_well": self.navigate_to_well,
+            "move_to_position": self.move_to_position,
+            "reflection_autofocus": self.reflection_autofocus,
+            "get_status": self.get_status,
+            "inspect_tool": self.inspect_tool,
+        }
+
+        svc = await server.register_service(service_config)
+
+        logger.info(
+            f"MCP service (service_id={mcp_service_id}) started successfully, available at {self.server_url}{server.config.workspace}/services"
+        )
+
+        logger.info(f'You can use this MCP service using the service id: {svc.id}')
+        id = svc.id.split(":")[1]
+
+        logger.info(f"You can also test the MCP service via the HTTP proxy: {self.server_url}{server.config.workspace}/services/{id}")
+
     async def start_webrtc_service(self, server, webrtc_service_id_arg):
         self.webrtc_service_id = webrtc_service_id_arg
 
@@ -2069,6 +2145,10 @@ class MicroscopeHyphaService:
             await self.start_hypha_service(self.server, service_id=self.service_id)
         else:
             await self.start_hypha_service(self.server, service_id=self.service_id)
+
+        # Register MCP service for MCP/chatbot control (streamlined with only essential endpoints)
+        # MCP service only registers on remote server, never on local server
+        await self.start_hypha_mcp_service(self.remote_server, service_id=self.service_id)
 
         webrtc_id = f"video-track-{self.service_id}"
         if not self.is_local: # only start webrtc service in remote mode
