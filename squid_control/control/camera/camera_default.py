@@ -657,6 +657,9 @@ class Camera_Simulation(object):
     # Class-level cache for zarr metadata and stores
     _zarr_cache = {}
     
+    # Local path to zarr dataset or remote URL
+    ZARR_DATASET_PATH = "/home/tao/Documents/example-zarr/data.zarr" #"https://hypha.aicell.io/agent-lens/apps/agent-lens/example-image-data.zarr"
+    
     # Channel name to zarr index mapping for the example-image-data.zarr dataset
     # The zarr dataset has channels indexed 0-5 in this order
     ZARR_CHANNEL_INDEX = {
@@ -668,13 +671,13 @@ class Camera_Simulation(object):
         "Fluorescence_730_nm_Ex": 5,
     }
     
-    def _fetch_zarr_region_sync(self, zarr_url, channel_idx, x, y, width, height):
+    def _fetch_zarr_region_sync(self, zarr_path, channel_idx, x, y, width, height):
         """
         Synchronous helper function to perform blocking zarr I/O operations.
         This function runs in a thread to avoid blocking the event loop.
         
         Args:
-            zarr_url (str): URL of the zarr dataset
+            zarr_path (str): Path or URL of the zarr dataset (local path or HTTP URL)
             channel_idx (int): Channel index to fetch
             x, y (float): Stage coordinates in mm
             width, height (int): Expected output dimensions (camera Width and Height)
@@ -684,12 +687,20 @@ class Camera_Simulation(object):
         """
         try:
             # Check cache for zarr store and metadata
-            if zarr_url not in self._zarr_cache:
-                print(f"Opening remote zarr store: {zarr_url}")
-                # Create HTTP filesystem and open zarr store (blocking I/O)
-                fs = fsspec.filesystem('http')
-                store = fs.get_mapper(zarr_url)
-                root = zarr.open_group(store, mode='r')
+            if zarr_path not in self._zarr_cache:
+                # Determine if it's a remote URL or local path
+                is_remote = zarr_path.startswith('http://') or zarr_path.startswith('https://')
+                
+                if is_remote:
+                    print(f"Opening remote zarr store: {zarr_path}")
+                    # Create HTTP filesystem and open zarr store (blocking I/O)
+                    fs = fsspec.filesystem('http')
+                    store = fs.get_mapper(zarr_path)
+                    root = zarr.open_group(store, mode='r')
+                else:
+                    print(f"Opening local zarr store: {zarr_path}")
+                    # Open local zarr store directly
+                    root = zarr.open_group(zarr_path, mode='r')
                 
                 # Load metadata from .zattrs
                 zattrs = dict(root.attrs)
@@ -714,7 +725,7 @@ class Camera_Simulation(object):
                 shape = arr.shape  # [T, C, Z, Y, X]
                 
                 # Cache the store and metadata
-                self._zarr_cache[zarr_url] = {
+                self._zarr_cache[zarr_path] = {
                     'array': arr,
                     'shape': shape,
                     'x_min': x_min,
@@ -727,7 +738,7 @@ class Camera_Simulation(object):
                 print(f"Zarr metadata cached: shape={shape}, stage_limits=X[{x_min}, {x_max}], Y[{y_min}, {y_max}], offset=({offset_x}, {offset_y})mm")
             
             # Get cached data
-            cache = self._zarr_cache[zarr_url]
+            cache = self._zarr_cache[zarr_path]
             arr = cache['array']
             shape = cache['shape']
             x_min, x_max = cache['x_min'], cache['x_max']
@@ -803,9 +814,9 @@ class Camera_Simulation(object):
     
     async def get_image_from_zarr(self, x, y, channel_name):
         """
-        Get image data from remote OME-Zarr storage.
+        Get image data from local or remote OME-Zarr storage.
         
-        Fetches a region from the remote zarr dataset based on stage coordinates.
+        Fetches a region from the zarr dataset based on stage coordinates.
         The region size is determined by self.Width and self.Height (camera dimensions).
         Blocking I/O operations are run in a thread to avoid blocking the event loop.
         
@@ -817,8 +828,8 @@ class Camera_Simulation(object):
         Returns:
             numpy.ndarray: Image data as 2D array (Height x Width), or None on error
         """
-        # Hardcoded endpoint for the example zarr dataset
-        zarr_url = "https://hypha.aicell.io/agent-lens/apps/agent-lens/example-image-data.zarr"
+        # Use local zarr dataset path
+        zarr_path = self.ZARR_DATASET_PATH
         
         try:
             # Get zarr channel index from channel name
@@ -829,7 +840,7 @@ class Camera_Simulation(object):
             # The sync function handles cache initialization, coordinate calculation, and region fetching
             region = await asyncio.to_thread(
                 self._fetch_zarr_region_sync,
-                zarr_url,
+                zarr_path,
                 channel_idx,
                 x,
                 y,
