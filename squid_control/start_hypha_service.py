@@ -1700,7 +1700,7 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def navigate_to_well(self, row: str=Field('A', description="Well row letter (e.g., 'A', 'B', 'C', ... 'H' for 96-well)"), col: int=Field(1, description="Well column number (e.g., 1-12 for 96-well)"), well_plate_type: str=Field('96', description="Well plate format: '6', '12', '24', '96', or '384'"), context=None):
+    async def navigate_to_well(self, row: str=Field('B', description="Well row letter (e.g., 'A', 'B', 'C', ... 'H' for 96-well)"), col: int=Field(3, description="Well column number (e.g., 1-12 for 96-well)"), well_plate_type: str=Field('96', description="Well plate format: '6', '12', '24', '96', or '384'"), context=None):
         """
         Navigate the stage to the center of a specific well in the well plate.
         Returns: String confirmation message with the well position (e.g., 'The stage moved to well position (A,1)').

@@ -6,6 +6,8 @@ from PIL import Image
 import sys
 import cv2
 import asyncio
+import zarr
+import fsspec
 
 # Check if we're in simulation mode by looking for --simulation in sys.argv or environment
 _is_simulation_mode = (
@@ -652,28 +654,196 @@ class Camera_Simulation(object):
     def set_hardware_triggered_acquisition(self):
         pass
 
-    async def get_image_from_zarr(self, x, y, pixel_size_um, channel_name, sample_data_alias="agent-lens/20250824-example-data-20250824-221822", well_id="F5"):
+    # Class-level cache for zarr metadata and stores
+    _zarr_cache = {}
+    
+    # Channel name to zarr index mapping for the example-image-data.zarr dataset
+    # The zarr dataset has channels indexed 0-5 in this order
+    ZARR_CHANNEL_INDEX = {
+        "BF_LED_matrix_full": 0,
+        "Fluorescence_405_nm_Ex": 1,
+        "Fluorescence_488_nm_Ex": 2,
+        "Fluorescence_638_nm_Ex": 3,
+        "Fluorescence_561_nm_Ex": 4,
+        "Fluorescence_730_nm_Ex": 5,
+    }
+    
+    def _fetch_zarr_region_sync(self, zarr_url, channel_idx, x, y, width, height):
         """
-        # TODO: Implement this method to get image data from cloud zarr storage.
-        Get image data from Zarr storage.
-        
-        Note: Remote Zarr access has been removed. This method now returns None
-        to trigger fallback to local example images. For zarr visualization,
-        use the vizarr package.
+        Synchronous helper function to perform blocking zarr I/O operations.
+        This function runs in a thread to avoid blocking the event loop.
         
         Args:
-            x (float): X coordinate in mm (unused)
-            y (float): Y coordinate in mm (unused)
-            pixel_size_um (float): Pixel size in micrometers (unused)
-            channel_name (str): Name of the channel to retrieve (unused)
-            sample_data_alias (str): Alias of the sample data (unused)
-            well_id (str): Well ID (unused)
+            zarr_url (str): URL of the zarr dataset
+            channel_idx (int): Channel index to fetch
+            x, y (float): Stage coordinates in mm
+            width, height (int): Expected output dimensions (camera Width and Height)
             
         Returns:
-            None: Always returns None to trigger fallback to example images
+            numpy.ndarray: Image region, or None on error
         """
-        print("Remote Zarr access has been removed. Using local example images.")
-        return None
+        try:
+            # Check cache for zarr store and metadata
+            if zarr_url not in self._zarr_cache:
+                print(f"Opening remote zarr store: {zarr_url}")
+                # Create HTTP filesystem and open zarr store (blocking I/O)
+                fs = fsspec.filesystem('http')
+                store = fs.get_mapper(zarr_url)
+                root = zarr.open_group(store, mode='r')
+                
+                # Load metadata from .zattrs
+                zattrs = dict(root.attrs)
+                squid_canvas = zattrs.get('squid_canvas', {})
+                stage_limits = squid_canvas.get('stage_limits', {})
+                
+                # Get stage limits (defaults based on the dataset)
+                x_min = stage_limits.get('x_negative', 0.0)
+                x_max = stage_limits.get('x_positive', 120.0)
+                y_min = stage_limits.get('y_negative', 0.0)
+                y_max = stage_limits.get('y_positive', 86.0)
+                
+                # Load wellplate offset for coordinate transformation
+                # This offset aligns zarr data with current microscope well plate config
+                # When fetching: subtract offset (microscope coords -> zarr coords)
+                wellplate_offset = squid_canvas.get('wellplate_offset', {})
+                offset_x = wellplate_offset.get('x_mm', 0.0)
+                offset_y = wellplate_offset.get('y_mm', 0.0)
+                
+                # Open scale 0 array (full resolution)
+                arr = root['0']
+                shape = arr.shape  # [T, C, Z, Y, X]
+                
+                # Cache the store and metadata
+                self._zarr_cache[zarr_url] = {
+                    'array': arr,
+                    'shape': shape,
+                    'x_min': x_min,
+                    'x_max': x_max,
+                    'y_min': y_min,
+                    'y_max': y_max,
+                    'offset_x': offset_x,
+                    'offset_y': offset_y,
+                }
+                print(f"Zarr metadata cached: shape={shape}, stage_limits=X[{x_min}, {x_max}], Y[{y_min}, {y_max}], offset=({offset_x}, {offset_y})mm")
+            
+            # Get cached data
+            cache = self._zarr_cache[zarr_url]
+            arr = cache['array']
+            shape = cache['shape']
+            x_min, x_max = cache['x_min'], cache['x_max']
+            y_min, y_max = cache['y_min'], cache['y_max']
+            offset_x, offset_y = cache['offset_x'], cache['offset_y']
+            
+            # Array dimensions: [T, C, Z, Y, X]
+            img_height = shape[3]  # Y dimension
+            img_width = shape[4]   # X dimension
+            
+            # Apply wellplate offset: subtract to convert microscope coords -> zarr coords
+            adjusted_x = x - offset_x
+            adjusted_y = y - offset_y
+            print(f"Applied offset ({offset_x:.2f}, {offset_y:.2f})mm -> zarr_position=({adjusted_x:.2f}, {adjusted_y:.2f}) mm")
+            
+            # Convert stage coordinates (mm) to pixel coordinates
+            # Clamp adjusted coordinates to valid range
+            x_clamped = max(x_min, min(x_max, adjusted_x))
+            y_clamped = max(y_min, min(y_max, adjusted_y))
+            
+            center_x_px = int((x_clamped - x_min) / (x_max - x_min) * img_width)
+            center_y_px = int((y_clamped - y_min) / (y_max - y_min) * img_height)
+            
+            # Calculate region bounds centered on stage position
+            half_w = width // 2
+            half_h = height // 2
+            
+            # Calculate start/end with bounds checking
+            x_start = max(0, center_x_px - half_w)
+            x_end = min(img_width, center_x_px + half_w)
+            y_start = max(0, center_y_px - half_h)
+            y_end = min(img_height, center_y_px + half_h)
+            
+            # Ensure we don't have zero-size regions
+            if x_end <= x_start or y_end <= y_start:
+                print(f"Warning: Region out of bounds, center=({center_x_px}, {center_y_px})")
+                return None
+            
+            print(f"Fetching region: Y[{y_start}:{y_end}], X[{x_start}:{x_end}] (center pixel: {center_x_px}, {center_y_px})")
+            
+            # Fetch region from zarr: [t=0, c=channel_idx, z=0, y_slice, x_slice]
+            # This is the main blocking I/O operation
+            region = arr[0, channel_idx, 0, y_start:y_end, x_start:x_end]
+            
+            # Convert to numpy array if needed (may block for large arrays)
+            if hasattr(region, 'compute'):
+                region = region.compute()
+            region = np.array(region)
+            
+            # Handle edge cases - pad if region is smaller than requested
+            actual_height, actual_width = region.shape
+            if actual_height < height or actual_width < width:
+                print(f"Padding region from {actual_width}x{actual_height} to {width}x{height}")
+                padded = np.zeros((height, width), dtype=region.dtype)
+                # Center the fetched region in the padded array
+                pad_y = (height - actual_height) // 2
+                pad_x = (width - actual_width) // 2
+                padded[pad_y:pad_y + actual_height, pad_x:pad_x + actual_width] = region
+                region = padded
+            
+            # Resize if region is larger than expected (shouldn't happen, but just in case)
+            if region.shape[0] > height or region.shape[1] > width:
+                region = region[:height, :width]
+            
+            print(f"Successfully fetched image: shape={region.shape}, dtype={region.dtype}")
+            return region
+            
+        except Exception as e:
+            print(f"Error fetching from zarr: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    async def get_image_from_zarr(self, x, y, channel_name):
+        """
+        Get image data from remote OME-Zarr storage.
+        
+        Fetches a region from the remote zarr dataset based on stage coordinates.
+        The region size is determined by self.Width and self.Height (camera dimensions).
+        Blocking I/O operations are run in a thread to avoid blocking the event loop.
+        
+        Args:
+            x (float): X coordinate in mm (stage position)
+            y (float): Y coordinate in mm (stage position)
+            channel_name (str): Name of the channel to retrieve (e.g., "BF_LED_matrix_full")
+            
+        Returns:
+            numpy.ndarray: Image data as 2D array (Height x Width), or None on error
+        """
+        # Hardcoded endpoint for the example zarr dataset
+        zarr_url = "https://hypha.aicell.io/agent-lens/apps/agent-lens/example-image-data.zarr"
+        
+        try:
+            # Get zarr channel index from channel name
+            channel_idx = self.ZARR_CHANNEL_INDEX.get(channel_name, 0)
+            print(f"Fetching from zarr: channel={channel_name} (idx={channel_idx}), microscope_position=({x:.2f}, {y:.2f}) mm")
+            
+            # Run blocking zarr I/O operations in a thread to avoid blocking the event loop
+            # The sync function handles cache initialization, coordinate calculation, and region fetching
+            region = await asyncio.to_thread(
+                self._fetch_zarr_region_sync,
+                zarr_url,
+                channel_idx,
+                x,
+                y,
+                self.Width,
+                self.Height
+            )
+            
+            return region
+            
+        except Exception as e:
+            print(f"Error fetching from zarr: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
 
     async def send_trigger(self, x=29.81, y=36.85, dz=0, pixel_size_um=0.333, channel=0, intensity=100, exposure_time=100, magnification_factor=20, performace_mode=False, sample_data_alias="agent-lens/20250824-example-data-20250824-221822"):
         print(f"Sending trigger with x={x}, y={y}, dz={dz}, pixel_size_um={pixel_size_um}, channel={channel}, intensity={intensity}, exposure_time={exposure_time}, magnification_factor={magnification_factor}, performace_mode={performace_mode}, sample_data_alias={sample_data_alias}")
@@ -694,11 +864,11 @@ class Camera_Simulation(object):
             self.image = np.array(Image.open(os.path.join(script_dir, f"example-data/{self.image_paths[channel]}")))
             print(f"Using performance mode, example image for channel {channel}")
         else:
-            self.image = await self.get_image_from_zarr(x, y, pixel_size_um, channel_name, sample_data_alias)
+            self.image = await self.get_image_from_zarr(x, y, channel_name)
             if self.image is None:
-                # Fallback to example image if Zarr access fails
-                self.image = np.array(Image.open(os.path.join(script_dir, f"example-data/{self.image_paths[channel]}")))
-                print(f"Failed to get image from Zarr, using example image for channel {channel}")
+                # Set default error image if Zarr access fails
+                self.image = np.ones((self.Height, self.Width), dtype=np.uint8) * 128
+                print(f"Failed to get image from Zarr for channel {channel}, using default error image")
 
         # Apply exposure and intensity scaling
         exposure_factor = max(0.1, exposure_time / 100)  # Ensure minimum factor to prevent black images
@@ -796,3 +966,8 @@ class Camera_Simulation(object):
         """
         # Delegate to regular send_trigger with performace_mode=True (example images)
         await self.send_trigger(x, y, dz, pixel_size_um, channel, intensity, exposure_time, magnification_factor, performace_mode=True)
+
+
+
+
+
