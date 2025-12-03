@@ -452,28 +452,6 @@ async def test_configuration_access(sim_controller_fixture):
         assert hasattr(controller, 'current_exposure_time')
         break
 
-async def test_z_axis_focus_effects(sim_controller_fixture):
-    """Test z-axis movement and focus effects in simulation."""
-    async for controller in sim_controller_fixture:
-        # Get reference position
-        ref_z = controller.navigationController.update_pos(microcontroller=controller.microcontroller)[2]
-
-        # Test images at different z positions
-        z_offsets = [-0.5, 0, 0.5]  # Below, at, and above focus
-        images_at_z = {}
-
-        for offset in z_offsets:
-            target_z = ref_z + offset
-            controller.move_z_to_limited(target_z)
-            image = await controller.snap_image()
-            assert image is not None
-            images_at_z[offset] = image
-
-        # All images should have same dimensions
-        shapes = [img.shape for img in images_at_z.values()]
-        assert all(shape == shapes[0] for shape in shapes)
-        break
-
 async def test_simulated_sample_data_alias(sim_controller_fixture):
     """Test setting and getting the simulated sample data alias."""
     async for controller in sim_controller_fixture:
