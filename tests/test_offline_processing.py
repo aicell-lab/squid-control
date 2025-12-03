@@ -316,6 +316,7 @@ class FakeExperimentManager:
         self.base_path = Path(base_path)
         self.experiments = {}
         self.active_experiment = None
+        self.current_experiment = None
     
     def create_experiment(self, name: str):
         """Create a fake experiment."""
@@ -328,11 +329,21 @@ class FakeExperimentManager:
         self.active_experiment = name
         return {"success": True, "name": name, "path": str(exp_path)}
     
-    def get_canvas(self, experiment_name: str = None):
+    def get_canvas(self, experiment_name: str = None, initialize_new: bool = True):
         """Get canvas for experiment."""
         name = experiment_name or self.active_experiment
         if name and name in self.experiments:
             return self.experiments[name]["canvas"]
+        # If initialize_new is True and canvas doesn't exist, create it
+        if initialize_new and name:
+            exp_path = self.base_path / name
+            exp_path.mkdir(parents=True, exist_ok=True)
+            canvas = FakeCanvas(exp_path)
+            self.experiments[name] = {
+                "path": exp_path,
+                "canvas": canvas
+            }
+            return canvas
         return None
 
 
@@ -367,6 +378,11 @@ class FakeCanvas:
         # Set is_stitching to False immediately so _wait_for_stitching_completion exits quickly
         # The wait loop checks `if not canvas.is_stitching: break` first
         self.is_stitching = False
+    
+    def activate_channels_with_data(self):
+        """Fake activate_channels_with_data method for testing."""
+        # No-op for testing - just needs to exist
+        pass
 
 
 @pytest_asyncio.fixture
