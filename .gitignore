@@ -176,8 +176,10 @@ configuration_Squid+.ini
 
 chunk_images/
 
-# Official Squid software (downloaded for reference)
-official-squid-software/
+# Reference codebase (downloaded for reference)
+reference_codebase/
 
 # Generated safety limit files
 squid_control/control/utils/edge_positions.json
+
+~/Documents

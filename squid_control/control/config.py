@@ -118,11 +118,11 @@ class ILLUMINATION_CODE(Enum):
 
 class ChannelInfo:
     """Channel information container with all naming variants."""
-    def __init__(self, channel_id: int, human_name: str, zarr_name: str,
+    def __init__(self, channel_id: int, human_name: str, canonical_name: str,
                  example_image: str, param_name: str, description: str = "", color: str = "FFFFFF"):
         self.channel_id = channel_id
         self.human_name = human_name  # Human-readable name used in UI
-        self.zarr_name = zarr_name    # Name used in Zarr storage
+        self.canonical_name = canonical_name    # Name used in Zarr storage
         self.example_image = example_image  # Example image filename
         self.param_name = param_name  # Parameter name for settings
         self.description = description
@@ -136,7 +136,7 @@ class ChannelMapper:
         0: ChannelInfo(
             channel_id=0,
             human_name="BF LED matrix full",
-            zarr_name="BF_LED_matrix_full",
+            canonical_name="BF_LED_matrix_full",
             example_image="BF_LED_matrix_full.bmp",
             param_name="BF_intensity_exposure",
             description="Bright field LED matrix full illumination",
@@ -145,7 +145,7 @@ class ChannelMapper:
         11: ChannelInfo(
             channel_id=11,
             human_name="Fluorescence 405 nm Ex",
-            zarr_name="Fluorescence_405_nm_Ex",
+            canonical_name="Fluorescence_405_nm_Ex",
             example_image="Fluorescence_405_nm_Ex.bmp",
             param_name="F405_intensity_exposure",
             description="405nm fluorescence excitation",
@@ -154,7 +154,7 @@ class ChannelMapper:
         12: ChannelInfo(
             channel_id=12,
             human_name="Fluorescence 488 nm Ex",
-            zarr_name="Fluorescence_488_nm_Ex",
+            canonical_name="Fluorescence_488_nm_Ex",
             example_image="Fluorescence_488_nm_Ex.bmp",
             param_name="F488_intensity_exposure",
             description="488nm fluorescence excitation",
@@ -163,7 +163,7 @@ class ChannelMapper:
         13: ChannelInfo(
             channel_id=13,
             human_name="Fluorescence 638 nm Ex",
-            zarr_name="Fluorescence_638_nm_Ex",
+            canonical_name="Fluorescence_638_nm_Ex",
             example_image="Fluorescence_638_nm_Ex.bmp",
             param_name="F638_intensity_exposure",
             description="638nm fluorescence excitation",
@@ -172,7 +172,7 @@ class ChannelMapper:
         14: ChannelInfo(
             channel_id=14,
             human_name="Fluorescence 561 nm Ex",
-            zarr_name="Fluorescence_561_nm_Ex",
+            canonical_name="Fluorescence_561_nm_Ex",
             example_image="Fluorescence_561_nm_Ex.bmp",
             param_name="F561_intensity_exposure",
             description="561nm fluorescence excitation",
@@ -181,7 +181,7 @@ class ChannelMapper:
         15: ChannelInfo(
             channel_id=15,
             human_name="Fluorescence 730 nm Ex",
-            zarr_name="Fluorescence_730_nm_Ex",
+            canonical_name="Fluorescence_730_nm_Ex",
             example_image="Fluorescence_730_nm_Ex.bmp",
             param_name="F730_intensity_exposure",
             description="730nm fluorescence excitation",
@@ -205,12 +205,12 @@ class ChannelMapper:
         raise ValueError(f"Unknown channel name: {human_name}")
 
     @classmethod
-    def get_channel_by_zarr_name(cls, zarr_name: str) -> ChannelInfo:
+    def get_channel_by_zarr_name(cls, canonical_name: str) -> ChannelInfo:
         """Get channel info by Zarr storage name."""
         for channel in cls.CHANNELS.values():
-            if channel.zarr_name == zarr_name:
+            if channel.canonical_name == canonical_name:
                 return channel
-        raise ValueError(f"Unknown Zarr channel name: {zarr_name}")
+        raise ValueError(f"Unknown Zarr channel name: {canonical_name}")
 
     @classmethod
     def get_all_channel_ids(cls) -> List[int]:
@@ -225,7 +225,7 @@ class ChannelMapper:
     @classmethod
     def get_all_zarr_names(cls) -> List[str]:
         """Get all Zarr storage channel names."""
-        return [channel.zarr_name for channel in cls.CHANNELS.values()]
+        return [channel.canonical_name for channel in cls.CHANNELS.values()]
 
     @classmethod
     def human_name_to_id(cls, human_name: str) -> int:
@@ -240,12 +240,12 @@ class ChannelMapper:
     @classmethod
     def id_to_zarr_name(cls, channel_id: int) -> str:
         """Convert channel ID to Zarr name."""
-        return cls.get_channel_info(channel_id).zarr_name
+        return cls.get_channel_info(channel_id).canonical_name
 
     @classmethod
-    def zarr_name_to_id(cls, zarr_name: str) -> int:
+    def zarr_name_to_id(cls, canonical_name: str) -> int:
         """Convert Zarr name to channel ID."""
-        return cls.get_channel_by_zarr_name(zarr_name).channel_id
+        return cls.get_channel_by_zarr_name(canonical_name).channel_id
 
     @classmethod
     def id_to_param_name(cls, channel_id: int) -> str:
@@ -265,7 +265,7 @@ class ChannelMapper:
     @classmethod
     def get_id_to_zarr_map(cls) -> dict:
         """Get mapping from channel IDs to Zarr names."""
-        return {channel.channel_id: channel.zarr_name for channel in cls.CHANNELS.values()}
+        return {channel.channel_id: channel.canonical_name for channel in cls.CHANNELS.values()}
 
     @classmethod
     def get_id_to_param_map(cls) -> dict:

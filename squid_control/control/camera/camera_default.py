@@ -2,12 +2,11 @@ import os
 import glob
 import time
 import numpy as np
-from PIL import Image
-import os
 import sys
 import cv2
 import asyncio
-import aiohttp
+import zarr
+import fsspec
 
 # Check if we're in simulation mode by looking for --simulation in sys.argv or environment
 _is_simulation_mode = (
@@ -32,10 +31,7 @@ else:
 from squid_control.control.config import CONFIG
 from squid_control.control.camera import TriggerModeSetting
 from scipy.ndimage import gaussian_filter
-import zarr
-from squid_control.hypha_tools.artifact_manager.artifact_manager import SquidArtifactManager, ZarrImageManager
 from squid_control.control.config import ChannelMapper
-script_dir = os.path.dirname(__file__)
 
 def get_sn_by_model(model_name):
     if not GX_AVAILABLE:
@@ -554,18 +550,8 @@ class Camera_Simulation(object):
         # simulated camera values
         self.simulated_focus = 4
         self.channels = [0, 11, 12, 14, 13]
-        self.image_paths = ChannelMapper.get_id_to_example_image_map()
-        # Configuration for ZarrImageManager
-        self.SERVER_URL = "https://hypha.aicell.io"
-        self.DEFAULT_TIMESTAMP = "20250824-example-data-20250824-221822"  # Default timestamp for the dataset
         
-        # Initialize these to None, will be set up lazily when needed
-        self.zarr_image_manager = None
-        self.artifact_manager = None
 
-        # Use scale2 instead of scale0 for lower resolution
-        self.scale_level = 2
-        self.scale_factor = 16  # scale2 is 1/16 of scale0
 
     def open(self, index=0):
         pass
@@ -627,84 +613,7 @@ class Camera_Simulation(object):
 
     def close(self):
         self.stop_streaming()
-        self.cleanup_zarr_resources()
-        # Also ensure async cleanup runs to close Hypha connections
-        try:
-            loop = asyncio.get_running_loop()
-            # Schedule the async cleanup to run
-            if self.zarr_image_manager:
-                task = loop.create_task(self._cleanup_zarr_resources_async())
-                # Don't wait for it to complete to avoid blocking
-        except RuntimeError:
-            # No event loop running, skip async cleanup
-            pass
         
-    def cleanup_zarr_resources(self):
-        """
-        Synchronous cleanup method for Zarr resources
-        """
-        try:
-            if self.zarr_image_manager:
-                print("Closing ZarrImageManager resources...")
-                # Clear the cache to free memory
-                if hasattr(self.zarr_image_manager, 'zarr_groups_cache'):
-                    self.zarr_image_manager.zarr_groups_cache.clear()
-                    self.zarr_image_manager.zarr_groups_timestamps.clear()
-                
-                # Don't call async methods from sync context
-                self.zarr_image_manager = None
-                print("ZarrImageManager resources cleared")
-                
-            if self.artifact_manager:
-                print("Closing ArtifactManager resources...")
-                # Clear the cache to free memory
-                if hasattr(self.artifact_manager, 'zarr_groups_cache'):
-                    self.artifact_manager.zarr_groups_cache.clear()
-                    self.artifact_manager.zarr_groups_timestamps.clear()
-                
-                self.artifact_manager = None
-                print("ArtifactManager resources cleared")
-        except Exception as e:
-            print(f"Error in cleanup_zarr_resources: {e}")
-        
-    async def _cleanup_zarr_resources_async(self):
-        """
-        Clean up Zarr-related resources to prevent resource leaks
-        """
-        try:
-            if self.zarr_image_manager:
-                print("Closing ZarrImageManager resources...")
-                # Clear the cache to free memory
-                if hasattr(self.zarr_image_manager, 'zarr_groups_cache'):
-                    self.zarr_image_manager.zarr_groups_cache.clear()
-                    self.zarr_image_manager.zarr_groups_timestamps.clear()
-                    
-                await self.zarr_image_manager.close()
-                self.zarr_image_manager = None
-                print("ZarrImageManager closed successfully")
-                
-            if self.artifact_manager:
-                print("Closing ArtifactManager resources...")
-                # Clear the cache to free memory
-                if hasattr(self.artifact_manager, 'zarr_groups_cache'):
-                    self.artifact_manager.zarr_groups_cache.clear()
-                    self.artifact_manager.zarr_groups_timestamps.clear()
-                
-                # Close the artifact manager if it has a close method
-                if hasattr(self.artifact_manager, 'close'):
-                    await self.artifact_manager.close()
-                self.artifact_manager = None
-                print("ArtifactManager closed successfully")
-        except Exception as e:
-            print(f"Error closing Zarr resources: {e}")
-            import traceback
-            print(traceback.format_exc())
-            
-    async def cleanup_zarr_resources_async(self):
-        """
-        Legacy method for backward compatibility
-        """
-        await self._cleanup_zarr_resources_async()
 
     def set_exposure_time(self, exposure_time):
         pass
@@ -742,42 +651,210 @@ class Camera_Simulation(object):
     def set_hardware_triggered_acquisition(self):
         pass
 
-    async def get_image_from_zarr(self, x, y, pixel_size_um, channel_name, sample_data_alias="agent-lens/20250824-example-data-20250824-221822", well_id="F5"):
+    # Class-level cache for zarr metadata and stores
+    _zarr_cache = {}
+    
+    # Local path to zarr dataset or remote URL
+    ZARR_DATASET_PATH = "/home/tao/Documents/example-zarr/data.zarr" #"https://hypha.aicell.io/agent-lens/apps/agent-lens/example-image-data.zarr"
+    
+    # Channel name to zarr index mapping for the example-image-data.zarr dataset
+    # The zarr dataset has channels indexed 0-5 in this order
+    ZARR_CHANNEL_INDEX = {
+        "BF_LED_matrix_full": 0,
+        "Fluorescence_405_nm_Ex": 1,
+        "Fluorescence_488_nm_Ex": 2,
+        "Fluorescence_638_nm_Ex": 3,
+        "Fluorescence_561_nm_Ex": 4,
+        "Fluorescence_730_nm_Ex": 5,
+    }
+    
+    def _fetch_zarr_region_sync(self, zarr_path, channel_idx, x, y, width, height):
         """
-        Get image data from new OME-Zarr well-based storage format.
+        Synchronous helper function to perform blocking zarr I/O operations.
+        This function runs in a thread to avoid blocking the event loop.
         
         Args:
-            x (float): X coordinate in mm
-            y (float): Y coordinate in mm
-            pixel_size_um (float): Pixel size in micrometers
-            channel_name (str): Name of the channel to retrieve
-            sample_data_alias (str): Alias of the sample data (e.g., "agent-lens/20250824-example-data-20250824-221822")
-            well_id (str): Well ID (e.g., "F5") - defaults to F5 for backward compatibility
+            zarr_path (str): Path or URL of the zarr dataset (local path or HTTP URL)
+            channel_idx (int): Channel index to fetch
+            x, y (float): Stage coordinates in mm
+            width, height (int): Expected output dimensions (camera Width and Height)
             
         Returns:
-            np.ndarray: The image data
+            numpy.ndarray: Image region, or None on error
         """
-        # Lazily initialize ZarrImageManager if needed
-        if self.zarr_image_manager is None:
-            print("Creating new ZarrImageManager instance...")
-            self.zarr_image_manager = ZarrImageManager()
-            print("Connecting to ZarrImageManager...")
-            await self.zarr_image_manager.connect(server_url=self.SERVER_URL)
-            print("Connected to ZarrImageManager")
-        
-        # Use the new buffered loading method which handles the new OME-Zarr format
         try:
-            await self._load_zarr_data_buffered(
-                x, y, pixel_size_um, channel_name, sample_data_alias, 
-                intensity=50, exposure_time=100, dz=0  # Default values for compatibility
-            )
-            return self.image
+            # Check cache for zarr store and metadata
+            if zarr_path not in self._zarr_cache:
+                # Determine if it's a remote URL or local path
+                is_remote = zarr_path.startswith('http://') or zarr_path.startswith('https://')
+                
+                if is_remote:
+                    print(f"Opening remote zarr store: {zarr_path}")
+                    # Create HTTP filesystem and open zarr store (blocking I/O)
+                    fs = fsspec.filesystem('http')
+                    store = fs.get_mapper(zarr_path)
+                    root = zarr.open_group(store, mode='r')
+                else:
+                    print(f"Opening local zarr store: {zarr_path}")
+                    # Open local zarr store directly
+                    root = zarr.open_group(zarr_path, mode='r')
+                
+                # Load metadata from .zattrs
+                zattrs = dict(root.attrs)
+                squid_canvas = zattrs.get('squid_canvas', {})
+                stage_limits = squid_canvas.get('stage_limits', {})
+                
+                # Get stage limits (defaults based on the dataset)
+                x_min = stage_limits.get('x_negative', 0.0)
+                x_max = stage_limits.get('x_positive', 120.0)
+                y_min = stage_limits.get('y_negative', 0.0)
+                y_max = stage_limits.get('y_positive', 86.0)
+                
+                # Load wellplate offset for coordinate transformation
+                # This offset aligns zarr data with current microscope well plate config
+                # When fetching: subtract offset (microscope coords -> zarr coords)
+                wellplate_offset = squid_canvas.get('wellplate_offset', {})
+                offset_x = wellplate_offset.get('x_mm', 0.0)
+                offset_y = wellplate_offset.get('y_mm', 0.0)
+                
+                # Open scale 0 array (full resolution)
+                arr = root['0']
+                shape = arr.shape  # [T, C, Z, Y, X]
+                
+                # Cache the store and metadata
+                self._zarr_cache[zarr_path] = {
+                    'array': arr,
+                    'shape': shape,
+                    'x_min': x_min,
+                    'x_max': x_max,
+                    'y_min': y_min,
+                    'y_max': y_max,
+                    'offset_x': offset_x,
+                    'offset_y': offset_y,
+                }
+                print(f"Zarr metadata cached: shape={shape}, stage_limits=X[{x_min}, {x_max}], Y[{y_min}, {y_max}], offset=({offset_x}, {offset_y})mm")
+            
+            # Get cached data
+            cache = self._zarr_cache[zarr_path]
+            arr = cache['array']
+            shape = cache['shape']
+            x_min, x_max = cache['x_min'], cache['x_max']
+            y_min, y_max = cache['y_min'], cache['y_max']
+            offset_x, offset_y = cache['offset_x'], cache['offset_y']
+            
+            # Array dimensions: [T, C, Z, Y, X]
+            img_height = shape[3]  # Y dimension
+            img_width = shape[4]   # X dimension
+            
+            # Apply wellplate offset: subtract to convert microscope coords -> zarr coords
+            adjusted_x = x - offset_x
+            adjusted_y = y - offset_y
+            print(f"Applied offset ({offset_x:.2f}, {offset_y:.2f})mm -> zarr_position=({adjusted_x:.2f}, {adjusted_y:.2f}) mm")
+            
+            # Convert stage coordinates (mm) to pixel coordinates
+            # Clamp adjusted coordinates to valid range
+            x_clamped = max(x_min, min(x_max, adjusted_x))
+            y_clamped = max(y_min, min(y_max, adjusted_y))
+            
+            center_x_px = int((x_clamped - x_min) / (x_max - x_min) * img_width)
+            center_y_px = int((y_clamped - y_min) / (y_max - y_min) * img_height)
+            
+            # Calculate region bounds centered on stage position
+            half_w = width // 2
+            half_h = height // 2
+            
+            # Calculate start/end with bounds checking
+            x_start = max(0, center_x_px - half_w)
+            x_end = min(img_width, center_x_px + half_w)
+            y_start = max(0, center_y_px - half_h)
+            y_end = min(img_height, center_y_px + half_h)
+            
+            # Ensure we don't have zero-size regions
+            if x_end <= x_start or y_end <= y_start:
+                print(f"Warning: Region out of bounds, center=({center_x_px}, {center_y_px})")
+                return None
+            
+            print(f"Fetching region: Y[{y_start}:{y_end}], X[{x_start}:{x_end}] (center pixel: {center_x_px}, {center_y_px})")
+            
+            # Fetch region from zarr: [t=0, c=channel_idx, z=0, y_slice, x_slice]
+            # This is the main blocking I/O operation
+            region = arr[0, channel_idx, 0, y_start:y_end, x_start:x_end]
+            
+            # Convert to numpy array if needed (may block for large arrays)
+            if hasattr(region, 'compute'):
+                region = region.compute()
+            region = np.array(region)
+            
+            # Handle edge cases - pad if region is smaller than requested
+            actual_height, actual_width = region.shape
+            if actual_height < height or actual_width < width:
+                print(f"Padding region from {actual_width}x{actual_height} to {width}x{height}")
+                padded = np.zeros((height, width), dtype=region.dtype)
+                # Center the fetched region in the padded array
+                pad_y = (height - actual_height) // 2
+                pad_x = (width - actual_width) // 2
+                padded[pad_y:pad_y + actual_height, pad_x:pad_x + actual_width] = region
+                region = padded
+            
+            # Resize if region is larger than expected (shouldn't happen, but just in case)
+            if region.shape[0] > height or region.shape[1] > width:
+                region = region[:height, :width]
+            
+            print(f"Successfully fetched image: shape={region.shape}, dtype={region.dtype}")
+            return region
+            
         except Exception as e:
-            print(f"Failed to load image using new OME-Zarr format: {e}")
+            print(f"Error fetching from zarr: {e}")
+            import traceback
+            traceback.print_exc()
+            return None
+    
+    async def get_image_from_zarr(self, x, y, channel_name):
+        """
+        Get image data from local or remote OME-Zarr storage.
+        
+        Fetches a region from the zarr dataset based on stage coordinates.
+        The region size is determined by self.Width and self.Height (camera dimensions).
+        Blocking I/O operations are run in a thread to avoid blocking the event loop.
+        
+        Args:
+            x (float): X coordinate in mm (stage position)
+            y (float): Y coordinate in mm (stage position)
+            channel_name (str): Name of the channel to retrieve (e.g., "BF_LED_matrix_full")
+            
+        Returns:
+            numpy.ndarray: Image data as 2D array (Height x Width), or None on error
+        """
+        # Use local zarr dataset path
+        zarr_path = self.ZARR_DATASET_PATH
+        
+        try:
+            # Get zarr channel index from channel name
+            channel_idx = self.ZARR_CHANNEL_INDEX.get(channel_name, 0)
+            print(f"Fetching from zarr: channel={channel_name} (idx={channel_idx}), microscope_position=({x:.2f}, {y:.2f}) mm")
+            
+            # Run blocking zarr I/O operations in a thread to avoid blocking the event loop
+            # The sync function handles cache initialization, coordinate calculation, and region fetching
+            region = await asyncio.to_thread(
+                self._fetch_zarr_region_sync,
+                zarr_path,
+                channel_idx,
+                x,
+                y,
+                self.Width,
+                self.Height
+            )
+            
+            return region
+            
+        except Exception as e:
+            print(f"Error fetching from zarr: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
-    async def send_trigger(self, x=29.81, y=36.85, dz=0, pixel_size_um=0.333, channel=0, intensity=100, exposure_time=100, magnification_factor=20, performace_mode=False, sample_data_alias="agent-lens/20250824-example-data-20250824-221822"):
-        print(f"Sending trigger with x={x}, y={y}, dz={dz}, pixel_size_um={pixel_size_um}, channel={channel}, intensity={intensity}, exposure_time={exposure_time}, magnification_factor={magnification_factor}, performace_mode={performace_mode}, sample_data_alias={sample_data_alias}")
+    async def send_trigger(self, x=29.81, y=36.85, dz=0, pixel_size_um=0.333, channel=0, intensity=100, exposure_time=100, magnification_factor=20, sample_data_alias="agent-lens/20250824-example-data-20250824-221822"):
+        print(f"Sending trigger with x={x}, y={y}, dz={dz}, pixel_size_um={pixel_size_um}, channel={channel}, intensity={intensity}, exposure_time={exposure_time}, magnification_factor={magnification_factor}, sample_data_alias={sample_data_alias}")
         self.frame_ID += 1
         self.timestamp = time.time()
 
@@ -785,21 +862,12 @@ class Camera_Simulation(object):
         try:
             channel_name = ChannelMapper.id_to_zarr_name(channel)
         except ValueError:
-            channel_name = None
+            raise ValueError(f"Channel {channel} not found in channel mapping")
 
-        if channel_name is None:
-            self.image = np.array(Image.open(os.path.join(script_dir, f"example-data/{self.image_paths[channel]}")))
-            print(f"Channel {channel} not found, returning a random image")
-        
-        elif performace_mode:
-            self.image = np.array(Image.open(os.path.join(script_dir, f"example-data/{self.image_paths[channel]}")))
-            print(f"Using performance mode, example image for channel {channel}")
-        else:
-            self.image = await self.get_image_from_zarr(x, y, pixel_size_um, channel_name, sample_data_alias)
-            if self.image is None:
-                # Fallback to example image if Zarr access fails
-                self.image = np.array(Image.open(os.path.join(script_dir, f"example-data/{self.image_paths[channel]}")))
-                print(f"Failed to get image from Zarr, using example image for channel {channel}")
+        # Get image from Zarr - raise error if unavailable
+        self.image = await self.get_image_from_zarr(x, y, channel_name)
+        if self.image is None:
+            raise RuntimeError(f"Failed to get image from Zarr for channel {channel} (channel_name={channel_name}) at position ({x}, {y})")
 
         # Apply exposure and intensity scaling
         exposure_factor = max(0.1, exposure_time / 100)  # Ensure minimum factor to prevent black images
@@ -892,342 +960,13 @@ class Camera_Simulation(object):
     async def send_trigger_buffered(self, x=29.81, y=36.85, dz=0, pixel_size_um=0.333, channel=0, intensity=100, exposure_time=100, magnification_factor=20, sample_data_alias="agent-lens/20250824-example-data-20250824-221822"):
         """
         Buffered trigger method for video buffering.
-        Loads Zarr chunks directly without fallback to example images.
-        Fails if Zarr loading is unsuccessful.
+        
+        For zarr visualization, use the vizarr package.
         """
-        print(f"Sending buffered trigger with x={x}, y={y}, dz={dz}, channel={channel}")
-        self.frame_ID += 1
-        self.timestamp = time.time()
+        # Delegate to regular send_trigger
+        await self.send_trigger(x, y, dz, pixel_size_um, channel, intensity, exposure_time, magnification_factor, sample_data_alias=sample_data_alias)
 
-        # Use centralized channel mapping
-        try:
-            channel_name = ChannelMapper.id_to_zarr_name(channel)
-        except ValueError:
-            raise ValueError(f"Invalid channel {channel}, no mapping available")
 
-        # Load Zarr data directly - no fallback to example images
-        try:
-            await self._load_zarr_data_buffered(
-                x, y, pixel_size_um, channel_name, sample_data_alias, 
-                intensity, exposure_time, dz
-            )
-        except Exception as e:
-            print(f"Failed to load Zarr data for buffered trigger: {e}")
-            raise  # Fail completely, no fallback
 
-        if self.new_image_callback_external is not None and self.callback_is_enabled:
-            self.new_image_callback_external(self)
 
-    async def _load_zarr_data_buffered(self, x, y, pixel_size_um, channel_name, sample_data_alias, intensity, exposure_time, dz):
-        """
-        Direct Zarr data loading for buffered video streaming.
-        Fails completely if any chunk fails to load - no fallback to example images.
-        """
-        # Lazily initialize ZarrImageManager if needed
-        if self.zarr_image_manager is None:
-            print("Creating ZarrImageManager for buffered loading...")
-            self.zarr_image_manager = ZarrImageManager()
-            await self.zarr_image_manager.connect(server_url=self.SERVER_URL)
 
-        # NEW: Dynamically determine which well we're in based on stage position (FIRST!)
-        # Import here to avoid circular import
-        from squid_control.control.config import WELLPLATE_FORMAT_96
-        
-        # Convert stage coordinates to well position
-        wellplate_format = WELLPLATE_FORMAT_96  # Default to 96-well
-        max_rows = 8  # A-H
-        max_cols = 12  # 1-12
-        
-        # Calculate which well this position corresponds to (same logic as get_well_from_position)
-        x_relative = x - wellplate_format.A1_X_MM  # No offset in simulation
-        y_relative = y - wellplate_format.A1_Y_MM
-        
-        # Calculate well indices (0-based initially)
-        col_index = round(x_relative / wellplate_format.WELL_SPACING_MM)
-        row_index = round(y_relative / wellplate_format.WELL_SPACING_MM)
-        
-        # Check if the calculated well indices are valid and convert to well ID
-        if 0 <= col_index < max_cols and 0 <= row_index < max_rows:
-            column = col_index + 1
-            row = chr(ord('A') + row_index)
-            well_id = f"{row}{column}"
-            print(f"Detected well position: {well_id} from coordinates ({x:.2f}, {y:.2f})")
-        else:
-            # Default to F5 if outside valid range
-            well_id = "F5"
-            print(f"Coordinates ({x:.2f}, {y:.2f}) outside valid well range, defaulting to well F5")
-
-        # Now calculate well center coordinates (needed for relative positioning)
-        col_index_for_center = int(well_id[1:]) - 1  # Convert column number to 0-based index
-        row_index_for_center = ord(well_id[0]) - ord('A')  # Convert row letter to 0-based index
-        well_center_x = wellplate_format.A1_X_MM + col_index_for_center * wellplate_format.WELL_SPACING_MM
-        well_center_y = wellplate_format.A1_Y_MM + row_index_for_center * wellplate_format.WELL_SPACING_MM
-        
-        # Convert absolute stage coordinates to well-relative coordinates (in mm)
-        well_relative_x = x - well_center_x
-        well_relative_y = y - well_center_y
-        
-        print(f"Well center: ({well_center_x:.2f}, {well_center_y:.2f}), Stage: ({x:.2f}, {y:.2f}), Well-relative: ({well_relative_x:.3f}, {well_relative_y:.3f})")
-
-        # Get metadata to determine chunk layout using new OME-Zarr format
-        dataset_id = sample_data_alias
-        
-        # NEW FORMAT: Get .zarray metadata from well ZIP
-        artifact_name_only = dataset_id.split('/')[-1]
-        well_zip_path = f"well_{well_id}_96.zip"
-        zarray_path_in_well = f"data.zarr/{self.scale_level}/.zarray"
-        
-        # Construct URL to access .zarray metadata in the well ZIP
-        zarray_metadata_url = f"{self.zarr_image_manager.server_url}/{self.zarr_image_manager.workspace}/artifacts/{artifact_name_only}/zip-files/{well_zip_path}?path={zarray_path_in_well}"
-        
-        # Fetch .zarray metadata
-        http_session = await self.zarr_image_manager._get_http_session()
-        try:
-            async with http_session.get(zarray_metadata_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                if response.status != 200:
-                    raise Exception(f"Failed to get .zarray metadata from {zarray_metadata_url}: HTTP {response.status}")
-                
-                # Read as text and parse JSON manually to avoid MIME type issues
-                response_text = await response.text()
-                import json
-                zarray_metadata = json.loads(response_text)
-        except Exception as e:
-            raise Exception(f"Error fetching .zarray metadata from {zarray_metadata_url}: {e}")
-        
-        if not zarray_metadata:
-            raise Exception(f"No metadata available for {dataset_id}/well_{well_id}/{self.scale_level}")
-
-        # OME-Zarr format: chunks is [T, C, Z, Y, X]
-        z_chunks = zarray_metadata["chunks"][3:5]  # Get [chunk_height, chunk_width] from Y, X dimensions
-        image_shape = zarray_metadata["shape"]  # [T, C, Z, Y, X]
-        image_height = image_shape[3]  # Y dimension
-        image_width = image_shape[4]   # X dimension
-        
-        # Get OME-Zarr metadata for coordinate transformation
-        artifact_name_only = dataset_id.split('/')[-1]
-        zattrs_metadata_url = f"{self.zarr_image_manager.server_url}/{self.zarr_image_manager.workspace}/artifacts/{artifact_name_only}/zip-files/well_{well_id}_96.zip?path=data.zarr/.zattrs"
-        
-        http_session = await self.zarr_image_manager._get_http_session()
-        try:
-            async with http_session.get(zattrs_metadata_url, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                if response.status != 200:
-                    raise Exception(f"Failed to get .zattrs metadata from {zattrs_metadata_url}: HTTP {response.status}")
-                
-                # Read as text and parse JSON manually to avoid MIME type issues
-                response_text = await response.text()
-                import json
-                zattrs_metadata = json.loads(response_text)
-        except Exception as e:
-            raise Exception(f"Error fetching .zattrs metadata from {zattrs_metadata_url}: {e}")
-        
-        # Get pixel size from squid_canvas metadata (base pixel size)
-        base_pixel_size_um = 0.311688  # Default fallback
-        if "squid_canvas" in zattrs_metadata and "pixel_size_xy_um" in zattrs_metadata["squid_canvas"]:
-            base_pixel_size_um = zattrs_metadata["squid_canvas"]["pixel_size_xy_um"]
-        
-        # Get effective pixel size for this scale level from multiscales
-        effective_pixel_size_um = base_pixel_size_um
-        if "multiscales" in zattrs_metadata and len(zattrs_metadata["multiscales"]) > 0:
-            multiscales = zattrs_metadata["multiscales"][0]
-            if "datasets" in multiscales and len(multiscales["datasets"]) > self.scale_level:
-                dataset_info = multiscales["datasets"][self.scale_level]
-                if "coordinateTransformations" in dataset_info:
-                    for transform in dataset_info["coordinateTransformations"]:
-                        if transform.get("type") == "scale" and "scale" in transform:
-                            scale_array = transform["scale"]
-                            if len(scale_array) >= 5:  # [T, C, Z, Y, X]
-                                effective_pixel_size_um = scale_array[4]  # X scale (effective pixel size for this scale)
-                                break
-        
-        print(f"Using pixel size: base={base_pixel_size_um}µm, effective={effective_pixel_size_um}µm for scale {self.scale_level}")
-        
-        # Convert well-relative coordinates (mm) to pixel coordinates in OME-Zarr coordinate system
-        # OME-Zarr coordinate system: center of image is well center (0,0 in well-relative coordinates)
-        center_x_px = image_width / 2
-        center_y_px = image_height / 2
-        
-        # Convert well-relative mm to pixels using effective pixel size
-        pixel_x = round(center_x_px + (well_relative_x * 1000) / effective_pixel_size_um)
-        pixel_y = round(center_y_px + (well_relative_y * 1000) / effective_pixel_size_um)
-        
-        print(f"OME-Zarr coordinate conversion: well-relative({well_relative_x:.3f}, {well_relative_y:.3f})mm → pixel({pixel_x}, {pixel_y}) with center({center_x_px}, {center_y_px})")
-        
-        # Calculate region boundaries
-        scaled_width = self.Width // (4 ** self.scale_level)
-        scaled_height = self.Height // (4 ** self.scale_level)
-        half_width = scaled_width // 2
-        half_height = scaled_height // 2
-        
-        # Calculate bounds ensuring they're within image bounds
-        x_start = max(0, pixel_x - half_width)
-        y_start = max(0, pixel_y - half_height)
-        x_end = min(image_width, x_start + scaled_width)
-        y_end = min(image_height, y_start + scaled_height)
-        
-        print(f"Region bounds: pixel({x_start}, {y_start}) to ({x_end}, {y_end}), size: {x_end-x_start}x{y_end-y_start}, image: {image_width}x{image_height}")
-        
-        # Calculate which chunks we need
-        chunk_y_start = y_start // z_chunks[0]
-        chunk_y_end = (y_end - 1) // z_chunks[0] + 1
-        chunk_x_start = x_start // z_chunks[1]
-        chunk_x_end = (x_end - 1) // z_chunks[1] + 1
-
-        # Create empty composite image 
-        composite_image = np.zeros((self.Height, self.Width), dtype=np.uint8)
-        
-        # Load all chunks - fail if any chunk fails
-        total_chunks = (chunk_y_end - chunk_y_start) * (chunk_x_end - chunk_x_start)
-        loaded_chunks = 0
-        failed_chunks = []
-        
-        print(f"Buffered loading: {total_chunks} chunks needed")
-        
-        for chunk_y in range(chunk_y_start, chunk_y_end):
-            for chunk_x in range(chunk_x_start, chunk_x_end):
-                try:
-                    # Load individual chunk with increased timeout (5 seconds)
-                    # Use dynamically detected well ID
-                    chunk_data = await asyncio.wait_for(
-                        self.zarr_image_manager.get_chunk_np_data(
-                            dataset_id, channel_name, self.scale_level, chunk_x, chunk_y, well_id=well_id
-                        ),
-                        timeout=5.0  # 5s timeout per chunk (increased from 2s)
-                    )
-                    
-                    if chunk_data is not None:
-                        # Composite this chunk into the image
-                        self._composite_chunk_into_image(
-                            composite_image, chunk_data, chunk_x, chunk_y, 
-                            z_chunks, x_start, y_start, x_end, y_end
-                        )
-                        loaded_chunks += 1
-                    else:
-                        failed_chunks.append((chunk_x, chunk_y))
-                        
-                except asyncio.TimeoutError:
-                    print(f"Timeout loading chunk ({chunk_x}, {chunk_y})")
-                    failed_chunks.append((chunk_x, chunk_y))
-                except Exception as e:
-                    print(f"Error loading chunk ({chunk_x}, {chunk_y}): {e}")
-                    failed_chunks.append((chunk_x, chunk_y))
-
-        # Fail completely if any chunks failed to load
-        if failed_chunks:
-            raise Exception(f"Failed to load {len(failed_chunks)}/{total_chunks} chunks: {failed_chunks}")
-
-        print(f"Buffered loading complete: {loaded_chunks}/{total_chunks} chunks loaded successfully")
-        
-        # Update the main image with the successfully loaded composite
-        self.image = composite_image
-        
-        # Apply processing
-        self._apply_image_processing(intensity, exposure_time, dz)
-
-    def _composite_chunk_into_image(self, composite_image, chunk_data, chunk_x, chunk_y, z_chunks, x_start, y_start, x_end, y_end):
-        """
-        Composite a single chunk into the composite image at the correct position.
-        """
-        try:
-            # Calculate chunk position in the full region
-            chunk_y_offset = chunk_y * z_chunks[0]
-            chunk_x_offset = chunk_x * z_chunks[1]
-            
-            # Calculate slice within the chunk that we need
-            chunk_y_slice_start = max(0, y_start - chunk_y_offset)
-            chunk_y_slice_end = min(z_chunks[0], y_end - chunk_y_offset)
-            chunk_x_slice_start = max(0, x_start - chunk_x_offset)
-            chunk_x_slice_end = min(z_chunks[1], x_end - chunk_x_offset)
-            
-            # Calculate where this goes in the composite image
-            composite_y_start = max(0, chunk_y_offset - y_start + chunk_y_slice_start)
-            composite_y_end = composite_y_start + (chunk_y_slice_end - chunk_y_slice_start)
-            composite_x_start = max(0, chunk_x_offset - x_start + chunk_x_slice_start)
-            composite_x_end = composite_x_start + (chunk_x_slice_end - chunk_x_slice_start)
-            
-            # Scale chunk to composite image size
-            chunk_height = chunk_y_slice_end - chunk_y_slice_start
-            chunk_width = chunk_x_slice_end - chunk_x_slice_start
-            
-            if chunk_height > 0 and chunk_width > 0:
-                chunk_slice = chunk_data[chunk_y_slice_start:chunk_y_slice_end, chunk_x_slice_start:chunk_x_slice_end]
-                
-                # Scale to full image dimensions
-                scale_y = self.Height / (y_end - y_start)
-                scale_x = self.Width / (x_end - x_start)
-                
-                scaled_y_start = int(composite_y_start * scale_y)
-                scaled_y_end = int(composite_y_end * scale_y)
-                scaled_x_start = int(composite_x_start * scale_x)
-                scaled_x_end = int(composite_x_end * scale_x)
-                
-                # Ensure bounds are within image
-                scaled_y_start = max(0, min(scaled_y_start, self.Height))
-                scaled_y_end = max(0, min(scaled_y_end, self.Height))
-                scaled_x_start = max(0, min(scaled_x_start, self.Width))
-                scaled_x_end = max(0, min(scaled_x_end, self.Width))
-                
-                if scaled_y_end > scaled_y_start and scaled_x_end > scaled_x_start:
-                    # Resize chunk to fit the target area
-                    target_height = scaled_y_end - scaled_y_start
-                    target_width = scaled_x_end - scaled_x_start
-                    
-                    if target_height > 0 and target_width > 0:
-                        resized_chunk = cv2.resize(chunk_slice, (target_width, target_height))
-                        composite_image[scaled_y_start:scaled_y_end, scaled_x_start:scaled_x_end] = resized_chunk
-                        
-        except Exception as e:
-            print(f"Error compositing chunk: {e}")
-
-    def _apply_image_processing(self, intensity, exposure_time, dz):
-        """
-        Apply exposure, intensity, and blur processing to the current image.
-        """
-        try:
-            # Apply exposure and intensity scaling
-            exposure_factor = max(0.1, exposure_time / 100)
-            intensity_factor = max(0.1, intensity / 60)
-            
-            # Check if image contains any valid data before scaling
-            if np.count_nonzero(self.image) == 0:
-                print("WARNING: Image contains all zeros before scaling!")
-                self.image = np.ones((self.Height, self.Width), dtype=np.uint8) * 128
-            
-            # Convert to float32 for scaling, apply factors, then clip and convert back to uint8
-            self.image = np.clip(self.image.astype(np.float32) * exposure_factor * intensity_factor, 0, 255).astype(np.uint8)
-            
-            # Check if image contains any valid data after scaling
-            if np.count_nonzero(self.image) == 0:
-                print("WARNING: Image contains all zeros after scaling!")
-                self.image = np.ones((self.Height, self.Width), dtype=np.uint8) * 128
-
-            # Convert to appropriate pixel format
-            if self.pixel_format == "MONO8":
-                self.current_frame = self.image
-            elif self.pixel_format == "MONO12":
-                self.current_frame = (self.image.astype(np.uint16) * 16).astype(np.uint16)
-            elif self.pixel_format == "MONO16":
-                self.current_frame = (self.image.astype(np.uint16) * 256).astype(np.uint16)
-            else:
-                print(f"Unrecognized pixel format {self.pixel_format}, using MONO8")
-                self.current_frame = self.image
-
-            # Apply blur for Z offset
-            if dz != 0:
-                sigma = abs(dz) * 6
-                self.current_frame = gaussian_filter(self.current_frame, sigma=sigma)
-                print(f"Applied blur with dz={dz}, sigma={sigma}")
-            
-            # Final check to ensure we're not sending a completely black image
-            if np.count_nonzero(self.current_frame) == 0:
-                print("CRITICAL: Final image is completely black, setting to gray")
-                if self.pixel_format == "MONO8":
-                    self.current_frame = np.ones((self.Height, self.Width), dtype=np.uint8) * 128
-                elif self.pixel_format == "MONO12":
-                    self.current_frame = np.ones((self.Height, self.Width), dtype=np.uint16) * 2048
-                elif self.pixel_format == "MONO16":
-                    self.current_frame = np.ones((self.Height, self.Width), dtype=np.uint16) * 32768
-                    
-        except Exception as e:
-            print(f"Error in image processing: {e}")
-
-    # Note: get_image_from_zarr_optimized method removed - replaced by progressive loading system

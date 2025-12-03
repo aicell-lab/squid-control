@@ -2,7 +2,7 @@
 Offline processing module for time-lapse experiment data.
 Handles stitching and uploading of stored microscopy data.
 """
-
+import os
 import asyncio
 import json
 import logging
@@ -85,6 +85,96 @@ class OfflineProcessor:
         else:
             print(f"Configuration already loaded: DEFAULT_SAVING_PATH = {CONFIG.DEFAULT_SAVING_PATH}")
 
+    async def _upload_zarr_with_hypha_artifact(self, zarr_folder_path: str, dataset_name: str, 
+                                                acquisition_settings: dict = None, 
+                                                description: str = "", server_url: str = None) -> dict:
+        """
+        Upload a zarr folder to the artifact manager using hypha-artifact.
+        
+        Args:
+            zarr_folder_path: Path to the zarr folder to upload
+            dataset_name: Name for the dataset
+            acquisition_settings: Optional acquisition settings metadata
+            description: Optional description for the dataset
+            server_url: Server URL (defaults to https://hypha.aicell.io)
+            
+        Returns:
+            dict with upload result information
+        """
+        from hypha_artifact import AsyncHyphaArtifact
+        
+        token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
+        if not token:
+            raise Exception("AGENT_LENS_WORKSPACE_TOKEN environment variable not set")
+        
+        server_url = server_url or "https://hypha.aicell.io"
+        workspace = "agent-lens"
+        
+        print(f"📤 Creating artifact '{dataset_name}' for upload...")
+        
+        artifact = AsyncHyphaArtifact(
+            artifact_id=dataset_name,
+            workspace=workspace,
+            token=token,
+            server_url=server_url
+        )
+        
+        # Create the artifact (delete existing if it already exists)
+        try:
+            await artifact.create()
+            print(f"✅ Artifact created: {workspace}/{dataset_name}")
+        except Exception as e:
+            error_str = str(e).lower()
+            if "already exists" in error_str or "fileexistserror" in error_str:
+                print(f"⚠️ Artifact already exists, deleting and recreating...")
+                # Delete the existing artifact
+                from hypha_rpc import connect_to_server
+                server = await connect_to_server({"server_url": server_url, "token": token})
+                artifact_manager = await server.get_service("public/artifact-manager")
+                await artifact_manager.delete(artifact_id=f"{workspace}/{dataset_name}", delete_files=True)
+                server.disconnect()
+                print(f"🗑️ Deleted existing artifact: {workspace}/{dataset_name}")
+                # Now create fresh
+                await artifact.create()
+                print(f"✅ Artifact created: {workspace}/{dataset_name}")
+            else:
+                raise
+        
+        # Edit mode for staging changes
+        await artifact.edit(stage=True)
+        
+        # Upload the zarr folder recursively
+        print(f"📤 Uploading zarr folder: {zarr_folder_path}")
+        await artifact.put(zarr_folder_path, "/data.zarr", recursive=True)
+        
+        # Add manifest with acquisition settings if available
+        if acquisition_settings:
+            manifest_content = json.dumps({
+                "name": dataset_name,
+                "description": description,
+                "acquisition_settings": acquisition_settings
+            }, indent=2)
+            # Write manifest to a temporary file, then upload (put() expects file paths, not bytes)
+            import tempfile
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                f.write(manifest_content)
+                temp_manifest_path = f.name
+            try:
+                await artifact.put(temp_manifest_path, "/manifest.json")
+            finally:
+                os.unlink(temp_manifest_path)  # Clean up temp file
+        
+        # Commit the changes
+        await artifact.commit(comment=description or f"Uploaded {dataset_name}")
+        
+        print(f"✅ Successfully uploaded '{dataset_name}'")
+        
+        return {
+            "success": True,
+            "dataset_name": dataset_name,
+            "description": description
+        }
+
     def find_experiment_folders(self, experiment_id: str) -> List[Path]:
         """
         Find all experiment folders matching experiment_id prefix.
@@ -94,7 +184,7 @@ class OfflineProcessor:
             
         Returns:
             Sorted list of Path objects like:
-            [experiment_id-20250822T143055, experiment_id-20250822T163022, ...]
+            [experiment_id-20250822T143055, experiment_id_2025-08-22_14-30-55, ...]
         """
 
         from squid_control.control.config import CONFIG
@@ -104,10 +194,19 @@ class OfflineProcessor:
         if not base_path.exists():
             raise FileNotFoundError(f"Base path does not exist: {base_path}")
 
-        pattern = f"{experiment_id}-*"
-        print(f"Using pattern: {pattern}")
-        folders = sorted(base_path.glob(pattern))
-        print(f"Found {len(folders)} folders matching pattern: {[f.name for f in folders]}")
+        # Search for both hyphen and underscore separators
+        # e.g., 'test-drug-20250822T143055' or 'test-drug_2025-08-22_14-30-55'
+        pattern_hyphen = f"{experiment_id}-*"
+        pattern_underscore = f"{experiment_id}_*"
+        print(f"Using patterns: {pattern_hyphen} and {pattern_underscore}")
+        
+        folders_hyphen = list(base_path.glob(pattern_hyphen))
+        folders_underscore = list(base_path.glob(pattern_underscore))
+        
+        # Combine and deduplicate
+        all_folders = set(folders_hyphen + folders_underscore)
+        folders = sorted(all_folders)
+        print(f"Found {len(folders)} folders matching patterns: {[f.name for f in folders]}")
 
         # Filter to only directories that contain a '0' subfolder
         valid_folders = []
@@ -246,9 +345,9 @@ class OfflineProcessor:
         # Create mapping from zarr names (used in filenames) to human names (expected by canvas)
         filename_to_human_mapping = {}
 
-        # Get all channel info and create zarr_name -> human_name mapping
+        # Get all channel info and create canonical_name -> human_name mapping
         for channel_info in ChannelMapper.CHANNELS.values():
-            filename_to_human_mapping[channel_info.zarr_name] = channel_info.human_name
+            filename_to_human_mapping[channel_info.canonical_name] = channel_info.human_name
 
         print(f"Filename to human name mapping: {filename_to_human_mapping}")
         return filename_to_human_mapping
@@ -279,12 +378,17 @@ class OfflineProcessor:
                                          experiment_folder: Path,
                                          canvas, channel_mapping: dict) -> None:
         """
-        Load BMP images and add them to well canvas with optimized batch processing.
+        Load BMP images and add them to single canvas using absolute stage coordinates.
+        
+        Supports multiple file naming conventions:
+        1. Traditional: {region}_{i}_{j}_{k}_{channel}.bmp (e.g., A1_0_0_0_BF_LED_matrix_full.bmp)
+        2. Numeric region: {region_number}_{i}_{j}_{k}_{channel}.bmp (e.g., 0_0_0_0_BF_LED_matrix_full.bmp)
+        3. Position ID: {position_id}_{i}_{j}_{k}_{channel}.bmp (e.g., 402_0_0_0_BF_LED_matrix_full.bmp)
         
         Args:
-            well_data: List of coordinate records for this well
+            well_data: List of coordinate records (from all positions)
             experiment_folder: Path to experiment folder
-            canvas: WellZarrCanvas instance
+            canvas: ZarrCanvas instance (single canvas for experiment)
             channel_mapping: XML to ChannelMapper name mapping
         """
         data_folder = experiment_folder / "0"
@@ -293,70 +397,147 @@ class OfflineProcessor:
         available_channels = list(canvas.channel_to_zarr_index.keys())
         print(f"Available channels for canvas: {available_channels}")
 
-        # Pre-filter and group images by position for batch processing
-        position_images = {}
-        for coord_record in well_data:
-            # Handle both CSV formats: old format has 'i','j','k', new format has 'fov','z_level'
+        # Build a mapping from position index to coordinate record
+        # This handles the case where filenames use position index (0, 1, 2, ...) 
+        # instead of well IDs
+        position_to_coords = {}
+        for idx, coord_record in enumerate(well_data):
+            # Handle both CSV formats
             if 'i' in coord_record and 'j' in coord_record:
-                # Old format
                 i = int(coord_record['i'])
                 j = int(coord_record['j'])
-                k = int(coord_record.get('k', 0))  # Default to 0 if not present
+                k = int(coord_record.get('k', 0))
             else:
-                # New format: map fov to i, use 0 for j, z_level to k
                 i = int(coord_record['fov'])
-                j = 0  # New format doesn't have j, use 0
-                k = int(coord_record.get('z_level', 0))  # Default to 0 if not present
+                j = 0
+                k = int(coord_record.get('z_level', 0))
 
             x_mm = float(coord_record['x (mm)'])
             y_mm = float(coord_record['y (mm)'])
-            well_id = coord_record['region']
+            region = coord_record.get('region', str(idx))
+            
+            # Store both by region and by index for flexible matching
+            position_to_coords[str(region)] = {
+                'i': i, 'j': j, 'k': k, 'x_mm': x_mm, 'y_mm': y_mm, 'region': region
+            }
+            position_to_coords[str(idx)] = {
+                'i': i, 'j': j, 'k': k, 'x_mm': x_mm, 'y_mm': y_mm, 'region': region
+            }
 
-            # Skip if not k=0 (single focal plane only)
-            if k != 0:
+        # Scan all BMP files and group by their position ID prefix
+        all_bmp_files = list(data_folder.glob("*.bmp"))
+        print(f"Found {len(all_bmp_files)} total BMP files in {data_folder}")
+        
+        if not all_bmp_files:
+            print(f"⚠️ No BMP files found in {data_folder}")
+            return
+
+        # Group files by position ID (first part of filename before _i_j_k)
+        position_files = {}
+        for bmp_file in all_bmp_files:
+            filename = bmp_file.stem  # Remove .bmp extension
+            parts = filename.split('_')
+            
+            if len(parts) < 4:
+                print(f"  ⚠️ Skipping file with unexpected format: {bmp_file.name}")
+                continue
+            
+            # Extract position ID and i, j, k from filename
+            # Format: {position_id}_{i}_{j}_{k}_{channel...}
+            position_id = parts[0]
+            try:
+                file_i = int(parts[1])
+                file_j = int(parts[2])
+                file_k = int(parts[3])
+            except ValueError:
+                print(f"  ⚠️ Could not parse i,j,k from filename: {bmp_file.name}")
+                continue
+            
+            # Skip non-zero k (z-stacks) for now
+            if file_k != 0:
+                continue
+            
+            key = (position_id, file_i, file_j, file_k)
+            if key not in position_files:
+                position_files[key] = []
+            position_files[key].append(bmp_file)
+
+        print(f"Grouped into {len(position_files)} unique positions")
+
+        # Build a list of all image tasks to process
+        image_tasks = []
+        for (position_id, file_i, file_j, file_k), image_files in position_files.items():
+            # Try to find matching coordinates
+            coords = None
+            
+            if position_id in position_to_coords:
+                coords = position_to_coords[position_id]
+            else:
+                # Try treating position_id as an index into well_data
+                try:
+                    idx = int(position_id)
+                    if 0 <= idx < len(well_data):
+                        coord_record = well_data[idx]
+                        x_mm = float(coord_record['x (mm)'])
+                        y_mm = float(coord_record['y (mm)'])
+                        coords = {'x_mm': x_mm, 'y_mm': y_mm, 'region': position_id}
+                except (ValueError, KeyError):
+                    pass
+            
+            if coords is None:
                 continue
 
-            # Find all image files for this position
-            # Handle both filename patterns: old format uses i_j_k, new format uses fov_z_level
-            if 'i' in coord_record and 'j' in coord_record:
-                # Old format: well_id_i_j_k_channel.bmp
-                pattern = f"{well_id}_{i}_{j}_{k}_*.bmp"
-            else:
-                # New format: well_id_fov_z_level_channel.bmp
-                pattern = f"{well_id}_{i}_{k}_*.bmp"
+            x_mm = coords['x_mm']
+            y_mm = coords['y_mm']
+            
+            for img_file in image_files:
+                image_tasks.append((img_file, x_mm, y_mm))
 
-            image_files = list(data_folder.glob(pattern))
+        total_images = len(image_tasks)
+        print(f"📊 Prepared {total_images} images to process using multi-threading...")
 
-            if image_files:
-                position_images[(i, j, x_mm, y_mm)] = image_files
-                print(f"Well {well_id} position ({i},{j},{k}): found {len(image_files)} images")
-            else:
-                print(f"⚠️ Well {well_id} position ({i},{j},{k}): NO IMAGES FOUND!")
-                print(f"  🔍 Pattern used: {pattern}")
-                print(f"  🔍 Data folder: {data_folder}")
-
-        # Process images sequentially - one by one
+        # Process images using thread pool for parallel loading
+        import concurrent.futures
+        from threading import Lock
+        
         images_added = 0
-        total_images = sum(len(files) for files in position_images.values())
-
-        for (i, j, x_mm, y_mm), image_files in position_images.items():
-            print(f"Processing position ({i},{j}) with {len(image_files)} images...")
-
-            # Process each image one by one (no batching, no parallel)
-            for img_index, img_file in enumerate(image_files):
-                print(f"  Loading image {img_index + 1}/{len(image_files)}: {img_file.name}")
-
-                # Load and process single image synchronously
-                success = self._load_and_process_single_image_sync(
-                    img_file, x_mm, y_mm, canvas, channel_mapping, available_channels
-                )
-
+        images_failed = 0
+        counter_lock = Lock()
+        last_progress_time = time.time()
+        
+        def process_single_image(task):
+            """Process a single image - runs in thread pool"""
+            nonlocal images_added, images_failed, last_progress_time
+            
+            img_file, x_mm, y_mm = task
+            success = self._load_and_process_single_image_sync(
+                img_file, x_mm, y_mm, canvas, channel_mapping, available_channels
+            )
+            
+            with counter_lock:
                 if success:
                     images_added += 1
                 else:
-                    print(f"  ❌ Failed to add image {img_file.name}")
+                    images_failed += 1
+                
+                # Print progress every 5 seconds
+                current_time = time.time()
+                if current_time - last_progress_time >= 5.0:
+                    queue_size = canvas.preprocessing_queue.qsize()
+                    print(f"📈 Progress: {images_added}/{total_images} queued, {images_failed} failed, queue_size={queue_size}")
+                    last_progress_time = current_time
+            
+            return success
 
-        print(f"✅ Total images added to canvas: {images_added}/{total_images}")
+        # Use threading for parallel image loading, all available cores-1 to avoid blocking the main thread
+        num_workers = os.cpu_count() - 1
+        if num_workers <= 0:
+            num_workers = 1
+        print(f"🚀 Starting {num_workers} worker threads for image loading...")
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+            # Submit all tasks using map
+            executor.map(process_single_image, image_tasks)
 
     def _load_and_process_single_image_sync(self, img_file: Path, x_mm: float, y_mm: float,
                                            canvas, channel_mapping: dict, available_channels: list) -> bool:
@@ -380,18 +561,15 @@ class OfflineProcessor:
 
             if channel_start_idx is not None:
                 channel_name = '_'.join(filename_parts[channel_start_idx:])
-                print(f"    🔍 Debug: filename_parts={filename_parts}, channel_start_idx={channel_start_idx}, channel_name={channel_name}")
             else:
-                print(f"    ❌ No channel keyword found in filename: {img_file.name}")
+                # Silently skip files without channel keyword
                 return False
 
             mapped_channel_name = channel_mapping.get(channel_name, channel_name)
 
             # Check if this channel is available in the canvas
             if mapped_channel_name not in available_channels:
-                print(f"    ❌ Channel {mapped_channel_name} not available in canvas, skipping")
-                print(f"    🔍 Available channels: {available_channels}")
-                print(f"    🔍 Channel mapping: {channel_mapping}")
+                # Silently skip unavailable channels
                 return False
 
             # Load image synchronously (no thread pool)
@@ -402,38 +580,45 @@ class OfflineProcessor:
                 return False
 
             # Get zarr channel index
-            zarr_channel_idx = canvas.get_zarr_channel_index(mapped_channel_name)
+            try:
+                zarr_channel_idx = canvas.get_zarr_channel_index(mapped_channel_name)
+            except Exception as e:
+                print(f"    ❌ Failed to get zarr channel index for {mapped_channel_name}: {e}")
+                import traceback
+                traceback.print_exc()
+                return False
 
-            # Add image to canvas using stitching queue (same pattern as scan_region_to_zarr)
+            # Add image to canvas using put_nowait (non-blocking)
+            # We're in sync context but need to add to async queue
+            # put_nowait() doesn't require the event loop to be running
             import asyncio
 
-            # Get the current event loop from the canvas's context
-            try:
-                # Try to run in current thread's event loop if available
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # If loop is running, we need to use run_coroutine_threadsafe
-                    future = asyncio.run_coroutine_threadsafe(
-                        self._add_image_to_stitching_queue(
-                            canvas, image, x_mm, y_mm, zarr_channel_idx, 0, 0
-                        ), loop
-                    )
-                    future.result(timeout=30)  # Wait for completion with timeout
-                else:
-                    # If no running loop, run directly
-                    asyncio.run(self._add_image_to_stitching_queue(
-                        canvas, image, x_mm, y_mm, zarr_channel_idx, 0, 0
-                    ))
-            except RuntimeError:
-                # No event loop in this thread, create one
-                asyncio.run(self._add_image_to_stitching_queue(
-                    canvas, image, x_mm, y_mm, zarr_channel_idx, 0, 0
-                ))
+            queue_item = {
+                'image': image.copy(),
+                'x_mm': x_mm,
+                'y_mm': y_mm,
+                'channel_idx': zarr_channel_idx,
+                'z_idx': 0,
+                'timepoint': 0,
+                'timestamp': time.time(),
+                'quick_scan': False  # Process all scales
+            }
 
-            return True
+            # Try to add to queue - wait indefinitely if queue is full
+            while True:
+                try:
+                    # Use put_nowait - doesn't block
+                    canvas.preprocessing_queue.put_nowait(queue_item)
+                    return True  # Success!
+                except asyncio.QueueFull:
+                    # Queue is full, wait and retry (no limit - just wait until space available)
+                    time.sleep(0.5)
+                    continue
 
         except Exception as e:
-            print(f"    ❌ Failed to process image {img_file}: {e}")
+            print(f"    ❌ Failed to process image {img_file}: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     async def _load_and_process_single_image(self, img_file: Path, x_mm: float, y_mm: float,
@@ -625,84 +810,13 @@ class OfflineProcessor:
 
         return sanitized
 
-
-    async def _process_single_well(self, well_id: str, well_row: str, well_column: int,
-                                 well_data: List[dict], experiment_folder: Path,
-                                 temp_exp_manager, channel_mapping: dict) -> dict:
-        """
-        Process a single well with optimized stitching.
-        
-        Returns:
-            Dictionary with well zarr file info, or None if failed
-        """
-        try:
-            self.logger.info(f"Processing well {well_id} with {len(well_data)} positions")
-
-            # Create well canvas using the standard approach
-            canvas = temp_exp_manager.get_well_canvas(
-                well_row, well_column, '96', 100.0  # Very large padding for absolute coordinates
-            )
-
-            # Start stitching
-            await canvas.start_stitching()
-
-            try:
-                # Load and stitch images for this well - use to_thread for blocking operations
-                await asyncio.to_thread(
-                    self._load_and_stitch_well_images_sync,
-                    well_data, experiment_folder, canvas, channel_mapping
-                )
-
-                # Wait for stitching to complete properly
-                await self._wait_for_stitching_completion(canvas)
-
-                # CRITICAL: Check which channels have data and activate them
-                logger.info(f"Running post-stitching channel activation check for well {well_row}{well_column}")
-                canvas.activate_channels_with_data()
-
-                # Export as zip file to disk with proper naming - use to_thread
-                well_zip_filename = f"well_{well_row}{well_column}_96.zip"
-                well_zip_path = await asyncio.to_thread(self._export_well_to_zip_direct, canvas, well_zip_filename)
-            finally:
-                await canvas.stop_stitching()
-
-            # Get file size
-            import os
-            file_size_bytes = os.path.getsize(well_zip_path)
-
-            well_info = {
-                'name': f"well_{well_row}{well_column}_96",
-                'file_path': well_zip_path,
-                'size_mb': file_size_bytes / (1024 * 1024)
-            }
-
-            self.logger.info(f"Exported well {well_id} as {file_size_bytes/(1024*1024):.2f} MB zip to {well_zip_path}")
-            return well_info
-
-        except Exception as e:
-            self.logger.error(f"Error processing well {well_id}: {e}")
-            # Clean up any partial Zarr files that might cause issues
-            try:
-                if hasattr(canvas, 'zarr_path') and canvas.zarr_path.exists():
-                    import glob
-                    import os
-                    partial_files = glob.glob(str(canvas.zarr_path / "**" / "*.partial"), recursive=True)
-                    for partial_file in partial_files:
-                        try:
-                            os.remove(partial_file)
-                        except:
-                            pass
-            except:
-                pass
-            return None
-
     async def stitch_and_upload_timelapse(self, experiment_id: str,
                                         upload_immediately: bool = True,
                                         cleanup_temp_files: bool = True,
                                         max_concurrent_runs: int = 1,
                                         use_parallel_wells: bool = True) -> dict:
         """
-        Parallel stitching and uploading - one folder at a time, 3 wells at a time.
+        Parallel stitching and uploading
         
         Args:
             experiment_id: Experiment ID to search for
@@ -831,12 +945,13 @@ class OfflineProcessor:
                                             cleanup_temp_files: bool = True,
                                             experiment_id: str = None) -> dict:
         """
-        Process a single experiment run - all wells in parallel (3 at a time).
+        Process a single experiment run - all images into a single canvas using absolute stage coordinates.
         
         Args:
             experiment_folder: Path to experiment folder
             upload_immediately: Whether to upload the dataset after processing
             cleanup_temp_files: Whether to cleanup temp files
+            experiment_id: Experiment ID for naming
             
         Returns:
             Dictionary with processing results
@@ -844,17 +959,6 @@ class OfflineProcessor:
         self.logger.info(f"Processing experiment folder: {experiment_folder.name}")
 
         try:
-            # 0. Check for .done file in well_zips directory - skip processing if found
-            from squid_control.control.config import CONFIG
-            well_zips_path = Path(CONFIG.DEFAULT_SAVING_PATH) / "well_zips"
-            done_file = well_zips_path / ".done"
-
-            if done_file.exists():
-                print(f"🎯 Found .done file at {done_file} - SKIPPING PROCESSING, going directly to upload!")
-                return await self._upload_existing_wells_from_directory(
-                    well_zips_path, experiment_folder, experiment_id, upload_immediately, cleanup_temp_files
-                )
-
             # 1. Parse metadata from this folder
             print(f"📋 Reading metadata from {experiment_folder.name}...")
             acquisition_params = self.parse_acquisition_parameters(experiment_folder)
@@ -862,163 +966,150 @@ class OfflineProcessor:
             channel_mapping = self.create_xml_to_channel_mapping(xml_channels)
             coordinates_data = self.parse_coordinates_csv(experiment_folder)
 
-            print(f"Found {len(coordinates_data)} wells to process: {list(coordinates_data.keys())}")
+            # Flatten all positions from all wells into a single list
+            all_positions = []
+            for well_id, well_data in coordinates_data.items():
+                for coord_record in well_data:
+                    coord_record['well_id'] = well_id  # Keep track of original well for logging
+                    all_positions.append(coord_record)
 
-            # 2. Create temporary experiment for this run
+            print(f"Found {len(all_positions)} positions to process from {len(coordinates_data)} regions")
+
+            # 2. Create/find stitch folder - use consistent name without timestamp for resume capability
             from squid_control.control.config import CONFIG
 
             if CONFIG.DEFAULT_SAVING_PATH and Path(CONFIG.DEFAULT_SAVING_PATH).exists():
                 base_temp_path = Path(CONFIG.DEFAULT_SAVING_PATH)
-                temp_path = base_temp_path / f"offline_stitch_{experiment_folder.name}_{int(time.time())}"
-                temp_path.mkdir(parents=True, exist_ok=True)
-                print(f"Using configured saving path for temporary stitching: {temp_path}")
+                # Use consistent folder name (no timestamp) so we can resume if upload fails
+                temp_path = base_temp_path / f"offline_stitch_{experiment_folder.name}"
             else:
+                # For system temp, we can't easily resume, so use timestamp
                 temp_path = Path(tempfile.mkdtemp(prefix=f"offline_stitch_{experiment_folder.name}_"))
-                print(f"Using system temp directory for stitching: {temp_path}")
+            
+            # Check if .done file exists - if so, skip zarr creation and just upload
+            done_file = temp_path / ".done"
+            zarr_already_created = done_file.exists()
+            
+            if zarr_already_created:
+                print(f"✅ Found .done file - zarr already created, skipping to upload")
+                print(f"   Using existing zarr at: {temp_path}")
+                
+                # Load existing canvas
+                temp_exp_manager = self.create_temp_experiment_manager(str(temp_path))
+                # Use "." to avoid creating duplicate subfolder (temp_path already identifies the experiment)
+                exp_name = "."
+                # Don't create new experiment, just get existing canvas (initialize_new=False to preserve data!)
+                temp_exp_manager.current_experiment = exp_name
+                canvas = temp_exp_manager.get_canvas(exp_name, initialize_new=False)
+                
+                # Activate channels that have data (sets "active": true in omero metadata)
+                canvas.activate_channels_with_data()
+                print(f"✅ Channel metadata updated")
+                
+                # Get canvas info
+                canvas_info = canvas.get_export_info()
+                total_size_mb = canvas_info.get('total_size_mb', 0)
+                images_processed = len(all_positions)
+            else:
+                # Create new zarr
+                temp_path.mkdir(parents=True, exist_ok=True)
+                print(f"Using stitch folder: {temp_path}")
+                
+                temp_exp_manager = self.create_temp_experiment_manager(str(temp_path))
 
-            temp_exp_manager = self.create_temp_experiment_manager(str(temp_path))
+                # Create a single experiment with one canvas
+                # Use "." to avoid creating duplicate subfolder (temp_path already identifies the experiment)
+                exp_name = "."
+                temp_exp_manager.create_experiment(exp_name)
+                canvas = temp_exp_manager.get_canvas(exp_name)
 
-            # 3. Process all wells in parallel (3 at a time)
-            print(f"🚀 Starting parallel processing of {len(coordinates_data)} wells (max 3 concurrent)...")
+                # 3. Start stitching before processing images
+                print(f"🚀 Starting stitching pipeline...")
+                await canvas.start_stitching()
+                print(f"✅ Stitching pipeline started")
 
-            # Create semaphore to limit concurrent well processing to 3
-            semaphore = asyncio.Semaphore(self.max_concurrent_wells)
+                # 4. Process all positions into the single canvas using absolute stage coordinates
+                print(f"🚀 Processing {len(all_positions)} positions into single canvas...")
 
-            # Create tasks for all wells
-            well_tasks = []
-            for well_index, (well_id, well_data) in enumerate(coordinates_data.items()):
-                # Extract well row and column
-                if len(well_id) >= 2:
-                    well_row = well_id[0]
-                    well_column = int(well_id[1:]) if well_id[1:].isdigit() else 1
-
-                    # Create task for this well
-                    task = self._process_well_with_semaphore(
-                        semaphore, well_id, well_row, well_column, well_data,
-                        experiment_folder, temp_exp_manager, channel_mapping,
-                        well_index + 1, len(coordinates_data)
+                # Run the image loading in a thread pool so it doesn't block the event loop
+                # This allows the stitching background tasks to run while we load images
+                import concurrent.futures
+                loop = asyncio.get_event_loop()
+                
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    # Run the sync function in a separate thread
+                    await loop.run_in_executor(
+                        executor,
+                        self._load_and_stitch_well_images_sync,
+                        all_positions, experiment_folder, canvas, channel_mapping
                     )
-                    well_tasks.append(task)
-                else:
-                    print(f"⚠️ Invalid well ID format: {well_id}, skipping...")
 
-            # Wait for all wells to complete
-            print(f"⏳ Waiting for {len(well_tasks)} wells to complete...")
-            well_results = await asyncio.gather(*well_tasks, return_exceptions=True)
+                # 5. Wait for all images to be processed
+                print(f"⏳ Waiting for stitching queue to drain...")
+                await self._wait_for_stitching_completion(canvas, timeout_seconds=600)  # 10 minute timeout for large datasets
+                print(f"✅ All images processed")
 
-            # Process results
-            wells_processed = 0
-            total_size_mb = 0.0
-            well_zip_files = []  # Store all well ZIP files for combined upload
+                # 6. Activate channels that have data (sets "active": true in omero metadata)
+                canvas.activate_channels_with_data()
+                print(f"✅ Channel metadata updated")
 
-            for i, result in enumerate(well_results):
-                if isinstance(result, Exception):
-                    well_id = list(coordinates_data.keys())[i]
-                    print(f"  ❌ Well {well_id} failed with exception: {result}")
-                    continue
+                # Get canvas size
+                canvas_info = canvas.get_export_info()
+                total_size_mb = canvas_info.get('total_size_mb', 0)
+                images_processed = len(all_positions)
+                
+                # Create .done file to mark zarr creation complete
+                done_file.write_text(f"Zarr creation completed at {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                                    f"Positions: {images_processed}\n"
+                                    f"Size: {total_size_mb:.2f} MB\n")
+                print(f"✅ Created .done file - zarr creation complete")
 
-                if result is None:
-                    well_id = list(coordinates_data.keys())[i]
-                    print(f"  ❌ Well {well_id} returned None")
-                    continue
-
-                wells_processed += 1
-                total_size_mb += result['size_mb']
-                well_zip_files.append(result)
-                print(f"  ✅ Well {result['name']} completed: {result['size_mb']:.2f} MB")
-
-            print(f"🎉 Parallel processing complete: {wells_processed}/{len(coordinates_data)} wells processed successfully")
-
-            # Create .done file to mark processing completion
-            if wells_processed > 0:
-                well_zips_path = Path(CONFIG.DEFAULT_SAVING_PATH) / "well_zips"
-                done_file = well_zips_path / ".done"
-                try:
-                    done_file.touch()
-                    print(f"✅ Created .done file at {done_file} to mark processing completion")
-                except Exception as e:
-                    print(f"⚠️ Failed to create .done file: {e}")
+            print(f"🎉 Processing complete: {images_processed} positions processed")
 
             # Create dataset name using normalized timestamp extraction
-            # This ensures consistent naming regardless of folder timestamp format
             dataset_name = self.create_normalized_dataset_name(experiment_folder, experiment_id)
             print(f"📝 Using dataset name: {dataset_name}")
 
-            # 4. Upload all wells to a single dataset (like upload_zarr_dataset does)
+            # 4. Upload experiment zarr data to artifact manager using hypha-artifact
             upload_result = None
-            if well_zip_files and upload_immediately and self.zarr_artifact_manager:
-                print(f"\n📦 Uploading {len(well_zip_files)} wells to single dataset...")
+            if images_processed > 0 and upload_immediately:
+                print(f"\n📦 Uploading experiment zarr data to artifact manager...")
 
                 try:
-                    # Prepare zarr_files_info for upload_multiple_zip_files_to_dataset
-                    # Use file_path instead of content to prevent memory exhaustion
-                    zarr_files_info = []
-
-                    # Add all well ZIP files with file paths (streaming upload)
-                    for well_info in well_zip_files:
-                        zarr_files_info.append({
-                            'name': well_info['name'],  # e.g., "well_A1_96"
-                            'file_path': well_info['file_path'],  # Use file path instead of content
-                            'size_mb': well_info['size_mb']
-                        })
-
-                    # Use the original experiment_id for gallery creation, dataset_name for dataset naming
-                    # This ensures all datasets from the same experiment go into the same gallery
-                    gallery_experiment_id = experiment_id if experiment_id else dataset_name
-
-                    # Upload all wells to a single dataset
-                    upload_result = await self.zarr_artifact_manager.upload_multiple_zip_files_to_dataset(
-                        microscope_service_id=self.service_id,
-                        experiment_id=gallery_experiment_id,
-                        zarr_files_info=zarr_files_info,
+                    # Get the zarr folder path from the canvas
+                    zarr_folder = canvas.zarr_path
+                    upload_result = await self._upload_zarr_with_hypha_artifact(
+                        zarr_folder_path=str(zarr_folder),
                         dataset_name=dataset_name,
                         acquisition_settings={
                             "microscope_service_id": self.service_id,
                             "experiment_name": experiment_folder.name,
-                            "total_wells": len(well_zip_files),
+                            "total_positions": images_processed,
                             "total_size_mb": total_size_mb,
                             "offline_processing": True
                         },
-                        description=f"Offline processed experiment: {experiment_folder.name} with {len(well_zip_files)} wells"
+                        description=f"Offline processed experiment: {experiment_folder.name} with {images_processed} positions"
                     )
 
                     print(f"  ✅ Dataset upload complete: {upload_result.get('dataset_name')}")
 
-                    # Clean up individual well ZIP files
+                    # Clean up stitch folder only after successful upload
                     if cleanup_temp_files:
-                        for well_info in well_zip_files:
-                            try:
-                                import os
-                                os.unlink(well_info['file_path'])
-                                print(f"    🗑️ Cleaned up {well_info['name']}.zip")
-                            except Exception as e:
-                                print(f"    ⚠️ Failed to cleanup {well_info['name']}.zip: {e}")
-
-                        # Also remove the .done file after successful upload
-                        try:
-                            well_zips_path = Path(CONFIG.DEFAULT_SAVING_PATH) / "well_zips"
-                            done_file = well_zips_path / ".done"
-                            done_file.unlink()
-                            print("    🗑️ Cleaned up .done file")
-                        except Exception as e:
-                            print(f"    ⚠️ Failed to cleanup .done file: {e}")
-
-                    # Clean up any existing temporary offline_stitch folders after successful upload
-                    self._cleanup_existing_temp_folders(experiment_folder.name)
+                        shutil.rmtree(temp_path, ignore_errors=True)
+                        self.logger.debug(f"Cleaned up temporary files: {temp_path}")
+                        print(f"  🗑️ Cleaned up stitch folder: {temp_path}")
 
                 except Exception as upload_error:
                     print(f"  ❌ Dataset upload failed: {upload_error}")
-                    upload_result = None
-
-            # 5. Cleanup temporary files
-            if cleanup_temp_files:
-                shutil.rmtree(temp_path, ignore_errors=True)
-                self.logger.debug(f"Cleaned up temporary files: {temp_path}")
+                    print(f"  💡 Zarr data preserved at: {temp_path}")
+                    print(f"  💡 Run again to retry upload (will skip zarr creation)")
+                    # Re-raise the error so the caller knows upload failed
+                    raise Exception(f"Dataset upload failed for {dataset_name}: {upload_error}") from upload_error
 
             return {
                 "success": True,
                 "experiment_folder": experiment_folder.name,
-                "wells_processed": wells_processed,
+                "positions_processed": images_processed,
                 "total_size_mb": total_size_mb,
                 "dataset_name": dataset_name,
                 "upload_result": upload_result
@@ -1026,247 +1117,40 @@ class OfflineProcessor:
 
         except Exception as e:
             self.logger.error(f"Error in processing {experiment_folder.name}: {e}")
+            import traceback
+            traceback.print_exc()
             return {
                 "success": False,
                 "experiment_folder": experiment_folder.name,
                 "error": str(e)
             }
-
-    async def _process_well_with_semaphore(self, semaphore: asyncio.Semaphore, well_id: str,
-                                         well_row: str, well_column: int, well_data: List[dict],
-                                         experiment_folder: Path, temp_exp_manager,
-                                         channel_mapping: dict, well_index: int, total_wells: int) -> dict:
-        """
-        Process a single well with semaphore-controlled concurrency.
-        
-        Args:
-            semaphore: Asyncio semaphore to limit concurrent processing
-            well_id: Well identifier (e.g., 'A1')
-            well_row: Well row letter (e.g., 'A')
-            well_column: Well column number (e.g., 1)
-            well_data: List of coordinate records for this well
-            experiment_folder: Path to experiment folder
-            temp_exp_manager: Temporary experiment manager
-            channel_mapping: Channel mapping dictionary
-            well_index: Current well index (1-based)
-            total_wells: Total number of wells
-            
-        Returns:
-            Dictionary with well zarr file info, or None if failed
-        """
-        async with semaphore:  # Acquire semaphore (limits to 3 concurrent wells)
-            print(f"🧪 Processing well {well_index}/{total_wells}: {well_id} (acquired semaphore)")
-
-            try:
-                # Process the well (stitch images)
-                print(f"  📸 Stitching {len(well_data)} positions for well {well_id}...")
-                well_info = await self._process_single_well(
-                    well_id, well_row, well_column, well_data,
-                    experiment_folder, temp_exp_manager, channel_mapping
-                )
-
-                if well_info is None:
-                    print(f"  ❌ Failed to process well {well_id}")
-                    return None
-
-                print(f"  ✅ Stitching complete for well {well_id}: {well_info['size_mb']:.2f} MB")
-                return well_info
-
-            except Exception as e:
-                print(f"  ❌ Exception processing well {well_id}: {e}")
-                return None
-            finally:
-                print(f"  🔓 Released semaphore for well {well_id}")
 
     async def process_experiment_run_sequential(self, experiment_folder: Path,
                                               upload_immediately: bool = True,
                                               cleanup_temp_files: bool = True,
                                               experiment_id: str = None) -> dict:
         """
-        Process a single experiment run - all wells in one dataset (sequential mode).
+        Process a single experiment run (sequential mode).
         
-        This method is kept for backward compatibility and testing.
+        This method is kept for backward compatibility. It now uses the same
+        single-canvas approach as process_experiment_run_parallel.
         
         Args:
             experiment_folder: Path to experiment folder
             upload_immediately: Whether to upload the dataset after processing
             cleanup_temp_files: Whether to cleanup temp files
+            experiment_id: Experiment ID for naming
             
         Returns:
             Dictionary with processing results
         """
-        self.logger.info(f"Processing experiment folder (sequential mode): {experiment_folder.name}")
-
-        try:
-            # 0. Check for .done file in well_zips directory - skip processing if found
-            from squid_control.control.config import CONFIG
-            well_zips_path = Path(CONFIG.DEFAULT_SAVING_PATH) / "well_zips"
-            done_file = well_zips_path / ".done"
-
-            if done_file.exists():
-                print(f"🎯 Found .done file at {done_file} - SKIPPING PROCESSING, going directly to upload!")
-                return await self._upload_existing_wells_from_directory(
-                    well_zips_path, experiment_folder, experiment_id, upload_immediately, cleanup_temp_files
-                )
-
-            # 1. Parse metadata from this folder
-            print(f"📋 Reading metadata from {experiment_folder.name}...")
-            acquisition_params = self.parse_acquisition_parameters(experiment_folder)
-            xml_channels = self.parse_configurations_xml(experiment_folder)
-            channel_mapping = self.create_xml_to_channel_mapping(xml_channels)
-            coordinates_data = self.parse_coordinates_csv(experiment_folder)
-
-            print(f"Found {len(coordinates_data)} wells to process: {list(coordinates_data.keys())}")
-
-            # 2. Create temporary experiment for this run
-            from squid_control.control.config import CONFIG
-
-            if CONFIG.DEFAULT_SAVING_PATH and Path(CONFIG.DEFAULT_SAVING_PATH).exists():
-                base_temp_path = Path(CONFIG.DEFAULT_SAVING_PATH)
-                temp_path = base_temp_path / f"offline_stitch_{experiment_folder.name}_{int(time.time())}"
-                temp_path.mkdir(parents=True, exist_ok=True)
-                print(f"Using configured saving path for temporary stitching: {temp_path}")
-            else:
-                temp_path = Path(tempfile.mkdtemp(prefix=f"offline_stitch_{experiment_folder.name}_"))
-                print(f"Using system temp directory for stitching: {temp_path}")
-
-            temp_exp_manager = self.create_temp_experiment_manager(str(temp_path))
-
-            # 3. Process all wells in this folder sequentially
-            wells_processed = 0
-            total_size_mb = 0.0
-            well_zip_files = []  # Store all well ZIP files for combined upload
-
-            # Create dataset name using normalized timestamp extraction
-            # This ensures consistent naming regardless of folder timestamp format
-            dataset_name = self.create_normalized_dataset_name(experiment_folder, experiment_id)
-            print(f"📝 Using dataset name: {dataset_name}")
-
-            for well_index, (well_id, well_data) in enumerate(coordinates_data.items()):
-                print(f"\n🧪 Processing well {well_index + 1}/{len(coordinates_data)}: {well_id}")
-
-                # Extract well row and column
-                if len(well_id) >= 2:
-                    well_row = well_id[0]
-                    well_column = int(well_id[1:]) if well_id[1:].isdigit() else 1
-                else:
-                    print(f"⚠️ Invalid well ID format: {well_id}, skipping...")
-                    continue
-
-                # Step 1: Process the well (stitch images)
-                print(f"  📸 Step 1: Stitching {len(well_data)} positions for well {well_id}...")
-                well_info = await self._process_single_well(
-                    well_id, well_row, well_column, well_data,
-                    experiment_folder, temp_exp_manager, channel_mapping
-                )
-
-                if well_info is None:
-                    print(f"  ❌ Failed to process well {well_id}")
-                    continue
-
-                print(f"  ✅ Stitching complete for well {well_id}: {well_info['size_mb']:.2f} MB")
-                wells_processed += 1
-                total_size_mb += well_info['size_mb']
-                well_zip_files.append(well_info)
-                print(f"  ✅ Well {well_id} completed successfully")
-
-            # Create .done file to mark processing completion
-            if wells_processed > 0:
-                well_zips_path = Path(CONFIG.DEFAULT_SAVING_PATH) / "well_zips"
-                done_file = well_zips_path / ".done"
-                try:
-                    done_file.touch()
-                    print(f"✅ Created .done file at {done_file} to mark processing completion")
-                except Exception as e:
-                    print(f"⚠️ Failed to create .done file: {e}")
-
-            # 4. Upload all wells to a single dataset (like upload_zarr_dataset does)
-            upload_result = None
-            if well_zip_files and upload_immediately and self.zarr_artifact_manager:
-                print(f"\n📦 Uploading {len(well_zip_files)} wells to single dataset...")
-
-                try:
-                    # Prepare zarr_files_info for upload_multiple_zip_files_to_dataset
-                    # Use file_path instead of content to prevent memory exhaustion
-                    zarr_files_info = []
-
-                    # Add all well ZIP files with file paths (streaming upload)
-                    for well_info in well_zip_files:
-                        zarr_files_info.append({
-                            'name': well_info['name'],  # e.g., "well_A1_96"
-                            'file_path': well_info['file_path'],  # Use file path instead of content
-                            'size_mb': well_info['size_mb']
-                        })
-
-                    # Use the original experiment_id for gallery creation, dataset_name for dataset naming
-                    # This ensures all datasets from the same experiment go into the same gallery
-                    gallery_experiment_id = experiment_id if experiment_id else dataset_name
-
-                    # Upload all wells to a single dataset
-                    upload_result = await self.zarr_artifact_manager.upload_multiple_zip_files_to_dataset(
-                        microscope_service_id=self.service_id,
-                        experiment_id=gallery_experiment_id,
-                        zarr_files_info=zarr_files_info,
-                        dataset_name=dataset_name,
-                        acquisition_settings={
-                            "microscope_service_id": self.service_id,
-                            "experiment_name": experiment_folder.name,
-                            "total_wells": len(well_zip_files),
-                            "total_size_mb": total_size_mb,
-                            "offline_processing": True
-                        },
-                        description=f"Offline processed experiment: {experiment_folder.name} with {len(well_zip_files)} wells"
-                    )
-
-                    print(f"  ✅ Dataset upload complete: {upload_result.get('dataset_name')}")
-
-                    # Clean up individual well ZIP files
-                    if cleanup_temp_files:
-                        for well_info in well_zip_files:
-                            try:
-                                import os
-                                os.unlink(well_info['file_path'])
-                                print(f"    🗑️ Cleaned up {well_info['name']}.zip")
-                            except Exception as e:
-                                print(f"    ⚠️ Failed to cleanup {well_info['name']}.zip: {e}")
-
-                        # Also remove the .done file after successful upload
-                        try:
-                            well_zips_path = Path(CONFIG.DEFAULT_SAVING_PATH) / "well_zips"
-                            done_file = well_zips_path / ".done"
-                            done_file.unlink()
-                            print("    🗑️ Cleaned up .done file")
-                        except Exception as e:
-                            print(f"    ⚠️ Failed to cleanup .done file: {e}")
-
-                    # Clean up any existing temporary offline_stitch folders after successful upload
-                    self._cleanup_existing_temp_folders(experiment_folder.name)
-
-                except Exception as upload_error:
-                    print(f"  ❌ Dataset upload failed: {upload_error}")
-                    upload_result = None
-
-            # 5. Cleanup temporary files
-            if cleanup_temp_files:
-                shutil.rmtree(temp_path, ignore_errors=True)
-                self.logger.debug(f"Cleaned up temporary files: {temp_path}")
-
-            return {
-                "success": True,
-                "experiment_folder": experiment_folder.name,
-                "wells_processed": wells_processed,
-                "total_size_mb": total_size_mb,
-                "dataset_name": dataset_name,
-                "upload_result": upload_result
-            }
-
-        except Exception as e:
-            self.logger.error(f"Error in processing {experiment_folder.name}: {e}")
-            return {
-                "success": False,
-                "experiment_folder": experiment_folder.name,
-                "error": str(e)
-            }
+        # Delegate to the parallel method which now uses a single canvas
+        return await self.process_experiment_run_parallel(
+            experiment_folder=experiment_folder,
+            upload_immediately=upload_immediately,
+            cleanup_temp_files=cleanup_temp_files,
+            experiment_id=experiment_id
+        )
 
 
     async def _wait_for_stitching_completion(self, canvas, timeout_seconds=60):
@@ -1425,7 +1309,6 @@ class OfflineProcessor:
         # Clean up any partial Zarr files before export
         if hasattr(canvas, 'zarr_path') and canvas.zarr_path.exists():
             import glob
-            import os
             partial_files = glob.glob(str(canvas.zarr_path / "**" / "*.partial"), recursive=True)
             for partial_file in partial_files:
                 try:
@@ -1443,7 +1326,8 @@ class OfflineProcessor:
                                                    experiment_id: str, upload_immediately: bool,
                                                    cleanup_temp_files: bool) -> dict:
         """
-        Upload existing well ZIP files from well_zips directory (when .done file detected).
+        DEPRECATED: This method is no longer used as ZIP file workflow has been removed.
+        Zarr data is now uploaded directly using hypha-artifact.
         
         Args:
             well_zips_path: Path to directory containing well ZIP files
@@ -1453,120 +1337,17 @@ class OfflineProcessor:
             cleanup_temp_files: Whether to cleanup temp files
             
         Returns:
-            Dictionary with processing results
+            Dictionary with processing results indicating deprecation
         """
-        try:
-            print(f"📁 Scanning for existing well ZIP files in {well_zips_path}...")
-
-            # Find all well ZIP files matching the pattern well_*_96.zip
-            well_zip_files = []
-            zip_pattern = "well_*_96.zip"
-
-            for zip_file in well_zips_path.glob(zip_pattern):
-                if zip_file.is_file():
-                    file_size_bytes = zip_file.stat().st_size
-                    file_size_mb = file_size_bytes / (1024 * 1024)
-
-                    # Extract well name from filename (e.g., "well_A1_96.zip" -> "well_A1_96")
-                    well_name = zip_file.stem
-
-                    well_zip_files.append({
-                        'name': well_name,
-                        'file_path': str(zip_file),
-                        'size_mb': file_size_mb
-                    })
-
-                    print(f"  📦 Found: {well_name} ({file_size_mb:.2f} MB)")
-
-            if not well_zip_files:
-                print(f"⚠️ No well ZIP files found matching pattern {zip_pattern}")
-                return {
-                    "success": False,
-                    "experiment_folder": experiment_folder.name,
-                    "error": f"No well ZIP files found in {well_zips_path}"
-                }
-
-            wells_processed = len(well_zip_files)
-            total_size_mb = sum(well_info['size_mb'] for well_info in well_zip_files)
-
-            print(f"🎉 Found {wells_processed} existing well ZIP files, total size: {total_size_mb:.2f} MB")
-
-            # Create dataset name using normalized timestamp extraction
-            dataset_name = self.create_normalized_dataset_name(experiment_folder, experiment_id)
-            print(f"📝 Using dataset name: {dataset_name}")
-
-            # Upload all wells to a single dataset (if upload requested)
-            upload_result = None
-            if upload_immediately and self.zarr_artifact_manager:
-                print(f"\n📦 Uploading {len(well_zip_files)} existing wells to single dataset...")
-
-                try:
-                    # Use the original experiment_id for gallery creation, dataset_name for dataset naming
-                    gallery_experiment_id = experiment_id if experiment_id else dataset_name
-
-                    # Upload all wells to a single dataset
-                    upload_result = await self.zarr_artifact_manager.upload_multiple_zip_files_to_dataset(
-                        microscope_service_id=self.service_id,
-                        experiment_id=gallery_experiment_id,
-                        zarr_files_info=well_zip_files,  # Already has file_path instead of content
-                        dataset_name=dataset_name,
-                        acquisition_settings={
-                            "microscope_service_id": self.service_id,
-                            "experiment_name": experiment_folder.name,
-                            "total_wells": len(well_zip_files),
-                            "total_size_mb": total_size_mb,
-                            "offline_processing": True,
-                            "from_existing_zips": True  # Flag to indicate this was from existing files
-                        },
-                        description=f"Upload of existing processed wells: {experiment_folder.name} with {len(well_zip_files)} wells (detected .done file)"
-                    )
-
-                    print(f"  ✅ Dataset upload complete: {upload_result.get('dataset_name')}")
-
-                    # Clean up individual well ZIP files if requested
-                    if cleanup_temp_files:
-                        for well_info in well_zip_files:
-                            try:
-                                import os
-                                os.unlink(well_info['file_path'])
-                                print(f"    🗑️ Cleaned up {well_info['name']}.zip")
-                            except Exception as e:
-                                print(f"    ⚠️ Failed to cleanup {well_info['name']}.zip: {e}")
-
-                        # Also remove the .done file
-                        try:
-                            done_file = well_zips_path / ".done"
-                            done_file.unlink()
-                            print("    🗑️ Cleaned up .done file")
-                        except Exception as e:
-                            print(f"    ⚠️ Failed to cleanup .done file: {e}")
-
-                    # Clean up any existing temporary offline_stitch folders after successful upload
-                    self._cleanup_existing_temp_folders(experiment_folder.name)
-
-                except Exception as upload_error:
-                    print(f"  ❌ Dataset upload failed: {upload_error}")
-                    upload_result = None
-            else:
-                print(f"⏭️ Upload skipped (upload_immediately={upload_immediately}, zarr_artifact_manager available: {self.zarr_artifact_manager is not None})")
-
-            return {
-                "success": True,
-                "experiment_folder": experiment_folder.name,
-                "wells_processed": wells_processed,
-                "total_size_mb": total_size_mb,
-                "dataset_name": dataset_name,
-                "upload_result": upload_result,
-                "from_existing_zips": True  # Flag to indicate this was from existing files
-            }
-
-        except Exception as e:
-            self.logger.error(f"Error uploading existing wells from {well_zips_path}: {e}")
-            return {
-                "success": False,
-                "experiment_folder": experiment_folder.name,
-                "error": str(e)
-            }
+        print("   Zarr data is now uploaded directly using hypha-artifact.")
+        print("   Please re-process the experiment to generate zarr data for upload.")
+        
+        return {
+            "success": False,
+            "experiment_folder": experiment_folder.name,
+            "error": "ZIP file upload workflow has been deprecated. Please re-process the experiment.",
+            "deprecated": True
+        }
 
 
 
