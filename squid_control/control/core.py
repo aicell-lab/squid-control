@@ -3837,15 +3837,7 @@ class LaserAutofocusController:
         return displacement_um
 
     def move_to_target(self, target_um):
-        # move by distance 0.2,0.2 mm in x and y direction
-        self.navigationController.move_x(0.2)
-        self.navigationController.move_y(0.2)
-        self.microcontroller.wait_till_operation_is_completed()
         current_displacement_um = self.measure_displacement()
-        # move back to the original position
-        self.navigationController.move_x(-0.2)
-        self.navigationController.move_y(-0.2)
-        self.microcontroller.wait_till_operation_is_completed()
         um_to_move = target_um - current_displacement_um
         # limit the range of movement
         um_to_move = min(um_to_move, 200)
