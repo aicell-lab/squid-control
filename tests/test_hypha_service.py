@@ -290,7 +290,7 @@ async def test_snap_image_service(test_microscope_service):
     microscope, service = test_microscope_service
 
     url = await asyncio.wait_for(
-        service.snap(exposure_time=100, channel=0, intensity=50),
+        service.snap(exposure_time=100, channel="BF_LED_matrix_full", intensity=50),
         timeout=60
     )
 
