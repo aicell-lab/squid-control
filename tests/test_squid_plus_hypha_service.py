@@ -487,7 +487,7 @@ async def test_squid_plus_basic_microscope_operations(test_squid_plus_microscope
 
     # Test image capture
     url = await asyncio.wait_for(
-        service.snap(exposure_time=100, channel=0, intensity=50),
+        service.snap(exposure_time=100, channel="BF_LED_matrix_full", intensity=50),
         timeout=20
     )
 

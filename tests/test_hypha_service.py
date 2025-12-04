@@ -687,6 +687,7 @@ async def test_multi_channel_imaging(test_microscope_service):
     microscope, service = test_microscope_service
 
     channels_to_test = [0, 11, 12, 13, 14, 15]  # All supported channels
+    from squid_control.control.config import ChannelMapper
 
     for channel in channels_to_test:
         try:
@@ -703,8 +704,11 @@ async def test_multi_channel_imaging(test_microscope_service):
             assert param_value[0] == 45  # Intensity
             assert param_value[1] == 80  # Exposure
 
+            # Convert channel ID to channel name for snap() method
+            channel_name = ChannelMapper.id_to_zarr_name(channel)
+            
             # Test image capture for each channel
-            url = await service.snap(exposure_time=80, channel=channel, intensity=45)
+            url = await service.snap(exposure_time=80, channel=channel_name, intensity=45)
             assert isinstance(url, str)
             assert url.startswith("https://")
 
