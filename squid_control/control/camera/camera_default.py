@@ -672,6 +672,7 @@ class Camera_Simulation(object):
         """
         Synchronous helper function to perform blocking zarr I/O operations.
         This function runs in a thread to avoid blocking the event loop.
+        No caching - reads directly from zarr each time.
         
         Args:
             zarr_path (str): Path or URL of the zarr dataset (local path or HTTP URL)
@@ -683,64 +684,46 @@ class Camera_Simulation(object):
             numpy.ndarray: Image region, or None on error
         """
         try:
-            # Check cache for zarr store and metadata
-            if zarr_path not in self._zarr_cache:
-                # Determine if it's a remote URL or local path
-                is_remote = zarr_path.startswith('http://') or zarr_path.startswith('https://')
-                
-                if is_remote:
-                    print(f"Opening remote zarr store: {zarr_path}")
-                    # Create HTTP filesystem and open zarr store (blocking I/O)
-                    fs = fsspec.filesystem('http')
-                    store = fs.get_mapper(zarr_path)
-                    root = zarr.open_group(store, mode='r')
-                else:
-                    print(f"Opening local zarr store: {zarr_path}")
-                    # Open local zarr store directly
-                    root = zarr.open_group(zarr_path, mode='r')
-                
-                # Load metadata from .zattrs
-                zattrs = dict(root.attrs)
-                squid_canvas = zattrs.get('squid_canvas', {})
-                stage_limits = squid_canvas.get('stage_limits', {})
-                
-                # Get stage limits (defaults based on the dataset)
-                x_min = stage_limits.get('x_negative', 0.0)
-                x_max = stage_limits.get('x_positive', 120.0)
-                y_min = stage_limits.get('y_negative', 0.0)
-                y_max = stage_limits.get('y_positive', 86.0)
-                
-                # Load wellplate offset for coordinate transformation
-                # This offset aligns zarr data with current microscope well plate config
-                # When fetching: subtract offset (microscope coords -> zarr coords)
-                wellplate_offset = squid_canvas.get('wellplate_offset', {})
-                offset_x = wellplate_offset.get('x_mm', 0.0)
-                offset_y = wellplate_offset.get('y_mm', 0.0)
-                
-                # Open scale 0 array (full resolution)
-                arr = root['0']
-                shape = arr.shape  # [T, C, Z, Y, X]
-                
-                # Cache the store and metadata
-                self._zarr_cache[zarr_path] = {
-                    'array': arr,
-                    'shape': shape,
-                    'x_min': x_min,
-                    'x_max': x_max,
-                    'y_min': y_min,
-                    'y_max': y_max,
-                    'offset_x': offset_x,
-                    'offset_y': offset_y,
-                }
-                print(f"Zarr metadata cached: shape={shape}, stage_limits=X[{x_min}, {x_max}], Y[{y_min}, {y_max}], offset=({offset_x}, {offset_y})mm")
+            # Determine if it's a remote URL or local path
+            is_remote = zarr_path.startswith('http://') or zarr_path.startswith('https://')
             
-            # Get cached data
-            cache = self._zarr_cache[zarr_path]
-            arr = cache['array']
-            shape = cache['shape']
-            x_min, x_max = cache['x_min'], cache['x_max']
-            y_min, y_max = cache['y_min'], cache['y_max']
-            offset_x, offset_y = cache['offset_x'], cache['offset_y']
+            if is_remote:
+                print(f"Opening remote zarr store: {zarr_path}")
+                # Create HTTP filesystem and open zarr store (blocking I/O)
+                fs = fsspec.filesystem('http')
+                store = fs.get_mapper(zarr_path)
+                root = zarr.open_group(store, mode='r')
+            else:
+                print(f"Opening local zarr store: {zarr_path}")
+                # Open local zarr store directly
+                root = zarr.open_group(zarr_path, mode='r')
+            
+            # Load metadata from .zattrs
+            zattrs = dict(root.attrs)
+            squid_canvas = zattrs.get('squid_canvas', {})
+            stage_limits = squid_canvas.get('stage_limits', {})
+            
+            # Get stage limits (defaults based on the dataset)
+            x_min = stage_limits.get('x_negative', 0.0)
+            x_max = stage_limits.get('x_positive', 120.0)
+            y_min = stage_limits.get('y_negative', 0.0)
+            y_max = stage_limits.get('y_positive', 86.0)
+            
+            # Get pixel size from metadata (required for proper coordinate conversion)
+            pixel_size_xy_um = squid_canvas.get('pixel_size_xy_um', 0.333)
+            
+            # Load wellplate offset for coordinate transformation
+            # This offset aligns zarr data with current microscope well plate config
+            # When fetching: subtract offset (microscope coords -> zarr coords)
+            wellplate_offset = squid_canvas.get('wellplate_offset', {})
+            offset_x = wellplate_offset.get('x_mm', 0.0)
+            offset_y = wellplate_offset.get('y_mm', 0.0)
+            
+            # Open scale 0 array (full resolution)
+            arr = root['0']
+            shape = arr.shape  # [T, C, Z, Y, X]
+            
+            print(f"Zarr metadata: shape={shape}, stage_limits=X[{x_min}, {x_max}], Y[{y_min}, {y_max}], offset=({offset_x}, {offset_y})mm, pixel_size={pixel_size_xy_um}um")
             
             # Array dimensions: [T, C, Z, Y, X]
             img_height = shape[3]  # Y dimension
@@ -751,13 +734,18 @@ class Camera_Simulation(object):
             adjusted_y = y - offset_y
             print(f"Applied offset ({offset_x:.2f}, {offset_y:.2f})mm -> zarr_position=({adjusted_x:.2f}, {adjusted_y:.2f}) mm")
             
-            # Convert stage coordinates (mm) to pixel coordinates
-            # Clamp adjusted coordinates to valid range
-            x_clamped = max(x_min, min(x_max, adjusted_x))
-            y_clamped = max(y_min, min(y_max, adjusted_y))
+            # Convert stage coordinates (mm) to pixel coordinates using same logic as ZarrCanvas.stage_to_pixel_coords
+            # Offset to make all coordinates positive
+            x_offset_mm = -x_min
+            y_offset_mm = -y_min
             
-            center_x_px = int((x_clamped - x_min) / (x_max - x_min) * img_width)
-            center_y_px = int((y_clamped - y_min) / (y_max - y_min) * img_height)
+            # Convert to pixels (no padding, matching ZarrCanvas logic)
+            center_x_px = int((adjusted_x + x_offset_mm) * 1000 / pixel_size_xy_um)
+            center_y_px = int((adjusted_y + y_offset_mm) * 1000 / pixel_size_xy_um)
+            
+            # Clamp to valid pixel coordinates
+            center_x_px = max(0, min(img_width - 1, center_x_px))
+            center_y_px = max(0, min(img_height - 1, center_y_px))
             
             # Calculate region bounds centered on stage position
             half_w = width // 2

@@ -66,6 +66,15 @@ class ZarrCanvas:
         self.fileset_name = fileset_name
         self.zarr_path = self.base_path / f"{fileset_name}.zarr"
 
+        # Get wellplate offset from CONFIG if available
+        try:
+            from squid_control.control.config import CONFIG
+            self._wellplate_offset_x_mm = getattr(CONFIG, 'WELLPLATE_OFFSET_X_MM', 0.0)
+            self._wellplate_offset_y_mm = getattr(CONFIG, 'WELLPLATE_OFFSET_Y_MM', 0.0)
+        except Exception:
+            self._wellplate_offset_x_mm = 0.0
+            self._wellplate_offset_y_mm = 0.0
+
         # Timepoint allocation strategy
         self.initial_timepoints = max(1, initial_timepoints)  # Ensure at least 1
         self.timepoint_expansion_chunk = max(1, timepoint_expansion_chunk)  # Ensure at least 1
@@ -80,10 +89,9 @@ class ZarrCanvas:
         self.stage_width_mm = stage_limits['x_positive'] - stage_limits['x_negative']
         self.stage_height_mm = stage_limits['y_positive'] - stage_limits['y_negative']
 
-        # Convert to pixels (with some padding)
-        padding_factor = 1.1  # 10% padding
-        self.canvas_width_px = int((self.stage_width_mm * 1000 / pixel_size_xy_um) * padding_factor)
-        self.canvas_height_px = int((self.stage_height_mm * 1000 / pixel_size_xy_um) * padding_factor)
+        # Convert to pixels (no padding)
+        self.canvas_width_px = int(self.stage_width_mm * 1000 / pixel_size_xy_um)
+        self.canvas_height_px = int(self.stage_height_mm * 1000 / pixel_size_xy_um)
 
         # Make dimensions divisible by chunk_size
         self.canvas_width_px = ((self.canvas_width_px + chunk_size - 1) // chunk_size) * chunk_size
@@ -615,7 +623,11 @@ class ZarrCanvas:
                     "available_timepoints": sorted(self.available_timepoints),
                     "num_timepoints": len(self.available_timepoints),
                     "version": "1.0",
-                    "fileset_name": self.fileset_name
+                    "fileset_name": self.fileset_name,
+                    "wellplate_offset": {
+                        "x_mm": getattr(self, '_wellplate_offset_x_mm', 0.0),
+                        "y_mm": getattr(self, '_wellplate_offset_y_mm', 0.0)
+                    }
                 }
             }
 
@@ -704,19 +716,9 @@ class ZarrCanvas:
         x_offset_mm = -self.stage_limits['x_negative']
         y_offset_mm = -self.stage_limits['y_negative']
 
-        # Convert to pixels at scale 0 (without padding)
-        x_px_no_padding = (x_mm + x_offset_mm) * 1000 / self.pixel_size_xy_um
-        y_px_no_padding = (y_mm + y_offset_mm) * 1000 / self.pixel_size_xy_um
-
-        # Account for 10% padding by centering in the padded canvas
-        # The canvas is 1.1x larger, so we need to add 5% margin on each side
-        padding_factor = 1.1
-        x_padding_px = (self.canvas_width_px - (self.stage_width_mm * 1000 / self.pixel_size_xy_um)) / 2
-        y_padding_px = (self.canvas_height_px - (self.stage_height_mm * 1000 / self.pixel_size_xy_um)) / 2
-
-        # Add padding offset to center the image in the padded canvas
-        x_px = int(x_px_no_padding + x_padding_px)
-        y_px = int(y_px_no_padding + y_padding_px)
+        # Convert to pixels at scale 0 (no padding)
+        x_px = int((x_mm + x_offset_mm) * 1000 / self.pixel_size_xy_um)
+        y_px = int((y_mm + y_offset_mm) * 1000 / self.pixel_size_xy_um)
 
         # Apply scale factor
         scale_factor = 4 ** scale
