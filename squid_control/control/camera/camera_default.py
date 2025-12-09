@@ -709,32 +709,23 @@ class Camera_Simulation(object):
             # Get pixel size from metadata (required for proper coordinate conversion)
             pixel_size_xy_um = squid_canvas.get('pixel_size_xy_um', 0.333)
             
-            # Load wellplate offset for coordinate transformation
-            # This offset aligns zarr data with current microscope well plate config
-            # When fetching: subtract offset (microscope coords -> zarr coords)
-            wellplate_offset = squid_canvas.get('wellplate_offset', {})
-            offset_x = wellplate_offset.get('x_mm', 0.0)
-            offset_y = wellplate_offset.get('y_mm', 0.0)
-            
             # Open scale 0 array (full resolution)
             arr = root['0']
             shape = arr.shape  # [T, C, Z, Y, X]
             
-            print(f"Zarr metadata: shape={shape}, canvas={canvas_width_mm}x{canvas_height_mm}mm, offset=({offset_x}, {offset_y})mm, pixel_size={pixel_size_xy_um}um")
+            print(f"Zarr metadata: shape={shape}, canvas={canvas_width_mm}x{canvas_height_mm}mm, pixel_size={pixel_size_xy_um}um")
             
             # Array dimensions: [T, C, Z, Y, X]
             img_height = shape[3]  # Y dimension
             img_width = shape[4]   # X dimension
             
-            # Apply wellplate offset: subtract to convert microscope coords -> zarr coords
-            adjusted_x = x - offset_x
-            adjusted_y = y - offset_y
-            print(f"Applied offset ({offset_x:.2f}, {offset_y:.2f})mm -> zarr_position=({adjusted_x:.2f}, {adjusted_y:.2f}) mm")
+            # Use absolute stage coordinates directly - both zarr and microscope use same coordinate system
+            print(f"Using absolute coordinates: position=({x:.2f}, {y:.2f}) mm")
             
-            # Convert stage coordinates (mm) to pixel coordinates (simplified: no offset, coordinates start from 0)
-            # Matching ZarrCanvas.stage_to_pixel_coords logic
-            center_x_px = int(adjusted_x * 1000 / pixel_size_xy_um)
-            center_y_px = int(adjusted_y * 1000 / pixel_size_xy_um)
+            # Convert stage coordinates (mm) to pixel coordinates
+            # Both zarr canvas and microscope use the same absolute coordinate system
+            center_x_px = int(x * 1000 / pixel_size_xy_um)
+            center_y_px = int(y * 1000 / pixel_size_xy_um)
             
             # Clamp to valid pixel coordinates
             center_x_px = max(0, min(img_width - 1, center_x_px))
