@@ -66,6 +66,15 @@ class ZarrCanvas:
         self.fileset_name = fileset_name
         self.zarr_path = self.base_path / f"{fileset_name}.zarr"
 
+        # Get wellplate offset from CONFIG if available
+        try:
+            from squid_control.control.config import CONFIG
+            self._wellplate_offset_x_mm = getattr(CONFIG, 'WELLPLATE_OFFSET_X_MM', 0.0)
+            self._wellplate_offset_y_mm = getattr(CONFIG, 'WELLPLATE_OFFSET_Y_MM', 0.0)
+        except Exception:
+            self._wellplate_offset_x_mm = 0.0
+            self._wellplate_offset_y_mm = 0.0
+
         # Timepoint allocation strategy
         self.initial_timepoints = max(1, initial_timepoints)  # Ensure at least 1
         self.timepoint_expansion_chunk = max(1, timepoint_expansion_chunk)  # Ensure at least 1
@@ -76,14 +85,13 @@ class ZarrCanvas:
 
         logger.info(f"Channel mapping: {self.channel_to_zarr_index}")
 
-        # Calculate canvas dimensions in pixels based on stage limits
-        self.stage_width_mm = stage_limits['x_positive'] - stage_limits['x_negative']
-        self.stage_height_mm = stage_limits['y_positive'] - stage_limits['y_negative']
+        # Hardcoded canvas dimensions: x from 0 to 120mm, y from 0 to 80mm
+        self.stage_width_mm = 120.0
+        self.stage_height_mm = 80.0
 
-        # Convert to pixels (with some padding)
-        padding_factor = 1.1  # 10% padding
-        self.canvas_width_px = int((self.stage_width_mm * 1000 / pixel_size_xy_um) * padding_factor)
-        self.canvas_height_px = int((self.stage_height_mm * 1000 / pixel_size_xy_um) * padding_factor)
+        # Convert to pixels (no padding)
+        self.canvas_width_px = int(self.stage_width_mm * 1000 / pixel_size_xy_um)
+        self.canvas_height_px = int(self.stage_height_mm * 1000 / pixel_size_xy_um)
 
         # Make dimensions divisible by chunk_size
         self.canvas_width_px = ((self.canvas_width_px + chunk_size - 1) // chunk_size) * chunk_size
@@ -611,11 +619,16 @@ class ZarrCanvas:
                     "zarr_index_mapping": self.zarr_index_to_channel,
                     "rotation_angle_deg": self.rotation_angle_deg,
                     "pixel_size_xy_um": self.pixel_size_xy_um,
-                    "stage_limits": self.stage_limits,
+                    "canvas_width_mm": 120.0,
+                    "canvas_height_mm": 80.0,
                     "available_timepoints": sorted(self.available_timepoints),
                     "num_timepoints": len(self.available_timepoints),
                     "version": "1.0",
-                    "fileset_name": self.fileset_name
+                    "fileset_name": self.fileset_name,
+                    "wellplate_offset": {
+                        "x_mm": getattr(self, '_wellplate_offset_x_mm', 0.0),
+                        "y_mm": getattr(self, '_wellplate_offset_y_mm', 0.0)
+                    }
                 }
             }
 
@@ -684,10 +697,12 @@ class ZarrCanvas:
     def stage_to_pixel_coords(self, x_mm: float, y_mm: float, scale: int = 0) -> Tuple[int, int]:
         """
         Convert stage coordinates (mm) to pixel coordinates for a given scale.
+        Canvas is hardcoded: x from 0 to 120mm, y from 0 to 80mm.
+        No offset calculations - coordinates start from 0.
         
         Args:
-            x_mm: X position in millimeters
-            y_mm: Y position in millimeters  
+            x_mm: X position in millimeters (0-120)
+            y_mm: Y position in millimeters (0-80)
             scale: Scale level (0 = full resolution)
             
         Returns:
@@ -696,27 +711,12 @@ class ZarrCanvas:
         # Debug logging for coordinate conversion (only in debug mode)
         if logger.level <= 10:  # DEBUG level
             logger.debug(f"COORD_CONVERSION: Input coordinates ({x_mm:.2f}, {y_mm:.2f}) mm, scale {scale}")
-            logger.debug(f"COORD_CONVERSION: Stage limits: {self.stage_limits}")
             logger.debug(f"COORD_CONVERSION: Canvas size: {self.canvas_width_px}x{self.canvas_height_px} px")
             logger.debug(f"COORD_CONVERSION: Pixel size: {self.pixel_size_xy_um} um")
 
-        # Offset to make all coordinates positive
-        x_offset_mm = -self.stage_limits['x_negative']
-        y_offset_mm = -self.stage_limits['y_negative']
-
-        # Convert to pixels at scale 0 (without padding)
-        x_px_no_padding = (x_mm + x_offset_mm) * 1000 / self.pixel_size_xy_um
-        y_px_no_padding = (y_mm + y_offset_mm) * 1000 / self.pixel_size_xy_um
-
-        # Account for 10% padding by centering in the padded canvas
-        # The canvas is 1.1x larger, so we need to add 5% margin on each side
-        padding_factor = 1.1
-        x_padding_px = (self.canvas_width_px - (self.stage_width_mm * 1000 / self.pixel_size_xy_um)) / 2
-        y_padding_px = (self.canvas_height_px - (self.stage_height_mm * 1000 / self.pixel_size_xy_um)) / 2
-
-        # Add padding offset to center the image in the padded canvas
-        x_px = int(x_px_no_padding + x_padding_px)
-        y_px = int(y_px_no_padding + y_padding_px)
+        # Convert directly to pixels (no offset, coordinates start from 0)
+        x_px = int(x_mm * 1000 / self.pixel_size_xy_um)
+        y_px = int(y_mm * 1000 / self.pixel_size_xy_um)
 
         # Apply scale factor
         scale_factor = 4 ** scale

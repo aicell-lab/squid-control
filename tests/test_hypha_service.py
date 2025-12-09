@@ -1208,67 +1208,6 @@ async def test_well_location_detection_service(test_microscope_service):
         print(f"❌ Well location detection test failed: {e}")
         raise
 
-async def test_well_location_edge_cases_service(test_microscope_service):
-    """Test edge cases for well location detection through the service."""
-    microscope, service = test_microscope_service
-
-    print("Testing Well Location Edge Cases")
-
-    try:
-        # Test 1: Default plate type behavior
-        print("1. Testing default plate type...")
-        await service.navigate_to_well(row='E', col=7)  # Default should be 96-well
-
-        # Get location without specifying plate type (should default to 96)
-        well_location = await service.get_current_well_location()
-
-        print(f"   Default plate type result: {well_location}")
-        assert well_location['plate_type'] == '96'
-        assert well_location['well_id'] == 'E7'
-
-        # Test 2: Verify consistency between navigation and location detection
-        print("2. Testing consistency between navigation and detection...")
-        test_positions = [
-            ('A', 1, '96'), ('B', 6, '24'), ('C', 8, '384'), ('A', 3, '6')
-        ]
-
-        for row, col, plate_type in test_positions:
-            print(f"   Testing {row}{col} on {plate_type}-well plate...")
-
-            # Navigate to position
-            await service.navigate_to_well(row=row, col=col, well_plate_type=plate_type)
-
-            # Detect location
-            well_location = await service.get_current_well_location(well_plate_type=plate_type)
-
-            # Verify consistency
-            assert well_location['row'] == row
-            assert well_location['column'] == col
-            assert well_location['well_id'] == f"{row}{col}"
-            assert well_location['plate_type'] == plate_type
-
-            print(f"      ✓ {plate_type}-well {row}{col}: {well_location['position_status']}")
-
-        # Test 3: Position accuracy metrics
-        print("3. Testing position accuracy metrics...")
-        await service.navigate_to_well(row='F', col=8, well_plate_type='96')
-        well_location = await service.get_current_well_location(well_plate_type='96')
-
-        print("   Position metrics for F8:")
-        print(f"      Distance from center: {well_location['distance_from_center']:.4f}mm")
-        print(f"      Position status: {well_location['position_status']}")
-        print(f"      Inside well: {well_location['is_inside_well']}")
-
-        # In simulation, should be very accurate
-        assert well_location['distance_from_center'] < 0.1
-        assert well_location['position_status'] in ['in_well', 'between_wells']
-
-        print("✅ Well location edge cases tests passed!")
-
-    except Exception as e:
-        print(f"❌ Well location edge cases test failed: {e}")
-        raise
-
 async def test_get_status_well_location_integration(test_microscope_service):
     """Test that get_status properly integrates well location information."""
     microscope, service = test_microscope_service

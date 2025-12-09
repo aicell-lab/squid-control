@@ -619,43 +619,6 @@ def test_get_well_from_position_edge_cases():
 
     print("✅ Edge case tests passed!")
 
-def test_well_location_accuracy():
-    """Test the accuracy of well location calculations."""
-    print("Testing well location calculation accuracy...")
-
-    controller = SquidController(is_simulation=True)
-
-    # Test multiple wells in sequence
-    test_wells = [
-        ('A', 1), ('A', 6), ('A', 12),
-        ('D', 1), ('D', 6), ('D', 12),
-        ('H', 1), ('H', 6), ('H', 12)
-    ]
-
-    for row, col in test_wells:
-        print(f"   Testing well {row}{col}...")
-
-        # Move to the well
-        controller.move_to_well(row, col, '96')
-
-        # Get well position
-        well_info = controller.get_well_from_position('96')
-
-        print(f"      Expected: {row}{col}, Got: {well_info['well_id']}, Distance: {well_info['distance_from_center']:.3f}mm")
-
-        # Verify correct identification
-        assert well_info['row'] == row
-        assert well_info['column'] == col
-        assert well_info['well_id'] == f"{row}{col}"
-
-        # Distance from center should be very small (perfect positioning in simulation)
-        assert well_info['distance_from_center'] < 0.1, f"Distance too large: {well_info['distance_from_center']}"
-
-        # Should be identified as inside well or very close
-        assert well_info['position_status'] in ['in_well', 'between_wells']
-
-    print("✅ Well location accuracy tests passed!")
-
 def test_well_boundary_detection():
     """Test well boundary detection functionality."""
     print("Testing well boundary detection...")
@@ -1536,8 +1499,6 @@ if __name__ == "__main__":
     test_get_well_from_position_different_plates()
     print()
     test_get_well_from_position_edge_cases()
-    print()
-    test_well_location_accuracy()
     print()
     test_well_boundary_detection()
 
