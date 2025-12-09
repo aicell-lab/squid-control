@@ -85,9 +85,9 @@ class ZarrCanvas:
 
         logger.info(f"Channel mapping: {self.channel_to_zarr_index}")
 
-        # Calculate canvas dimensions in pixels based on stage limits
-        self.stage_width_mm = stage_limits['x_positive'] - stage_limits['x_negative']
-        self.stage_height_mm = stage_limits['y_positive'] - stage_limits['y_negative']
+        # Hardcoded canvas dimensions: x from 0 to 120mm, y from 0 to 80mm
+        self.stage_width_mm = 120.0
+        self.stage_height_mm = 80.0
 
         # Convert to pixels (no padding)
         self.canvas_width_px = int(self.stage_width_mm * 1000 / pixel_size_xy_um)
@@ -619,7 +619,8 @@ class ZarrCanvas:
                     "zarr_index_mapping": self.zarr_index_to_channel,
                     "rotation_angle_deg": self.rotation_angle_deg,
                     "pixel_size_xy_um": self.pixel_size_xy_um,
-                    "stage_limits": self.stage_limits,
+                    "canvas_width_mm": 120.0,
+                    "canvas_height_mm": 80.0,
                     "available_timepoints": sorted(self.available_timepoints),
                     "num_timepoints": len(self.available_timepoints),
                     "version": "1.0",
@@ -696,10 +697,12 @@ class ZarrCanvas:
     def stage_to_pixel_coords(self, x_mm: float, y_mm: float, scale: int = 0) -> Tuple[int, int]:
         """
         Convert stage coordinates (mm) to pixel coordinates for a given scale.
+        Canvas is hardcoded: x from 0 to 120mm, y from 0 to 80mm.
+        No offset calculations - coordinates start from 0.
         
         Args:
-            x_mm: X position in millimeters
-            y_mm: Y position in millimeters  
+            x_mm: X position in millimeters (0-120)
+            y_mm: Y position in millimeters (0-80)
             scale: Scale level (0 = full resolution)
             
         Returns:
@@ -708,17 +711,12 @@ class ZarrCanvas:
         # Debug logging for coordinate conversion (only in debug mode)
         if logger.level <= 10:  # DEBUG level
             logger.debug(f"COORD_CONVERSION: Input coordinates ({x_mm:.2f}, {y_mm:.2f}) mm, scale {scale}")
-            logger.debug(f"COORD_CONVERSION: Stage limits: {self.stage_limits}")
             logger.debug(f"COORD_CONVERSION: Canvas size: {self.canvas_width_px}x{self.canvas_height_px} px")
             logger.debug(f"COORD_CONVERSION: Pixel size: {self.pixel_size_xy_um} um")
 
-        # Offset to make all coordinates positive
-        x_offset_mm = -self.stage_limits['x_negative']
-        y_offset_mm = -self.stage_limits['y_negative']
-
-        # Convert to pixels at scale 0 (no padding)
-        x_px = int((x_mm + x_offset_mm) * 1000 / self.pixel_size_xy_um)
-        y_px = int((y_mm + y_offset_mm) * 1000 / self.pixel_size_xy_um)
+        # Convert directly to pixels (no offset, coordinates start from 0)
+        x_px = int(x_mm * 1000 / self.pixel_size_xy_um)
+        y_px = int(y_mm * 1000 / self.pixel_size_xy_um)
 
         # Apply scale factor
         scale_factor = 4 ** scale

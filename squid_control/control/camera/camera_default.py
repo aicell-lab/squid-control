@@ -701,13 +701,10 @@ class Camera_Simulation(object):
             # Load metadata from .zattrs
             zattrs = dict(root.attrs)
             squid_canvas = zattrs.get('squid_canvas', {})
-            stage_limits = squid_canvas.get('stage_limits', {})
             
-            # Get stage limits (defaults based on the dataset)
-            x_min = stage_limits.get('x_negative', 0.0)
-            x_max = stage_limits.get('x_positive', 120.0)
-            y_min = stage_limits.get('y_negative', 0.0)
-            y_max = stage_limits.get('y_positive', 86.0)
+            # Canvas is hardcoded: x from 0 to 120mm, y from 0 to 80mm
+            canvas_width_mm = squid_canvas.get('canvas_width_mm', 120.0)
+            canvas_height_mm = squid_canvas.get('canvas_height_mm', 80.0)
             
             # Get pixel size from metadata (required for proper coordinate conversion)
             pixel_size_xy_um = squid_canvas.get('pixel_size_xy_um', 0.333)
@@ -723,7 +720,7 @@ class Camera_Simulation(object):
             arr = root['0']
             shape = arr.shape  # [T, C, Z, Y, X]
             
-            print(f"Zarr metadata: shape={shape}, stage_limits=X[{x_min}, {x_max}], Y[{y_min}, {y_max}], offset=({offset_x}, {offset_y})mm, pixel_size={pixel_size_xy_um}um")
+            print(f"Zarr metadata: shape={shape}, canvas={canvas_width_mm}x{canvas_height_mm}mm, offset=({offset_x}, {offset_y})mm, pixel_size={pixel_size_xy_um}um")
             
             # Array dimensions: [T, C, Z, Y, X]
             img_height = shape[3]  # Y dimension
@@ -734,14 +731,10 @@ class Camera_Simulation(object):
             adjusted_y = y - offset_y
             print(f"Applied offset ({offset_x:.2f}, {offset_y:.2f})mm -> zarr_position=({adjusted_x:.2f}, {adjusted_y:.2f}) mm")
             
-            # Convert stage coordinates (mm) to pixel coordinates using same logic as ZarrCanvas.stage_to_pixel_coords
-            # Offset to make all coordinates positive
-            x_offset_mm = -x_min
-            y_offset_mm = -y_min
-            
-            # Convert to pixels (no padding, matching ZarrCanvas logic)
-            center_x_px = int((adjusted_x + x_offset_mm) * 1000 / pixel_size_xy_um)
-            center_y_px = int((adjusted_y + y_offset_mm) * 1000 / pixel_size_xy_um)
+            # Convert stage coordinates (mm) to pixel coordinates (simplified: no offset, coordinates start from 0)
+            # Matching ZarrCanvas.stage_to_pixel_coords logic
+            center_x_px = int(adjusted_x * 1000 / pixel_size_xy_um)
+            center_y_px = int(adjusted_y * 1000 / pixel_size_xy_um)
             
             # Clamp to valid pixel coordinates
             center_x_px = max(0, min(img_width - 1, center_x_px))
