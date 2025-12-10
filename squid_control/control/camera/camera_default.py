@@ -842,8 +842,13 @@ class Camera_Simulation(object):
             raise RuntimeError(f"Failed to get image from Zarr for channel {channel} (channel_name={channel_name}) at position ({x}, {y})")
 
         # Apply exposure and intensity scaling
-        exposure_factor = max(0.1, exposure_time / 100)  # Ensure minimum factor to prevent black images
-        intensity_factor = max(0.1, intensity / 60)      # Ensure minimum factor to prevent black images
+        # For brightfield channel (channel=0), use different scaling divisors (20 for both)
+        if channel == 0:
+            exposure_factor = max(0.1, exposure_time / 20)  # Brightfield: scale based on 20
+            intensity_factor = max(0.1, intensity / 20)   # Brightfield: scale based on 20
+        else:
+            exposure_factor = max(0.1, exposure_time / 100)  # Other channels: scale based on 100
+            intensity_factor = max(0.1, intensity / 60)      # Other channels: scale based on 60
         
         # Check if image contains any valid data before scaling
         if np.count_nonzero(self.image) == 0:
