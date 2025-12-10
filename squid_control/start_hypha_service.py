@@ -1765,23 +1765,24 @@ class MicroscopeHyphaService:
             return None
 
     @schema_function(skip_self=True)
-    async def inspect_tool(self, images: List[dict]=Field(..., description="A list of images to be inspected, each dictionary must contain 'http_url' (required) and optionally 'title' (optional)"), query: str=Field(..., description="User query about the images for GPT-5.1 vision model analysis"), context_description: str=Field(..., description="Context description for the visual inspection task, typically describing that images are taken from the microscope"), context=None):
+    async def inspect_image(self, image: str=Field(..., description="Base64-encoded PNG image data (with or without data URL prefix)"), query: str=Field(..., description="User query about the image for GPT-5.1 vision model analysis"), context_description: str=Field(..., description="Context description for the visual inspection task, typically describing that the image is taken from the microscope"), title: str=Field(None, description="Optional title for the image"), context=None):
         """
-        Inspect images using GPT's vision model (GPT-5.1) for analysis and description.
+        Inspect an image using GPT's vision model (GPT-5.1) for analysis and description.
         Returns: String response from the vision model containing image analysis based on the query.
-        Notes: All image URLs must be HTTP/HTTPS accessible. The method validates URLs and processes images through the GPT-5.1 vision API.
+        Notes: The image must be base64-encoded PNG format. The method validates base64 data and processes the image through the GPT-5.1 vision API.
         """
         try:
             from squid_control.hypha_tools.vision_inspection import inspect_images
             return await inspect_images(
-                images=images,
+                image=image,
                 query=query,
                 context_description=context_description,
                 check_permission=self.check_permission,
-                context=context
+                context=context,
+                title=title
             )
         except Exception as e:
-            logger.error(f"Failed to inspect images: {e}")
+            logger.error(f"Failed to inspect image: {e}")
             raise e
 
     async def start_hypha_service(self, server, service_id, run_in_executor=None):
@@ -1850,7 +1851,7 @@ class MicroscopeHyphaService:
             "get_video_buffering_status": self.get_video_buffering_status,
             "set_video_fps": self.set_video_fps,
             "get_current_well_location": self.get_current_well_location,
-            "inspect_tool": self.inspect_tool,
+            "inspect_image": self.inspect_image,
             "get_microscope_configuration": self.get_microscope_configuration,
             "set_stage_velocity": self.set_stage_velocity,
             # Unified Scan API
@@ -1948,7 +1949,7 @@ class MicroscopeHyphaService:
             "move_to_position": self.move_to_position,
             "reflection_autofocus": self.reflection_autofocus,
             "get_status": self.get_status,
-            "inspect_tool": self.inspect_tool,
+            "inspect_image": self.inspect_image,
         }
 
         svc = await server.register_service(service_config)

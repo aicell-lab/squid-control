@@ -5,10 +5,8 @@ import base64
 import logging
 import os
 from io import BytesIO
-from typing import Any, Dict, List
 
 import dotenv
-import httpx
 import matplotlib.pyplot as plt
 from openai import AsyncOpenAI
 from PIL import Image
@@ -22,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 class ImageInfo(BaseModel):
     """Image information."""
-    url: str = Field(..., description="The URL of the image.")
+    base64_data: str = Field(..., description="Base64-encoded PNG image data (without data URL prefix).")
     title: str | None = Field(None, description="The title of the image.")
 
 
@@ -31,7 +29,7 @@ async def aask(images, messages, max_tokens=1024):
     Ask GPT-5.1 vision model about images.
     
     Args:
-        images: List of ImageInfo objects containing image URLs and titles
+        images: List of ImageInfo objects containing base64-encoded PNG images and titles
         messages: List of string messages to send to the model
         max_tokens: Maximum tokens for the response
     
@@ -43,17 +41,16 @@ async def aask(images, messages, max_tokens=1024):
         raise ValueError("OPENAI_API_KEY environment variable not set.")
     aclient = AsyncOpenAI(api_key=api_key)
     user_message = []
-    # download the images and save it into a list of PIL image objects
+    # decode base64 images and save them into a list of PIL image objects
     img_objs = []
     for image in images:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(image.url)
-            response.raise_for_status()
         try:
-            img = Image.open(BytesIO(response.content))
+            # Decode base64 string to bytes
+            image_bytes = base64.b64decode(image.base64_data)
+            img = Image.open(BytesIO(image_bytes))
         except Exception as e:
             raise ValueError(
-                f"Failed to read image {image.title or ''} from {image.url}. Error: {e}"
+                f"Failed to decode base64 image {image.title or ''}. Error: {e}"
             ) from e
         img_objs.append(img)
 
@@ -110,47 +107,56 @@ async def aask(images, messages, max_tokens=1024):
 
 
 async def inspect_images(
-    images: List[Dict[str, Any]],
+    image: str,
     query: str,
     context_description: str,
     check_permission=None,
-    context=None
+    context=None,
+    title: str | None = None
 ) -> str:
     """
-    Inspect images using GPT-5.1 vision model for analysis and description.
+    Inspect an image using GPT-5.1 vision model for analysis and description.
     
     Args:
-        images: List of dictionaries, each containing 'http_url' (required) and optionally 'title'
-        query: User query about the images for GPT-5.1 vision model analysis
+        image: Base64-encoded PNG image data (with or without data URL prefix)
+        query: User query about the image for GPT-5.1 vision model analysis
         context_description: Context description for the visual inspection task
         check_permission: Optional permission check function
         context: Optional request context for authentication
+        title: Optional title for the image
     
     Returns:
         String response from the vision model containing image analysis based on the query.
     
     Notes:
-        All image URLs must be HTTP/HTTPS accessible. The method validates URLs and processes 
-        images through the GPT-5.1 vision API.
+        The image must be base64-encoded PNG format. The method validates base64 data and processes 
+        the image through the GPT-5.1 vision API.
     """
     try:
         # Check authentication if permission check function is provided
         if check_permission and context and not check_permission(context.get("user", {})):
             raise Exception("User not authorized to access this service")
 
-        image_infos = [
-            ImageInfo(url=image_dict['http_url'], title=image_dict.get('title'))
-            for image_dict in images
-        ]
-        for image_info_obj in image_infos:
-            if not image_info_obj.url.startswith("http"):
-                raise ValueError("Image URL must start with http or https.")
+        base64_data = image
+        
+        # Remove data URL prefix if present (e.g., "data:image/png;base64,")
+        if base64_data.startswith("data:image"):
+            base64_data = base64_data.split(",", 1)[1]
+        
+        # Validate base64 format by attempting to decode
+        try:
+            base64.b64decode(base64_data, validate=True)
+        except Exception as e:
+            raise ValueError(f"Invalid base64 data: {e}")
+        
+        image_info = ImageInfo(base64_data=base64_data, title=title)
 
-        logger.info(f"Inspecting {len(image_infos)} image(s) with GPT-5.1 vision model. Query: {query[:100]}")
-        response = await aask(image_infos, [context_description, query])
+        logger.info(f"Inspecting image with GPT-5.1 vision model. Query: {query[:100]}")
+        # aask expects a list of images, so we pass a single-item list
+        response = await aask([image_info], [context_description, query])
         logger.info("Image inspection completed successfully")
         return response
     except Exception as e:
-        logger.error(f"Failed to inspect images: {e}")
+        logger.error(f"Failed to inspect image: {e}")
         raise e
 
