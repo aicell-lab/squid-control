@@ -1159,11 +1159,9 @@ class MicroscopeHyphaService:
             gray_img = await self.squidController.snap_image(channel_id, intensity, exposure_time)
             logger.info('The image is snapped')
             # Image is already uint8 from snap_image method
-            # Resize the image to a standard size
-            resized_img = cv2.resize(gray_img, (2048, 2048))
 
             # Encode the image directly to PNG without converting to BGR
-            _, png_image = cv2.imencode('.png', resized_img)
+            _, png_image = cv2.imencode('.png', gray_img)
 
             # Save using artifact manager (REQUIRED)
             if not self.snapshot_manager:
