@@ -2345,32 +2345,26 @@ class MultiPointWorker:
                                     self.autofocusController.autofocus(focus_map_override=False)
                                     self.autofocusController.wait_till_autofocus_has_completed()
                                 else:
-                                    # Use laser autofocus as normal
-                                    # Check if movement-based autofocus is requested
-                                    if self.move_for_autofocus:
-                                        # Move 0.2mm in X/Y, measure, move back, then adjust Z
-                                        if (
-                                            self.navigationController.get_pid_control_flag(
-                                                2
-                                            )
-                                            is False
-                                        ):
-                                            self.microscope.laserAutofocusController.move_to_target(
-                                                0
-                                            )
-                                            self.microscope.laserAutofocusController.move_to_target(
-                                                0
-                                            )  # for stepper in open loop mode, repeat the operation to counter backlash
-                                        else:
-                                            self.microscope.laserAutofocusController.move_to_target(
-                                                0
-                                            )
-                                    else:
-                                        # Perform autofocus at current position without X/Y movement
-                                        self.microscope.laserAutofocusController.move_to_target_no_movement(
+                                    # Use laser autofocus - always use move_to_target for reliability
+                                    # move_to_target works better than move_to_target_no_movement
+                                    # because it can handle variations in sample position
+                                    if (
+                                        self.navigationController.get_pid_control_flag(
+                                            2
+                                        )
+                                        is False
+                                    ):
+                                        self.microscope.laserAutofocusController.move_to_target(
                                             0
                                         )
-                            except:
+                                        self.microscope.laserAutofocusController.move_to_target(
+                                            0
+                                        )  # for stepper in open loop mode, repeat the operation to counter backlash
+                                    else:
+                                        self.microscope.laserAutofocusController.move_to_target(
+                                            0
+                                        )
+                            except Exception as e:
                                 file_ID = (
                                     coordiante_name
                                     + str(i)
@@ -2389,8 +2383,9 @@ class MultiPointWorker:
                                     self.microscope.laserAutofocusController.image,
                                 )
                                 print(
-                                    "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! laser CONFIG.AF failed !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-                                    #raise Exception("laser CONFIG.AF failed")
+                                    f"!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! laser autofocus failed: {str(e)} !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+                                print(f"Laser autofocus error details: {type(e).__name__}: {e}")
+                                    #raise Exception("laser autofocus failed")
 
 
                         if self.NZ > 1:
