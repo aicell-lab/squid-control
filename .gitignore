@@ -173,7 +173,9 @@ upload_record.json
 config_parameters.txt
 configuration_HCS_v2.ini
 configuration_Squid+.ini
-
+# Illumination calibration files (microscope-specific)
+squid_control/control/utils/illumination_calibration/flat_images/*
+squid_control/config/shading_field_*.npy
 chunk_images/
 
 # Reference codebase (downloaded for reference)
