@@ -841,21 +841,51 @@ class Camera_Simulation(object):
         if self.image is None:
             raise RuntimeError(f"Failed to get image from Zarr for channel {channel} (channel_name={channel_name}) at position ({x}, {y})")
 
-        # Apply exposure and intensity scaling
-        # For brightfield channel (channel=0), use different scaling divisors (20 for both)
+        # Apply exposure and intensity scaling with realistic camera behavior
+        # The Zarr image represents the "ideal" scene at maximum exposure/intensity
+        # We need to scale it down based on actual settings
+        
+        # Define reference values (what the Zarr images were captured at)
         if channel == 0:
-            exposure_factor = max(0.1, exposure_time / 20)  # Brightfield: scale based on 20
-            intensity_factor = max(0.1, intensity / 20)   # Brightfield: scale based on 20
+            # Brightfield: reference values
+            reference_exposure = 20.0  # ms
+            reference_intensity = 20.0  # arbitrary units
         else:
-            exposure_factor = max(0.1, exposure_time / 100)  # Other channels: scale based on 100
-            intensity_factor = max(0.1, intensity / 60)      # Other channels: scale based on 60
+            # Fluorescence: reference values
+            reference_exposure = 100.0  # ms
+            reference_intensity = 60.0  # arbitrary units
+        
+        # Calculate scaling factors with more aggressive darkening at low values
+        # Using linear ratio (not square root) for more realistic response
+        # This ensures low exposure/intensity produces much darker images
+        exposure_factor = max(0.01, exposure_time) / reference_exposure
+        intensity_factor = max(0.01, intensity) / reference_intensity
+        
+        # Combined scaling factor (can be much less than 1.0 at low settings)
+        combined_factor = exposure_factor * intensity_factor
+        
+        # Add gamma correction for more realistic camera response
+        # Gamma < 1.0 makes dark areas darker while preserving some detail
+        # This simulates real camera sensor behavior
+        gamma = 0.8  # Values < 1.0 make low-light images darker
         
         # Check if image contains any valid data before scaling
         if np.count_nonzero(self.image) == 0:
             print("WARNING: Image contains all zeros before scaling!")
             self.image = np.ones((self.Height, self.Width), dtype=np.uint8) * 128
-        # Convert to float32 for scaling, apply factors, then clip and convert back to uint8
-        self.image = np.clip(self.image.astype(np.float32) * exposure_factor * intensity_factor, 0, 255).astype(np.uint8)
+        
+        # Apply realistic scaling with gamma correction
+        # Step 1: Normalize to 0-1 range
+        image_normalized = self.image.astype(np.float32) / 255.0
+        
+        # Step 2: Apply gamma correction (makes dark areas darker)
+        image_gamma = np.power(image_normalized, gamma)
+        
+        # Step 3: Apply exposure and intensity scaling
+        image_scaled = image_gamma * combined_factor
+        
+        # Step 4: Convert back to 0-255 range and clip
+        self.image = np.clip(image_scaled * 255.0, 0, 255).astype(np.uint8)
         
         # Check if image contains any valid data after scaling
         if np.count_nonzero(self.image) == 0:
