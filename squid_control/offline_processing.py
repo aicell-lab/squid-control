@@ -367,9 +367,16 @@ class OfflineProcessor:
         Path(temp_path).mkdir(parents=True, exist_ok=True)
 
         from squid_control.stitching.zarr_canvas import ExperimentManager
+        
+        # Get illumination calibration from squid controller if available
+        illumination_calibration = None
+        if hasattr(self.squid_controller, 'illumination_calibration'):
+            illumination_calibration = self.squid_controller.illumination_calibration
+        
         temp_exp_manager = ExperimentManager(
             base_path=temp_path,
-            pixel_size_xy_um=self.squid_controller.pixel_size_xy
+            pixel_size_xy_um=self.squid_controller.pixel_size_xy,
+            illumination_calibration=illumination_calibration
         )
 
         return temp_exp_manager
