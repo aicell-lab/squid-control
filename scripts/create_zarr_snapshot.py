@@ -6,7 +6,7 @@ Usage:
     python create_zarr_snapshot.py <zarr_path> [scale_level] [output_path] [channel_idx]
 
 Example:
-    python create_zarr_snapshot.py /data/offline_stitch_20251215-fullplate_2025-12-16_16-50-51.505093/data.zarr 4 snapshot_scale4.png
+    python create_zarr_snapshot.py /data/20251215-illumination-calibrated/data.zarr 4 snapshot_scale4.png
 """
 
 import sys
@@ -132,13 +132,13 @@ def main():
         epilog="""
 Examples:
   # Create snapshot at scale 4 (default)
-  python create_zarr_snapshot.py /data/offline_stitch_20251215-fullplate_2025-12-16_16-50-51.505093/data.zarr
+  python create_zarr_snapshot.py /data/20251215-illumination-calibrated/data.zarr
 
   # Specify scale level and output path
-  python create_zarr_snapshot.py /data/offline_stitch_20251215-fullplate_2025-12-16_16-50-51.505093/data.zarr 4 snapshot.png
+  python create_zarr_snapshot.py /data/20251215-illumination-calibrated/data.zarr 4 snapshot.png
 
   # Use a specific channel
-  python create_zarr_snapshot.py /data/offline_stitch_20251215-fullplate_2025-12-16_16-50-51.505093/data.zarr 4 snapshot.png 0
+  python create_zarr_snapshot.py /data/20251215-illumination-calibrated/data.zarr 4 snapshot.png 0
         """
     )
     

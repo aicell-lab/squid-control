@@ -413,7 +413,33 @@ class SquidController:
         # Initialize experiment-based zarr management
         zarr_path = os.getenv('ZARR_PATH', '/tmp/zarr_canvas')
         from squid_control.stitching.zarr_canvas import ExperimentManager
-        self.experiment_manager = ExperimentManager(zarr_path, self.pixel_size_xy)
+        
+        # Initialize illumination calibration (dynamic channel discovery)
+        from squid_control.control.utils.illumination_calibration.calibration_manager import IlluminationCalibrationManager
+        
+        flat_images_dir = os.path.join(os.path.dirname(path), 'control', 'utils', 'illumination_calibration', 'flat_images')
+        cache_dir = os.path.join(os.path.dirname(path), 'config')
+        
+        self.illumination_calibration = IlluminationCalibrationManager(
+            flat_images_dir=flat_images_dir,
+            cache_dir=cache_dir,
+            sigma=70  # Gaussian blur sigma for background extraction
+        )
+        
+        # Load or calculate shading fields for all available channels
+        self.illumination_calibration.load_or_calculate_shading_fields()
+        
+        if self.illumination_calibration.get_available_channels():
+            logger.info(f"Flat-field correction available for channels: {self.illumination_calibration.get_available_channels()}")
+        else:
+            logger.info("No flat-field calibration images found - correction will not be applied")
+        
+        # Create experiment manager and pass calibration
+        self.experiment_manager = ExperimentManager(
+            zarr_path, 
+            self.pixel_size_xy,
+            illumination_calibration=self.illumination_calibration
+        )
 
         # Initialize legacy well_canvases attribute for backward compatibility
         self.well_canvases = {}

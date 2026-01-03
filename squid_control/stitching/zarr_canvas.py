@@ -41,7 +41,7 @@ class ZarrCanvas:
     def __init__(self, base_path: str, pixel_size_xy_um: float, stage_limits: Dict[str, float],
                  channels: List[str] = None, chunk_size: int = 256, rotation_angle_deg: float = 0.0,
                  initial_timepoints: int = 20, timepoint_expansion_chunk: int = 10, fileset_name: str = "live_stitching",
-                 initialize_new: bool = False):
+                 initialize_new: bool = False, illumination_calibration=None):
         """
         Initialize the Zarr canvas.
         
@@ -56,6 +56,7 @@ class ZarrCanvas:
             timepoint_expansion_chunk: Number of timepoints to add when expansion is needed (default 10)
             fileset_name: Name of the zarr fileset (default 'live_stitching')
             initialize_new: If True, create a new fileset (deletes existing). If False, open existing if present.
+            illumination_calibration: Optional IlluminationCalibrationManager for flat-field correction
         """
         self.base_path = Path(base_path)
         self.pixel_size_xy_um = pixel_size_xy_um
@@ -65,6 +66,7 @@ class ZarrCanvas:
         self.rotation_angle_deg = rotation_angle_deg
         self.fileset_name = fileset_name
         self.zarr_path = self.base_path / f"{fileset_name}.zarr"
+        self.illumination_calibration = illumination_calibration
 
         # Get wellplate offset from CONFIG if available
         try:
@@ -797,6 +799,30 @@ class ZarrCanvas:
 
         # Apply rotation and cropping (CPU work)
         processed_image = self._rotate_and_crop_image(image)
+
+        # Apply flat-field correction if available for this channel
+        if self.illumination_calibration is not None:
+            try:
+                channel_name = self.get_channel_name_by_zarr_index(channel_idx)
+                
+                if self.illumination_calibration.has_calibration(channel_name):
+                    shading_field = self.illumination_calibration.get_shading_field(channel_name)
+                    
+                    # Resize shading field to match processed image dimensions if needed
+                    if shading_field.shape != processed_image.shape:
+                        from squid_control.control.utils.illumination_calibration import resize_shading_field
+                        shading_field_resized = resize_shading_field(shading_field, processed_image.shape)
+                    else:
+                        shading_field_resized = shading_field
+                    
+                    # Apply flat-field correction
+                    from squid_control.control.utils.illumination_calibration import apply_flat_field_correction
+                    processed_image = apply_flat_field_correction(processed_image, shading_field_resized)
+                    
+                    logger.debug(f"Applied flat-field correction for channel '{channel_name}'")
+            except Exception as e:
+                logger.warning(f"Failed to apply flat-field correction for channel_idx={channel_idx}: {e}")
+                # Continue without correction - don't crash the stitching pipeline
 
         # Prepare preprocessed data for all scales
         preprocessed_scales = []
@@ -1645,7 +1671,8 @@ class ExperimentManager:
     Each experiment has one flat canvas covering the full stage area.
     """
     
-    def __init__(self, base_path: str, pixel_size_xy_um: float, stage_limits: Dict[str, float] = None):
+    def __init__(self, base_path: str, pixel_size_xy_um: float, stage_limits: Dict[str, float] = None,
+                 illumination_calibration=None):
         """
         Initialize the experiment manager.
         
@@ -1653,9 +1680,11 @@ class ExperimentManager:
             base_path: Base directory for experiment storage
             pixel_size_xy_um: Pixel size in micrometers
             stage_limits: Optional stage limits dict. If None, uses defaults from CONFIG.
+            illumination_calibration: Optional IlluminationCalibrationManager for flat-field correction
         """
         self.base_path = Path(base_path)
         self.pixel_size_xy_um = pixel_size_xy_um
+        self.illumination_calibration = illumination_calibration
         
         # Get stage limits from CONFIG if not provided
         if stage_limits is None:
@@ -1733,7 +1762,8 @@ class ExperimentManager:
             stage_limits=self.stage_limits,
             channels=all_channels,
             fileset_name="data",
-            initialize_new=True
+            initialize_new=True,
+            illumination_calibration=self.illumination_calibration
         )
         
         # Save experiment metadata
@@ -1790,7 +1820,8 @@ class ExperimentManager:
                 stage_limits=self.stage_limits,
                 channels=all_channels,
                 fileset_name="data",
-                initialize_new=False  # Open existing
+                initialize_new=False,  # Open existing
+                illumination_calibration=self.illumination_calibration
             )
         else:
             self._canvas = None
@@ -1841,7 +1872,8 @@ class ExperimentManager:
                 stage_limits=self.stage_limits,
                 channels=all_channels,
                 fileset_name="data",
-                initialize_new=initialize_new
+                initialize_new=initialize_new,
+                illumination_calibration=self.illumination_calibration
             )
         
         return self._canvas
