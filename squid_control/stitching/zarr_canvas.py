@@ -1756,15 +1756,15 @@ class ExperimentManager:
             all_channels = ['BF LED matrix full']
         
         # Create single canvas for this experiment
-            self._canvas = ZarrCanvas(
-                base_path=str(experiment_path),
-                pixel_size_xy_um=self.pixel_size_xy_um,
-                stage_limits=self.stage_limits,
-                channels=all_channels,
-                fileset_name="data",
-                initialize_new=True,
-                illumination_calibration=self.illumination_calibration
-            )
+        self._canvas = ZarrCanvas(
+            base_path=str(experiment_path),
+            pixel_size_xy_um=self.pixel_size_xy_um,
+            stage_limits=self.stage_limits,
+            channels=all_channels,
+            fileset_name="data",
+            initialize_new=True,
+            illumination_calibration=self.illumination_calibration
+        )
         
         # Save experiment metadata
         metadata = {
