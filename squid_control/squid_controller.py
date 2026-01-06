@@ -921,13 +921,9 @@ class SquidController:
             if y_pos_mm is None:
                 y_pos_mm = current_y
 
-        # Apply well plate offset for hardware mode
-        if self.is_simulation:
-            x_offset = 0
-            y_offset = 0
-        else:
-            x_offset = CONFIG.WELLPLATE_OFFSET_X_MM
-            y_offset = CONFIG.WELLPLATE_OFFSET_Y_MM
+        # Apply well plate offset (always, to match move_to_well behavior)
+        x_offset = CONFIG.WELLPLATE_OFFSET_X_MM
+        y_offset = CONFIG.WELLPLATE_OFFSET_Y_MM
 
         # Calculate which well this position corresponds to
         # Reverse of the move_to_well calculation
@@ -944,6 +940,10 @@ class SquidController:
             'column': None,
             'well_id': None,
             'is_inside_well': False,
+            'well_center_coordinates': {
+                'x_mm': None,
+                'y_mm': None,
+            },
             'distance_from_center': float('inf'),
             'position_status': 'outside_plate',
             'x_mm': x_pos_mm,
@@ -964,6 +964,10 @@ class SquidController:
             # Calculate the exact center position of this well
             well_center_x = wellplate_format.A1_X_MM + x_offset + col_index * wellplate_format.WELL_SPACING_MM
             well_center_y = wellplate_format.A1_Y_MM + y_offset + row_index * wellplate_format.WELL_SPACING_MM
+
+            # Store well center coordinates
+            result['well_center_coordinates']['x_mm'] = well_center_x
+            result['well_center_coordinates']['y_mm'] = well_center_y
 
             # Calculate distance from well center
             dx = x_pos_mm - well_center_x
@@ -990,6 +994,10 @@ class SquidController:
 
             closest_well_center_x = wellplate_format.A1_X_MM + x_offset + closest_col * wellplate_format.WELL_SPACING_MM
             closest_well_center_y = wellplate_format.A1_Y_MM + y_offset + closest_row * wellplate_format.WELL_SPACING_MM
+
+            # Store closest well center coordinates
+            result['well_center_coordinates']['x_mm'] = closest_well_center_x
+            result['well_center_coordinates']['y_mm'] = closest_well_center_y
 
             dx = x_pos_mm - closest_well_center_x
             dy = y_pos_mm - closest_well_center_y
@@ -1023,13 +1031,9 @@ class SquidController:
         else:
             wellplate_format = WELLPLATE_FORMAT_96
             
-        # Apply well plate offset for hardware mode
-        if self.is_simulation:
-            x_offset = 0
-            y_offset = 0
-        else:
-            x_offset = CONFIG.WELLPLATE_OFFSET_X_MM
-            y_offset = CONFIG.WELLPLATE_OFFSET_Y_MM
+        # Apply well plate offset (always, to match move_to_well behavior)
+        x_offset = CONFIG.WELLPLATE_OFFSET_X_MM
+        y_offset = CONFIG.WELLPLATE_OFFSET_Y_MM
             
         # Convert row letter to index (A=0, B=1, etc.)
         row_index = ord(well_row.upper()) - ord('A')

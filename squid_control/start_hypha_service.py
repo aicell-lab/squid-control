@@ -579,6 +579,7 @@ class MicroscopeHyphaService:
                 'video_fps': self.buffer_fps,
                 'video_buffering_active': self.frame_acquisition_running,
                 'current_well_location': well_info,  # Add well location information
+                'pixel_size_xy': self.squidController.pixel_size_xy,
                 # Unified scan status
                 'scan_status': {
                     'state': self.scan_state['state'],
