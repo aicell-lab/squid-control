@@ -477,7 +477,6 @@ class MicroscopeHyphaService:
         """
         Move the microscope stage by specified distances relative to current position.
         Returns: Dictionary with success status, movement message, initial position, and final position in millimeters.
-        Notes: Movement is validated against software safety limits and will fail if target position is out of range.
         """
         try:
             # Check authentication
@@ -505,7 +504,6 @@ class MicroscopeHyphaService:
         """
         Move the microscope stage to absolute coordinates in the stage reference frame.
         Returns: Dictionary with success status, movement message, initial position, and final position in millimeters.
-        Notes: Each axis is moved sequentially (X, then Y, then Z). Movement validates against safety limits per axis.
         """
         try:
             # Check authentication
@@ -1674,7 +1672,6 @@ class MicroscopeHyphaService:
         """
         Perform reflection-based (laser) autofocus using IR laser reflection from sample surface.
         Returns: String confirmation message that camera is auto-focused.
-        Notes: Fast and accurate focus method using laser displacement sensor. Requires prior reference setting. Best for flat samples.
         """
 
         try:
@@ -1722,7 +1719,6 @@ class MicroscopeHyphaService:
         """
         Navigate the stage to the center of a specific well in the well plate.
         Returns: String confirmation message with the well position (e.g., 'The stage moved to well position (A,1)').
-        Notes: Runs in background thread. Well coordinates are automatically calculated based on standard plate dimensions.
         """
 
         try:
@@ -1768,7 +1764,6 @@ class MicroscopeHyphaService:
         """
         Inspect an image using GPT's vision model (GPT-5.1) for analysis and description.
         Returns: String response from the vision model containing image analysis based on the query.
-        Notes: The image must be base64-encoded PNG format. The method validates base64 data and processes the image through the GPT-5.1 vision API.
         """
         try:
             from squid_control.hypha_tools.vision_inspection import inspect_images
