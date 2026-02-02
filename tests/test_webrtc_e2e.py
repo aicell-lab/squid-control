@@ -102,7 +102,7 @@ def create_data_channel_test_html(service_id, webrtc_service_id, server_url, wor
             overflow-y: auto;
         }}
     </style>
-    <script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.54/dist/hypha-rpc-websocket.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.93/dist/hypha-rpc-websocket.min.js"></script>
 </head>
 <body>
     <div class="container">
@@ -317,7 +317,7 @@ def create_data_channel_test_html(service_id, webrtc_service_id, server_url, wor
                     resolve(hyphaWebsocketClient);
                 }} else {{
                     const script = document.createElement('script');
-                    script.src = 'https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.54/dist/hypha-rpc-websocket.min.js';
+                    script.src = 'https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.93/dist/hypha-rpc-websocket.min.js';
                     script.onload = () => {{
                         resolve(window.hyphaWebsocketClient);
                     }};
@@ -447,7 +447,7 @@ def create_webrtc_test_html(service_id, webrtc_service_id, server_url, workspace
             font-size: 12px;
         }}
     </style>
-    <script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.54/dist/hypha-rpc-websocket.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.93/dist/hypha-rpc-websocket.min.js"></script>
 </head>
 <body>
     <div class="container">
@@ -1006,7 +1006,7 @@ def create_webrtc_test_html(service_id, webrtc_service_id, server_url, workspace
                     resolve(hyphaWebsocketClient);
                 }} else {{
                     const script = document.createElement('script');
-                    script.src = 'https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.54/dist/hypha-rpc-websocket.min.js';
+                    script.src = 'https://cdn.jsdelivr.net/npm/hypha-rpc@0.20.93/dist/hypha-rpc-websocket.min.js';
                     script.onload = () => {{
                         resolve(window.hyphaWebsocketClient);
                     }};
