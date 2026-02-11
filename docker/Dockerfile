@@ -1,12 +1,26 @@
 FROM python:3.11-slim
 
-# Install system dependencies
+# Install system dependencies including build tools and FFmpeg for PyAV
 RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
     git \
     curl \
     jq \
+    # Build tools required for PyAV
+    gcc \
+    g++ \
+    make \
+    pkg-config \
+    # FFmpeg libraries required for PyAV
+    ffmpeg \
+    libavformat-dev \
+    libavcodec-dev \
+    libavdevice-dev \
+    libavutil-dev \
+    libswscale-dev \
+    libswresample-dev \
+    libavfilter-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user "squid-user"
@@ -29,6 +43,9 @@ RUN git config --global --add safe.directory /app
 
 # Remove all files matching .gitignore patterns and .git directory
 RUN git clean -fdX && rm -rf .git
+
+# Install Cython first (required for building PyAV)
+RUN pip install --no-cache-dir Cython
 
 # Install Python dependencies
 RUN pip install --no-cache-dir .
