@@ -1090,14 +1090,9 @@ class MicroscopeHyphaService:
             raise e
 
     @schema_function(skip_self=True)
-    async def snap(self, exposure_time: Optional[int]=Field(None, description="Camera exposure time in milliseconds (range: 1-900). If None, uses current microscope setting."), channel: Optional[str]=Field(None, description="Channel canonical name (e.g., 'BF_LED_matrix_full', 'Fluorescence_405_nm_Ex', 'Fluorescence_488_nm_Ex', 'Fluorescence_638_nm_Ex', 'Fluorescence_561_nm_Ex', 'Fluorescence_730_nm_Ex'). If None, uses current microscope channel."), intensity: Optional[int]=Field(None, description="LED illumination intensity percentage (range: 0-100). If None, uses current microscope setting."), context=None):
+    async def snap(self, exposure_time: Optional[int]=Field(None, description="Camera exposure time in milliseconds (range: 1-900). If None, uses current microscope setting."), channel: Optional[str]=Field(None, description="Channel canonical name (e.g., 'BF_LED_matrix_full', 'Fluorescence_405_nm_Ex', 'Fluorescence_488_nm_Ex', 'Fluorescence_638_nm_Ex', 'Fluorescence_561_nm_Ex', 'Fluorescence_730_nm_Ex'). If None, uses current microscope channel."), intensity: Optional[int]=Field(None, description="LED illumination intensity percentage (range: 0-100). If None, uses current microscope setting."), return_array: bool=Field(False, description="If True, return image as a numpy array, if False, return a URL."), context=None):
         """
-        Capture a single microscope image and save it to artifact manager with public access.
-        Returns: HTTP URL string pointing to the captured 2048x2048 PNG image with public read access.
-        Notes: Stops video buffering during acquisition to prevent camera conflicts. Image is automatically cropped and resized.
-        Snapshots are stored in daily datasets (snapshots-{service_id}-{date}) in the artifact manager with position metadata.
-        If channel, intensity, or exposure_time are None, the current microscope settings will be used.
-        The provided channel, intensity, and exposure_time settings are applied to the microscope and update the current parameters.
+        Capture a single microscope image. By default saves to artifact manager and returns a public URL. If return_array is True, returns a numpy array instead of a URL.
         """
 
         # Check authentication
@@ -1161,10 +1156,13 @@ class MicroscopeHyphaService:
             logger.info('The image is snapped')
             # Image is already uint8 from snap_image method
 
+            if return_array:
+                return gray_img
+
             # Encode the image directly to PNG without converting to BGR
             _, png_image = cv2.imencode('.png', gray_img)
 
-            # Save using artifact manager (REQUIRED)
+            # Save using artifact manager (REQUIRED when not return_array)
             if not self.snapshot_manager:
                 raise Exception("Snapshot manager not available. Ensure AGENT_LENS_WORKSPACE_TOKEN is set.")
 
