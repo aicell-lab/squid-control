@@ -488,7 +488,7 @@ class Camera(object):
 class Camera_Simulation(object):
 
     def __init__(
-        self, sn=None, is_global_shutter=False, rotate_image_angle=None, flip_image=None
+        self, sn=None, is_global_shutter=False, rotate_image_angle=None, flip_image=None, zarr_dataset_path=None
     ):
         # many to be purged
         self.sn = sn
@@ -501,6 +501,13 @@ class Camera_Simulation(object):
         self.contrast_lut = None
         self.color_correction_param = None
         self.image = None
+        
+        # Override ZARR_DATASET_PATH if provided
+        if zarr_dataset_path:
+            self.ZARR_DATASET_PATH = zarr_dataset_path
+            print(f"Camera_Simulation using custom zarr dataset: {zarr_dataset_path}")
+        else:
+            self.ZARR_DATASET_PATH = "/mnt/shared_documents/20251215-illumination-calibrated/data.zarr"
         self.rotate_image_angle = rotate_image_angle
         self.flip_image = flip_image
 
@@ -702,6 +709,16 @@ class Camera_Simulation(object):
             zattrs = dict(root.attrs)
             squid_canvas = zattrs.get('squid_canvas', {})
             
+            # Load channel mapping from zarr metadata if available
+            # This allows different datasets (20x default, 63x Opera) to have different channel structures
+            channel_mapping_from_zarr = squid_canvas.get('channel_mapping', None)
+            if channel_mapping_from_zarr:
+                print(f"Loaded channel mapping from zarr metadata: {channel_mapping_from_zarr}")
+                # Update instance ZARR_CHANNEL_INDEX to match this dataset
+                if channel_mapping_from_zarr != self.ZARR_CHANNEL_INDEX:
+                    self.ZARR_CHANNEL_INDEX = channel_mapping_from_zarr
+                    print(f"Updated ZARR_CHANNEL_INDEX for this dataset")
+            
             # Canvas is hardcoded: x from 0 to 120mm, y from 0 to 80mm
             canvas_width_mm = squid_canvas.get('canvas_width_mm', 120.0)
             canvas_height_mm = squid_canvas.get('canvas_height_mm', 80.0)
@@ -802,7 +819,15 @@ class Camera_Simulation(object):
         
         try:
             # Get zarr channel index from channel name
-            channel_idx = self.ZARR_CHANNEL_INDEX.get(channel_name, 0)
+            # Try direct lookup first, then try with spaces/underscores normalized
+            channel_idx = self.ZARR_CHANNEL_INDEX.get(channel_name, None)
+            if channel_idx is None:
+                # Try converting underscores to spaces or vice versa
+                alt_channel_name = channel_name.replace('_', ' ') if '_' in channel_name else channel_name.replace(' ', '_')
+                channel_idx = self.ZARR_CHANNEL_INDEX.get(alt_channel_name, 0)
+                if channel_idx != 0 or alt_channel_name in self.ZARR_CHANNEL_INDEX:
+                    print(f"Channel name normalized: {channel_name} → {alt_channel_name}")
+                    channel_name = alt_channel_name
             print(f"Fetching from zarr: channel={channel_name} (idx={channel_idx}), microscope_position=({x:.2f}, {y:.2f}) mm")
             
             # Run blocking zarr I/O operations in a thread to avoid blocking the event loop

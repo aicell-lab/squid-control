@@ -51,6 +51,12 @@ Examples:
         action="store_true",
         help="Enable verbose logging"
     )
+    microscope_parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Configuration name (HCS_v2, HCS_v2_63x, Squid+, etc.) without .ini extension"
+    )
 
     # Mirror service subcommand
     mirror_parser = subparsers.add_parser(
@@ -118,6 +124,7 @@ def main():
             microscope_parser.add_argument("--simulation", action="store_true", default=False)
             microscope_parser.add_argument("--local", action="store_true", default=False)
             microscope_parser.add_argument("--verbose", "-v", action="count")
+            microscope_parser.add_argument("--config", type=str, default=None)
 
             # Convert our args to the format expected by start_hypha_service.py
             microscope_args = []
@@ -127,6 +134,8 @@ def main():
                 microscope_args.append("--local")
             if args.verbose:
                 microscope_args.append("--verbose")
+            if args.config:
+                microscope_args.extend(["--config", args.config])
 
             # Temporarily replace sys.argv to pass arguments to microscope_main
             original_argv = sys.argv

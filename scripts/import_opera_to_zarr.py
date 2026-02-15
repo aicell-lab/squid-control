@@ -425,6 +425,14 @@ async def import_opera_dataset(
             await canvas.stop_stitching()
             logger.info("  Canvas processing complete")
             
+            # Verify channel metadata is present in zarr
+            logger.info("  Verifying channel metadata...")
+            if hasattr(canvas, 'zarr_root') and canvas.zarr_root is not None:
+                attrs = dict(canvas.zarr_root.attrs)
+                squid_canvas_meta = attrs.get('squid_canvas', {})
+                logger.info(f"  Channels in metadata: {len(canvas.channels)} channels")
+                logger.info(f"  Channel mapping: {squid_canvas_meta.get('channel_mapping', 'NOT FOUND')}")
+            
             # Step 6: Save preview if requested (using safe method for high-res canvases)
             if save_preview:
                 logger.info("\n[6/7] Saving preview images...")
