@@ -182,10 +182,13 @@ class SquidController:
             except Exception as e:
                 print(f"! Camera initialization failed: {e}")
                 print("! Using simulated camera instead !")
+                # When hardware fails, fallback to simulation with default zarr dataset
+                zarr_fallback = "/mnt/shared_documents/20251215-illumination-calibrated/data.zarr"
                 if CONFIG.SUPPORT_LASER_AUTOFOCUS:
                     self.camera = camera.Camera_Simulation(
                         rotate_image_angle=CONFIG.ROTATE_IMAGE_ANGLE,
                         flip_image=CONFIG.FLIP_IMAGE,
+                        zarr_dataset_path=zarr_fallback,
                     )
                     self.camera.open()
                     self.camera_focus = camera_fc.Camera_Simulation()
@@ -194,6 +197,7 @@ class SquidController:
                     self.camera = camera.Camera_Simulation(
                         rotate_image_angle=CONFIG.ROTATE_IMAGE_ANGLE,
                         flip_image=CONFIG.FLIP_IMAGE,
+                        zarr_dataset_path=zarr_fallback,
                     )
                     self.camera.open()
             self.microcontroller = microcontroller.Microcontroller(

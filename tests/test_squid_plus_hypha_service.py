@@ -3,7 +3,6 @@ import os
 import shutil
 import time
 import uuid
-from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -77,22 +76,8 @@ async def test_squid_plus_microscope_service():
             else:
                 print("⚠️ Configuration files not found, using default")
             
-            # Patch Toupcam Camera_Simulation to accept zarr_dataset_path (added in codebase
-            # for 63x/Opera mode). Toupcam's simulation only takes rotate_image_angle and
-            # flip_image; we strip zarr_dataset_path so the test fits the current codebase.
-            import squid_control.control.camera.camera_toupcam as _toupcam_mod
-            _real_toupcam_sim = _toupcam_mod.Camera_Simulation
-
-            def _toupcam_sim_compat(*args, **kwargs):
-                kwargs.pop("zarr_dataset_path", None)
-                return _real_toupcam_sim(*args, **kwargs)
-
             try:
-                with patch(
-                    "squid_control.control.camera.camera_toupcam.Camera_Simulation",
-                    _toupcam_sim_compat,
-                ):
-                    microscope = MicroscopeHyphaService(is_simulation=True, is_local=False)
+                microscope = MicroscopeHyphaService(is_simulation=True, is_local=False)
             finally:
                 # Restore original HCS_v2 config
                 if os.path.exists(hcs_config_backup):
