@@ -192,7 +192,7 @@ class MicroscopeVideoTrack(MediaStreamTrack):
         self.microscope_instance.webrtc_connected = False
 
 class MicroscopeHyphaService:
-    def __init__(self, is_simulation, is_local):  # noqa: PLR0915
+    def __init__(self, is_simulation, is_local, config_name=None):  # noqa: PLR0915
         self.current_x = 0
         self.current_y = 0
         self.current_z = 0
@@ -202,7 +202,8 @@ class MicroscopeHyphaService:
         self.is_illumination_on = False
         self.is_simulation = is_simulation
         self.is_local = is_local
-        self.squidController = SquidController(is_simulation=is_simulation)
+        self.config_name = config_name
+        self.squidController = SquidController(is_simulation=is_simulation, config_name=config_name)
         self.squidController.move_to_well('C',3)
 
         # Determine if this is a Squid+ microscope
@@ -238,7 +239,20 @@ class MicroscopeHyphaService:
         self.snapshot_manager = None  # Will be initialized after artifact_manager in setup()
         self.server_url =  "http://192.168.2.1:9527" if is_local else "https://hypha.aicell.io/"
         self.server = None
-        self.service_id = os.environ.get("MICROSCOPE_SERVICE_ID")
+        
+        # Set service ID based on environment variable and config
+        base_service_id = os.environ.get("MICROSCOPE_SERVICE_ID")
+        if base_service_id and is_simulation and config_name:
+            # Append config suffix for different simulation configs
+            # e.g., squid-control-simulation -> squid-control-simulation-63x
+            if config_name != "HCS_v2":  # Only append if not default config
+                self.service_id = f"{base_service_id}-{config_name.lower().replace('hcs_v2_', '')}"
+                logger.info(f"Using config-specific service ID: {self.service_id}")
+            else:
+                self.service_id = base_service_id
+        else:
+            self.service_id = base_service_id
+        
         self.setup_task = None  # Track the setup task
 
         # WebRTC related attributes
@@ -4672,6 +4686,12 @@ def main():
         help="Run with local server URL (default: False)"
     )
     parser.add_argument("--verbose", "-v", action="count")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Configuration file name (without .ini extension), e.g., 'HCS_v2', 'HCS_v2_63x', 'Squid+'"
+    )
     args = parser.parse_args()
 
     if args.verbose:
@@ -4679,7 +4699,7 @@ def main():
     else:
         logging.basicConfig(level=logging.INFO)
 
-    microscope = MicroscopeHyphaService(is_simulation=args.simulation, is_local=args.local)
+    microscope = MicroscopeHyphaService(is_simulation=args.simulation, is_local=args.local, config_name=args.config)
     _microscope_instance = microscope  # Set the global variable
 
     loop = asyncio.get_event_loop()

@@ -806,13 +806,23 @@ class Camera(object):
 class Camera_Simulation(object):
     """Simulation camera for testing without hardware."""
     
-    def __init__(self, rotate_image_angle=None, flip_image=None):
-        """Initialize simulation camera."""
+    def __init__(self, rotate_image_angle=None, flip_image=None, zarr_dataset_path=None):
+        """Initialize simulation camera.
+        
+        Args:
+            rotate_image_angle: Optional rotation angle for image transformation
+            flip_image: Optional flip setting for image transformation
+            zarr_dataset_path: Optional path to zarr dataset (for 63x/Opera mode, etc.)
+        """
         logger.info("Initializing Toupcam simulation camera")
         
-        # Use the default camera simulation
+        # Use the default camera simulation and pass through all parameters
         from squid_control.control.camera.camera_default import Camera_Simulation as DefaultSimulation
-        self._sim = DefaultSimulation(rotate_image_angle=rotate_image_angle, flip_image=flip_image)
+        self._sim = DefaultSimulation(
+            rotate_image_angle=rotate_image_angle,
+            flip_image=flip_image,
+            zarr_dataset_path=zarr_dataset_path,
+        )
         
         # Expose all methods from default simulation
         for attr in dir(self._sim):

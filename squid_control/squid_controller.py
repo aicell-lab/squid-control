@@ -62,15 +62,19 @@ logger = setup_logging("squid_controller.log")
 class SquidController:
     fps_software_trigger= 10
 
-    def __init__(self, is_simulation, *args, **kwargs):
+    def __init__(self, is_simulation, config_name=None, *args, **kwargs):
         super().__init__(*args,**kwargs)
         self.data_channel = None
         self.is_simulation = is_simulation
+        self.config_name = config_name
         self.is_busy = False
         self.scan_stop_requested = False  # Flag to stop ongoing scans
         self.zarr_artifact_manager = None  # Initialize zarr artifact manager to None
         if is_simulation:
-            config_path = os.path.join(os.path.dirname(path), 'config', 'configuration_HCS_v2_example.ini')
+            # Use specified config name or default to HCS_v2_example
+            config_file = f'configuration_{config_name}_example.ini' if config_name else 'configuration_HCS_v2_example.ini'
+            config_path = os.path.join(os.path.dirname(path), 'config', config_file)
+            logger.info(f"Simulation mode: using config {config_file}")
         else:
             # Auto-detect configuration file based on available files
             # Check main squid_control directory first
@@ -116,18 +120,28 @@ class SquidController:
         self.objective_switcher = None
         # load objects
         if self.is_simulation:
+            # Determine zarr dataset path based on config
+            if config_name == "HCS_v2_63x":
+                zarr_dataset_path = "/mnt/shared_documents/opera_import/data.zarr"
+                logger.info(f"63x mode: using Opera Phoenix dataset at {zarr_dataset_path}")
+            else:
+                zarr_dataset_path = "/mnt/shared_documents/20251215-illumination-calibrated/data.zarr"
+                logger.info(f"20x mode: using default dataset at {zarr_dataset_path}")
+            
             if CONFIG.ENABLE_SPINNING_DISK_CONFOCAL and SERIAL_PERIPHERALS_AVAILABLE:
                 self.xlight = serial_peripherals.XLight_Simulation()
             if CONFIG.SUPPORT_LASER_AUTOFOCUS:
                 self.camera = camera.Camera_Simulation(
                     rotate_image_angle=CONFIG.ROTATE_IMAGE_ANGLE,
                     flip_image=CONFIG.FLIP_IMAGE,
+                    zarr_dataset_path=zarr_dataset_path,
                 )
                 self.camera_focus = camera_fc.Camera_Simulation()
             else:
                 self.camera = camera.Camera_Simulation(
                     rotate_image_angle=CONFIG.ROTATE_IMAGE_ANGLE,
                     flip_image=CONFIG.FLIP_IMAGE,
+                    zarr_dataset_path=zarr_dataset_path,
                 )
             self.microcontroller = microcontroller.Microcontroller_Simulation()
         else:
@@ -168,10 +182,13 @@ class SquidController:
             except Exception as e:
                 print(f"! Camera initialization failed: {e}")
                 print("! Using simulated camera instead !")
+                # When hardware fails, fallback to simulation with default zarr dataset
+                zarr_fallback = "/mnt/shared_documents/20251215-illumination-calibrated/data.zarr"
                 if CONFIG.SUPPORT_LASER_AUTOFOCUS:
                     self.camera = camera.Camera_Simulation(
                         rotate_image_angle=CONFIG.ROTATE_IMAGE_ANGLE,
                         flip_image=CONFIG.FLIP_IMAGE,
+                        zarr_dataset_path=zarr_fallback,
                     )
                     self.camera.open()
                     self.camera_focus = camera_fc.Camera_Simulation()
@@ -180,6 +197,7 @@ class SquidController:
                     self.camera = camera.Camera_Simulation(
                         rotate_image_angle=CONFIG.ROTATE_IMAGE_ANGLE,
                         flip_image=CONFIG.FLIP_IMAGE,
+                        zarr_dataset_path=zarr_fallback,
                     )
                     self.camera.open()
             self.microcontroller = microcontroller.Microcontroller(
