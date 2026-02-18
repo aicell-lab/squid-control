@@ -497,18 +497,14 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            is_success, x_pos, y_pos, z_pos, x_des, y_des, z_des = self.squidController.move_by_distance_limited(x, y, z)
-            if is_success:
-                result = f'The stage moved ({x},{y},{z})mm through x,y,z axis, from ({x_pos},{y_pos},{z_pos})mm to ({x_des},{y_des},{z_des})mm'
-                return {
-                    "success": True,
-                    "message": result,
-                    "initial_position": {"x": x_pos, "y": y_pos, "z": z_pos},
-                    "final_position": {"x": x_des, "y": y_des, "z": z_des}
-                }
-            else:
-                result = f'The stage cannot move ({x},{y},{z})mm through x,y,z axis, from ({x_pos},{y_pos},{z_pos})mm to ({x_des},{y_des},{z_des})mm because out of the range.'
-                raise Exception(result)
+            x_pos, y_pos, z_pos, x_des, y_des, z_des = self.squidController.move_by_distance(x, y, z)
+            result = f'The stage moved ({x},{y},{z})mm through x,y,z axis, from ({x_pos},{y_pos},{z_pos})mm to ({x_des},{y_des},{z_des})mm'
+            return {
+                "success": True,
+                "message": result,
+                "initial_position": {"x": x_pos, "y": y_pos, "z": z_pos},
+                "final_position": {"x": x_des, "y": y_des, "z": z_des}
+            }
         except Exception as e:
             logger.error(f"Failed to move by distance: {e}")
             raise e
@@ -530,19 +526,13 @@ class MicroscopeHyphaService:
             initial_z = self.parameters['current_z']
 
             if x != 0:
-                is_success, x_pos, y_pos, z_pos, x_des = self.squidController.move_x_to_limited(x)
-                if not is_success:
-                    raise Exception(f'The stage cannot move to position ({x},{y},{z})mm from ({initial_x},{initial_y},{initial_z})mm because out of the limit of X axis.')
+                x_pos_before, y_pos_before, z_pos_before, x_pos, y_pos, z_pos = self.squidController.move_x_to(x)
 
             if y != 0:
-                is_success, x_pos, y_pos, z_pos, y_des = self.squidController.move_y_to_limited(y)
-                if not is_success:
-                    raise Exception(f'X axis moved successfully, the stage is now at ({x_pos},{y_pos},{z_pos})mm. But aimed position is out of the limit of Y axis and the stage cannot move to position ({x},{y},{z})mm.')
+                x_pos_before, y_pos_before, z_pos_before, x_pos, y_pos, z_pos = self.squidController.move_y_to(y)
 
             if z != 0:
-                is_success, x_pos, y_pos, z_pos, z_des = self.squidController.move_z_to_limited(z)
-                if not is_success:
-                    raise Exception(f'X and Y axis moved successfully, the stage is now at ({x_pos},{y_pos},{z_pos})mm. But aimed position is out of the limit of Z axis and the stage cannot move to position ({x},{y},{z})mm.')
+                x_pos_before, y_pos_before, z_pos_before, x_pos, y_pos, z_pos = self.squidController.move_z_to(z)
 
             return {
                 "success": True,

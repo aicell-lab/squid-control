@@ -120,8 +120,8 @@ async def test_stage_movement_edge_cases(sim_controller_fixture):
             microcontroller=controller.microcontroller)
 
         # Test move_by_distance with zero values
-        moved, x_before, y_before, z_before, x_after, y_after, z_after = controller.move_by_distance_limited(0, 0, 0)
-        assert moved  # Should succeed even with zero movement
+        x_before, y_before, z_before, x_after, y_after, z_after = controller.move_by_distance(0, 0, 0)
+        # Should succeed even with zero movement
 
         # Test well navigation with edge cases
         controller.move_to_well('A', 0, '96')  # Zero column
@@ -265,11 +265,11 @@ async def test_error_handling_and_robustness(sim_controller_fixture):
 
         for x, y, z in extreme_positions:
             try:
-                # These should either be limited by software boundaries or handled gracefully
-                moved_x, _, _, _, _ = controller.move_x_to_limited(x)
-                moved_y, _, _, _, _ = controller.move_y_to_limited(y)
-                moved_z, _, _, _, _ = controller.move_z_to_limited(z)
-                # Movement may succeed or fail depending on limits, but shouldn't crash
+                # These should be handled gracefully by the hardware
+                controller.move_x_to(x)
+                controller.move_y_to(y)
+                controller.move_z_to(z)
+                # Movement may succeed or fail depending on hardware limits, but shouldn't crash
             except Exception:
                 # Some extreme movements might raise exceptions
                 pass
@@ -314,17 +314,14 @@ async def test_move_stage_absolute(sim_controller_fixture):
         target_x, target_y, target_z = 10.0, 15.0, 1.0
 
         # These methods are synchronous
-        moved_x, _, _, _, final_x_coord = controller.move_x_to_limited(target_x)
-        assert moved_x
-        assert final_x_coord == pytest.approx(target_x, abs=CONFIG.STAGE_MOVED_THRESHOLD)
+        _, _, _, final_x, _, _ = controller.move_x_to(target_x)
+        assert final_x == pytest.approx(target_x, abs=CONFIG.STAGE_MOVED_THRESHOLD)
 
-        moved_y, _, _, _, final_y_coord = controller.move_y_to_limited(target_y)
-        assert moved_y
-        assert final_y_coord == pytest.approx(target_y, abs=CONFIG.STAGE_MOVED_THRESHOLD)
+        _, _, _, _, final_y, _ = controller.move_y_to(target_y)
+        assert final_y == pytest.approx(target_y, abs=CONFIG.STAGE_MOVED_THRESHOLD)
 
-        moved_z, _, _, _, final_z_coord = controller.move_z_to_limited(target_z)
-        assert moved_z
-        assert final_z_coord == pytest.approx(target_z, abs=CONFIG.STAGE_MOVED_THRESHOLD)
+        _, _, _, _, _, final_z = controller.move_z_to(target_z)
+        assert final_z == pytest.approx(target_z, abs=CONFIG.STAGE_MOVED_THRESHOLD)
 
         current_x, current_y, current_z, *_ = controller.navigationController.update_pos(microcontroller=controller.microcontroller)
         assert current_x == pytest.approx(target_x, abs=1e-3)
@@ -340,8 +337,7 @@ async def test_move_stage_relative(sim_controller_fixture):
         dx, dy, dz = 1.0, -1.0, 0.1
 
         # This method is synchronous
-        moved, x_before, y_before, z_before, x_after, y_after, z_after = controller.move_by_distance_limited(dx, dy, dz)
-        assert moved
+        x_before, y_before, z_before, x_after, y_after, z_after = controller.move_by_distance(dx, dy, dz)
 
         current_x, current_y, current_z, *_ = controller.navigationController.update_pos(microcontroller=controller.microcontroller)
 
@@ -408,14 +404,14 @@ async def test_stage_boundaries_and_limits(sim_controller_fixture):
         ]
 
         for target_x, target_y, target_z in safe_moves:
-            moved_x, _, _, _, final_x = controller.move_x_to_limited(target_x)
-            moved_y, _, _, _, final_y = controller.move_y_to_limited(target_y)
-            moved_z, _, _, _, final_z = controller.move_z_to_limited(target_z)
+            _, _, _, final_x, _, _ = controller.move_x_to(target_x)
+            _, _, _, _, final_y, _ = controller.move_y_to(target_y)
+            _, _, _, _, _, final_z = controller.move_z_to(target_z)
 
             # Movement should succeed within safe bounds
-            assert moved_x or abs(final_x - target_x) < CONFIG.STAGE_MOVED_THRESHOLD
-            assert moved_y or abs(final_y - target_y) < CONFIG.STAGE_MOVED_THRESHOLD
-            assert moved_z or abs(final_z - target_z) < CONFIG.STAGE_MOVED_THRESHOLD
+            assert abs(final_x - target_x) < CONFIG.STAGE_MOVED_THRESHOLD
+            assert abs(final_y - target_y) < CONFIG.STAGE_MOVED_THRESHOLD
+            assert abs(final_z - target_z) < CONFIG.STAGE_MOVED_THRESHOLD
         break
 
 async def test_hardware_status_monitoring(sim_controller_fixture):
@@ -1088,17 +1084,15 @@ async def test_set_stage_velocity_integration(sim_controller_fixture):
         assert velocity_result["success"] == True
 
         # Test movement with new velocity
-        moved, x_before, y_before, z_before, x_after, y_after, z_after = controller.move_by_distance_limited(1.0, 0.5, 0.0)
-        assert moved == True
+        x_before, y_before, z_before, x_after, y_after, z_after = controller.move_by_distance(1.0, 0.5, 0.0)
         assert abs(x_after - x_before - 1.0) < 0.01
         assert abs(y_after - y_before - 0.5) < 0.01
         print("   ✓ Movement after velocity setting completed")
 
         # Test absolute positioning with custom velocity
         controller.set_stage_velocity(velocity_x_mm_per_s=30.0, velocity_y_mm_per_s=25.0)
-        moved_x, _, _, _, final_x = controller.move_x_to_limited(10.0)
-        moved_y, _, _, _, final_y = controller.move_y_to_limited(15.0)
-        assert moved_x == True and moved_y == True
+        _, _, _, final_x, _, _ = controller.move_x_to(10.0)
+        _, _, _, _, final_y, _ = controller.move_y_to(15.0)
         print("   ✓ Absolute positioning with custom velocity completed")
 
         print("✅ set_stage_velocity integration tests passed!")

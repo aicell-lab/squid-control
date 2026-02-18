@@ -1070,73 +1070,89 @@ class SquidController:
             'well_plate_type': well_plate_type
         }
 
-    def move_x_to_limited(self, x):
+    def move_x_to(self, x):
+        """Move X axis to absolute position without software barrier limits.
+        
+        Args:
+            x: Target X position in millimeters
+            
+        Returns:
+            Tuple: (x_pos_before, y_pos_before, z_pos_before, x_pos, y_pos, z_pos)
+        """
+        x_pos_before, y_pos_before, z_pos_before, *_ = self.navigationController.update_pos(microcontroller=self.microcontroller)
 
-        x_pos_before,y_pos_before, z_pos_before, *_ = self.navigationController.update_pos(microcontroller=self.microcontroller)
-
-        self.navigationController.move_x_to_limited(x)
+        self.navigationController.move_x_to(x)
         while self.microcontroller.is_busy():
             time.sleep(0.005)
 
-        x_pos,y_pos, z_pos, *_ = self.navigationController.update_pos(microcontroller=self.microcontroller)
+        x_pos, y_pos, z_pos, *_ = self.navigationController.update_pos(microcontroller=self.microcontroller)
 
-        if abs(x_pos - x) < CONFIG.STAGE_MOVED_THRESHOLD:
-            return True, x_pos_before, y_pos_before, z_pos_before, x
+        return x_pos_before, y_pos_before, z_pos_before, x_pos, y_pos, z_pos
 
-        return False, x_pos_before, y_pos_before, z_pos_before, x
-
-    def move_y_to_limited(self, y):
-        x_pos_before,y_pos_before, z_pos_before, *_ = self.navigationController.update_pos(microcontroller=self.microcontroller)
-        self.navigationController.move_y_to_limited(y)
-
+    def move_y_to(self, y):
+        """Move Y axis to absolute position without software barrier limits.
+        
+        Args:
+            y: Target Y position in millimeters
+            
+        Returns:
+            Tuple: (x_pos_before, y_pos_before, z_pos_before, x_pos, y_pos, z_pos)
+        """
+        x_pos_before, y_pos_before, z_pos_before, *_ = self.navigationController.update_pos(microcontroller=self.microcontroller)
+        
+        self.navigationController.move_y_to(y)
         while self.microcontroller.is_busy():
             time.sleep(0.005)
-        x_pos,y_pos, z_pos, *_ = self.navigationController.update_pos(microcontroller=self.microcontroller)
+            
+        x_pos, y_pos, z_pos, *_ = self.navigationController.update_pos(microcontroller=self.microcontroller)
 
-        if abs(y_pos - y) < CONFIG.STAGE_MOVED_THRESHOLD:
-            return True, x_pos_before, y_pos_before, z_pos_before, y
+        return x_pos_before, y_pos_before, z_pos_before, x_pos, y_pos, z_pos
 
-        return False, x_pos_before, y_pos_before, z_pos_before, y
-
-    def move_z_to_limited(self, z):
-        x_pos_before,y_pos_before, z_pos_before, *_ = self.navigationController.update_pos(microcontroller=self.microcontroller)
-        self.navigationController.move_z_to_limited(z)
-
+    def move_z_to(self, z):
+        """Move Z axis to absolute position without software barrier limits.
+        
+        Args:
+            z: Target Z position in millimeters
+            
+        Returns:
+            Tuple: (x_pos_before, y_pos_before, z_pos_before, x_pos, y_pos, z_pos)
+        """
+        x_pos_before, y_pos_before, z_pos_before, *_ = self.navigationController.update_pos(microcontroller=self.microcontroller)
+        
+        self.navigationController.move_z_to(z)
         while self.microcontroller.is_busy():
             time.sleep(0.005)
-        x_pos,y_pos, z_pos, *_ = self.navigationController.update_pos(microcontroller=self.microcontroller)
+            
+        x_pos, y_pos, z_pos, *_ = self.navigationController.update_pos(microcontroller=self.microcontroller)
 
-        if abs(z_pos - z) < CONFIG.STAGE_MOVED_THRESHOLD:
-            return True, x_pos_before, y_pos_before, z_pos_before, z
+        return x_pos_before, y_pos_before, z_pos_before, x_pos, y_pos, z_pos
 
-        return False, x_pos_before, y_pos_before, z_pos_before, z
+    def move_by_distance(self, dx, dy, dz):
+        """Move stage by relative distance without software barrier limits.
+        
+        Args:
+            dx: Delta X in millimeters
+            dy: Delta Y in millimeters
+            dz: Delta Z in millimeters
+            
+        Returns:
+            Tuple: (x_pos_before, y_pos_before, z_pos_before, x_pos, y_pos, z_pos)
+        """
+        x_pos_before, y_pos_before, z_pos_before, *_ = self.navigationController.update_pos(microcontroller=self.microcontroller)
 
-
-    def move_by_distance_limited(self, dx, dy, dz):
-        x_pos_before,y_pos_before, z_pos_before, *_ = self.navigationController.update_pos(microcontroller=self.microcontroller)
-
-        self.navigationController.move_x_limited(dx)
+        self.navigationController.move_x(dx)
         while self.microcontroller.is_busy():
             time.sleep(0.005)
-        self.navigationController.move_y_limited(dy)
+        self.navigationController.move_y(dy)
         while self.microcontroller.is_busy():
             time.sleep(0.005)
-        self.navigationController.move_z_limited(dz)
+        self.navigationController.move_z(dz)
         while self.microcontroller.is_busy():
             time.sleep(0.005)
 
-        x_pos,y_pos, z_pos, *_ = self.navigationController.update_pos(microcontroller=self.microcontroller)
+        x_pos, y_pos, z_pos, *_ = self.navigationController.update_pos(microcontroller=self.microcontroller)
 
-        # Handle blocked movements: treat small blocked movements as success
-        threshold = CONFIG.STAGE_MOVED_THRESHOLD
-        if abs(x_pos-x_pos_before) < threshold and dx != 0 and abs(dx) > threshold:
-            return False, x_pos_before, y_pos_before, z_pos_before, x_pos_before+dx, y_pos_before+dy, z_pos_before+dz
-        if abs(y_pos-y_pos_before) < threshold and dy != 0 and abs(dy) > threshold:
-            return False, x_pos_before, y_pos_before, z_pos_before, x_pos_before+dx, y_pos_before+dy, z_pos_before+dz
-        if abs(z_pos-z_pos_before) < threshold and dz != 0 and abs(dz) > threshold:
-            return False, x_pos_before, y_pos_before, z_pos_before, x_pos_before+dx, y_pos_before+dy, z_pos_before+dz
-
-        return True, x_pos_before, y_pos_before, z_pos_before, x_pos, y_pos, z_pos
+        return x_pos_before, y_pos_before, z_pos_before, x_pos, y_pos, z_pos
 
     def home_stage(self):
         # retract the object
