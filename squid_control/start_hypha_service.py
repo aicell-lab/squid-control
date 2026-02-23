@@ -211,7 +211,7 @@ class MicroscopeHyphaService:
         self.dx = 1
         self.dy = 1
         self.dz = 1
-        self.BF_intensity_exposure = [50, 100]
+        self.BF_intensity_exposure = [30, 10]
         self.F405_intensity_exposure = [50, 100]
         self.F488_intensity_exposure = [50, 100]
         self.F561_intensity_exposure = [50, 100]
@@ -2160,7 +2160,88 @@ class MicroscopeHyphaService:
         webrtc_id = f"video-track-{self.service_id}"
         if not self.is_local: # only start webrtc service in remote mode
             await self.start_webrtc_service(self.server, webrtc_id)
+            await self.start_mjpeg_asgi_service(self.server, self.service_id)
 
+
+    async def start_mjpeg_asgi_service(self, server, service_id):
+        """Register an ASGI service that streams Motion JPEG from the microscope camera."""
+        mjpeg_service_id = f"mjpeg-{service_id}"
+
+        async def serve_mjpeg(args, context=None):
+            scope = args["scope"]
+            receive = args["receive"]
+            send = args["send"]
+
+            if scope["type"] != "http":
+                return
+
+            await send({
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [
+                    [b"content-type", b"multipart/x-mixed-replace; boundary=frame"],
+                    [b"cache-control", b"no-cache"],
+                    [b"connection", b"keep-alive"],
+                ],
+            })
+
+            async def stream():
+                try:
+                    while True:
+                        frame_resp = await self.get_video_frame(frame_width=640, frame_height=640)
+                        jpeg_bytes = frame_resp["data"]
+                        chunk = (
+                            b"--frame\r\n"
+                            b"Content-Type: image/jpeg\r\n\r\n"
+                            + jpeg_bytes
+                            + b"\r\n"
+                        )
+                        await send({
+                            "type": "http.response.body",
+                            "body": chunk,
+                            "more_body": True,
+                        })
+                        await asyncio.sleep(1 / 5)  # 5 FPS
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    logger.info(f"MJPEG stream error: {e}")
+
+            async def wait_disconnect():
+                while True:
+                    msg = await receive()
+                    if msg["type"] == "http.disconnect":
+                        break
+
+            stream_task = asyncio.ensure_future(stream())
+            disconnect_task = asyncio.ensure_future(wait_disconnect())
+
+            done, pending = await asyncio.wait(
+                [stream_task, disconnect_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+            logger.info("MJPEG client disconnected")
+
+        svc = await server.register_service({
+            "id": mjpeg_service_id,
+            "name": "Microscope MJPEG Stream",
+            "type": "asgi",
+            "serve": serve_mjpeg,
+            "config": {"visibility": "public", "require_context": False},
+        })
+        logger.info(
+            f"MJPEG ASGI service registered with id: {mjpeg_service_id}, "
+            f"accessible at {self.server_url}{server.config.workspace}/apps/{mjpeg_service_id}"
+        )
+        return svc
 
     # For zarr visualization, use the vizarr package.
 
