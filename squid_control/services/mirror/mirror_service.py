@@ -503,6 +503,105 @@ class MirrorMicroscopeService:
             else:
                 raise
 
+    async def start_mjpeg_asgi_service(self, server, service_id):
+        """Register an ASGI service on the cloud that proxies Motion JPEG from the local microscope."""
+        live_view_service_id = f"{service_id}-live"
+
+        async def serve_mjpeg(args, context=None):
+            scope = args["scope"]
+            receive = args["receive"]
+            send = args["send"]
+
+            if scope["type"] != "http":
+                return
+
+            await send({
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [
+                    [b"content-type", b"multipart/x-mixed-replace; boundary=frame"],
+                    [b"cache-control", b"no-cache"],
+                    [b"connection", b"keep-alive"],
+                ],
+            })
+
+            # Turn on illumination when a client connects
+            if self.local_service:
+                try:
+                    await self.local_service.turn_on_illumination()
+                    logger.info("MJPEG: illumination turned on")
+                except Exception as e:
+                    logger.error(f"MJPEG: failed to turn on illumination: {e}")
+
+            async def stream():
+                try:
+                    while True:
+                        if self.local_service is None:
+                            await asyncio.sleep(1)
+                            continue
+                        frame_resp = await self.local_service.get_video_frame(
+                            frame_width=640, frame_height=640
+                        )
+                        jpeg_bytes = frame_resp["data"] if isinstance(frame_resp, dict) else frame_resp
+                        chunk = (
+                            b"--frame\r\n"
+                            b"Content-Type: image/jpeg\r\n\r\n"
+                            + jpeg_bytes
+                            + b"\r\n"
+                        )
+                        await send({
+                            "type": "http.response.body",
+                            "body": chunk,
+                            "more_body": True,
+                        })
+                        await asyncio.sleep(1 / 5)  # 5 FPS
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    logger.info(f"MJPEG stream error: {e}")
+
+            async def wait_disconnect():
+                while True:
+                    msg = await receive()
+                    if msg["type"] == "http.disconnect":
+                        break
+
+            stream_task = asyncio.ensure_future(stream())
+            disconnect_task = asyncio.ensure_future(wait_disconnect())
+
+            done, pending = await asyncio.wait(
+                [stream_task, disconnect_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+            # Turn off illumination when the client disconnects
+            if self.local_service:
+                try:
+                    await self.local_service.turn_off_illumination()
+                    logger.info("MJPEG: illumination turned off, client disconnected")
+                except Exception as e:
+                    logger.error(f"MJPEG: failed to turn off illumination: {e}")
+
+        svc = await server.register_service({
+            "id": live_view_service_id,
+            "name": "Microscope Live View",
+            "type": "asgi",
+            "serve": serve_mjpeg,
+            "config": {"visibility": "public", "require_context": False},
+        })
+        logger.info(
+            f"Live view ASGI service registered with id: {live_view_service_id}, "
+            f"accessible at {self.cloud_server_url}/{server.config.workspace}/apps/{live_view_service_id}"
+        )
+        return svc
+
     async def setup(self):
         # Connect to cloud workspace
         logger.info(f"Connecting to cloud workspace {self.cloud_workspace} at {self.cloud_server_url}")
@@ -540,6 +639,9 @@ class MirrorMicroscopeService:
         self.webrtc_service_id = f"video-track-{self.local_service_id}"
         logger.info(f"Starting WebRTC service with id: {self.webrtc_service_id}")
         await self.start_webrtc_service(server, self.webrtc_service_id)
+
+        # Start the MJPEG ASGI service
+        await self.start_mjpeg_asgi_service(server, self.cloud_service_id)
 
         logger.info("Setup completed successfully")
 
