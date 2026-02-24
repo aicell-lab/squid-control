@@ -2165,7 +2165,7 @@ class MicroscopeHyphaService:
 
     async def start_mjpeg_asgi_service(self, server, service_id):
         """Register an ASGI service that streams Motion JPEG from the microscope camera."""
-        mjpeg_service_id = f"mjpeg-{service_id}"
+        live_view_service_id = f"{service_id}-live"
 
         async def serve_mjpeg(args, context=None):
             scope = args["scope"]
@@ -2184,6 +2184,10 @@ class MicroscopeHyphaService:
                     [b"connection", b"keep-alive"],
                 ],
             })
+
+            # Turn on illumination when a client connects
+            self.turn_on_illumination()
+            logger.info("MJPEG: illumination turned on")
 
             async def stream():
                 try:
@@ -2228,18 +2232,20 @@ class MicroscopeHyphaService:
                 except asyncio.CancelledError:
                     pass
 
-            logger.info("MJPEG client disconnected")
+            # Turn off illumination when the client disconnects
+            self.turn_off_illumination()
+            logger.info("MJPEG: illumination turned off, client disconnected")
 
         svc = await server.register_service({
-            "id": mjpeg_service_id,
-            "name": "Microscope MJPEG Stream",
+            "id": live_view_service_id,
+            "name": "Microscope Live View",
             "type": "asgi",
             "serve": serve_mjpeg,
             "config": {"visibility": "public", "require_context": False},
         })
         logger.info(
-            f"MJPEG ASGI service registered with id: {mjpeg_service_id}, "
-            f"accessible at {self.server_url}{server.config.workspace}/apps/{mjpeg_service_id}"
+            f"Live view ASGI service registered with id: {live_view_service_id}, "
+            f"accessible at {self.server_url}{server.config.workspace}/apps/{live_view_service_id}"
         )
         return svc
 
