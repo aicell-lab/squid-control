@@ -12,11 +12,12 @@ Usage:
         --experiment-name opera_import
 
 Author: Squid Control System
-Dataset: Opera Phoenix 63X, 384-well plate geometry
+Dataset: Opera Phoenix 63X, 96-well plate geometry
 """
 
 import argparse
 import asyncio
+from configparser import ConfigParser
 import json
 import logging
 import sys
@@ -47,70 +48,100 @@ logger = logging.getLogger(__name__)
 # COORDINATE MAPPING FUNCTIONS
 # ============================================================================
 
-def get_opera_stage_coordinates(tile_idx: int) -> Optional[Tuple[float, float, str, int, int]]:
+# 96-well plate geometry constants (matches WELLPLATE_FORMAT_96 in config.py)
+_WELLPLATE_96_A1_X_MM = 14.3
+_WELLPLATE_96_A1_Y_MM = 11.36
+_WELLPLATE_96_WELL_SPACING_MM = 9.0
+
+
+def read_wellplate_config(config_path: Path) -> Tuple[float, float]:
+    """
+    Read wellplate_offset_x_mm and wellplate_offset_y_mm from a squid config ini file.
+
+    Uses the same values that move_to_well() applies so that imported tile coordinates
+    match the stage positions the microscope will visit.
+
+    Args:
+        config_path: Path to a squid configuration .ini file
+
+    Returns:
+        (offset_x_mm, offset_y_mm)
+    """
+    cfp = ConfigParser()
+    cfp.read(str(config_path))
+    offset_x = float(cfp.get('GENERAL', 'wellplate_offset_x_mm', fallback='0'))
+    offset_y = float(cfp.get('GENERAL', 'wellplate_offset_y_mm', fallback='0'))
+    return offset_x, offset_y
+
+
+def get_opera_stage_coordinates(
+    tile_idx: int,
+    a1_x_mm: float,
+    a1_y_mm: float,
+    well_spacing_mm: float = _WELLPLATE_96_WELL_SPACING_MM,
+) -> Optional[Tuple[float, float, str, int, int]]:
     """
     Calculate stage coordinates for Opera Phoenix tile.
-    
+
     The Opera Phoenix dataset has:
     - 96 wells in standard 8×12 layout (A1-H12)
     - 9 FoV per well (3x3 grid)
     - 3 z-planes per FoV (we use middle plane, z_idx=1)
-    
+
     Tile organization: tile_idx = (well_idx * 27) + (fov_idx * 3) + z_idx
-    
+
+    Coordinate calculation mirrors move_to_well() in squid_controller.py:
+        x_mm = A1_X_MM + (col - 1) * WELL_SPACING_MM + wellplate_offset_x
+        y_mm = A1_Y_MM + row_index * WELL_SPACING_MM + wellplate_offset_y
+    where a1_x_mm / a1_y_mm already include the wellplate offset.
+
     Args:
         tile_idx: Tile index (0 to 2591)
-        
+        a1_x_mm: Stage X coordinate of well A1 centre (base + offset from config)
+        a1_y_mm: Stage Y coordinate of well A1 centre (base + offset from config)
+        well_spacing_mm: Centre-to-centre well spacing (default 9.0 mm for 96-well)
+
     Returns:
         (x_mm, y_mm, well_id, fov_idx, z_idx) or None if not middle z-plane
-        
-    Example:
-        >>> coords = get_opera_stage_coordinates(0)
-        >>> coords  # Returns None if z_idx=0 (not middle plane)
-        >>> coords = get_opera_stage_coordinates(1)
-        >>> coords  # (12.008, 9.008, 'A1', 0, 1) - middle plane
     """
-    # 96-well plate geometry (standard layout)
-    WELL_SPACING_MM = 9.0  # Standard 96-well spacing
-    A1_X_MM = 12.05  # A1 well center X position
-    A1_Y_MM = 9.05   # A1 well center Y position
     FOV_STEP_MM = 0.042  # Effective FoV spacing with ~10% overlap
-    WELLS_PER_ROW = 12  # 96-well plate has 12 columns
-    NUM_ROWS = 8  # 96-well plate has 8 rows (A-H)
-    
+    WELLS_PER_ROW = 12   # 96-well plate has 12 columns
+
     # Parse tile structure: well_idx × 27 + fov_idx × 3 + z_idx
     well_idx = tile_idx // 27  # Which well (0-95)
     fov_idx = (tile_idx % 27) // 3  # Which FoV within well (0-8)
     z_idx = tile_idx % 3  # Which z-plane (0, 1, 2)
-    
+
     # Filter: only process middle z-plane
     if z_idx != 1:
         return None
-    
+
     # Calculate well position (row-major order: 8 rows × 12 columns)
     well_row = well_idx // WELLS_PER_ROW  # 0-7 (A-H)
     well_col = well_idx % WELLS_PER_ROW   # 0-11 (1-12)
     well_id = f"{chr(ord('A') + well_row)}{well_col + 1}"
-    
-    # Well center in stage coordinates
-    well_center_x = A1_X_MM + well_col * WELL_SPACING_MM
-    well_center_y = A1_Y_MM + well_row * WELL_SPACING_MM
-    
+
+    # Well centre in stage coordinates — same formula as move_to_well():
+    #   x_mm = A1_X_MM + (column - 1) * WELL_SPACING_MM + offset
+    # a1_x_mm already incorporates the offset, and well_col is 0-based (column-1)
+    well_center_x = a1_x_mm + well_col * well_spacing_mm
+    well_center_y = a1_y_mm + well_row * well_spacing_mm
+
     # FoV offset within well (3×3 grid, centered on well)
     # fov_idx mapping: 0=top-left, 1=top-center, 2=top-right,
     #                  3=mid-left, 4=center, 5=mid-right,
     #                  6=bot-left, 7=bot-center, 8=bot-right
     fov_row = fov_idx // 3  # 0, 1, 2 (top, middle, bottom)
     fov_col = fov_idx % 3   # 0, 1, 2 (left, center, right)
-    
+
     # Offset from well center: -1, 0, +1 positions
     fov_offset_x = (fov_col - 1) * FOV_STEP_MM  # -0.042, 0, +0.042 mm
     fov_offset_y = (fov_row - 1) * FOV_STEP_MM
-    
+
     # Final stage position
     stage_x = well_center_x + fov_offset_x
     stage_y = well_center_y + fov_offset_y
-    
+
     return (stage_x, stage_y, well_id, fov_idx, z_idx)
 
 
@@ -122,7 +153,10 @@ def validate_import(
     canvas: ZarrCanvas,
     tiles_imported: int,
     expected_wells: int = 96,
-    expected_fov_per_well: int = 9
+    expected_fov_per_well: int = 9,
+    a1_x_mm: float = _WELLPLATE_96_A1_X_MM,
+    a1_y_mm: float = _WELLPLATE_96_A1_Y_MM,
+    well_spacing_mm: float = _WELLPLATE_96_WELL_SPACING_MM,
 ) -> Dict:
     """
     Validate the imported dataset for completeness and correctness.
@@ -187,8 +221,8 @@ def validate_import(
     
     # Coordinate range
     logger.info(f"\nExpected Coordinate Range:")
-    logger.info(f"  X: 12.05 to {12.05 + 11 * 4.5:.2f} mm (12 columns × 4.5 mm spacing)")
-    logger.info(f"  Y: 9.05 to {9.05 + 7 * 4.5:.2f} mm (8 rows × 4.5 mm spacing)")
+    logger.info(f"  X: {a1_x_mm:.3f} to {a1_x_mm + 11 * well_spacing_mm:.3f} mm (12 columns × {well_spacing_mm} mm spacing)")
+    logger.info(f"  Y: {a1_y_mm:.3f} to {a1_y_mm + 7 * well_spacing_mm:.3f} mm (8 rows × {well_spacing_mm} mm spacing)")
     
     logger.info("=" * 80)
     
@@ -206,29 +240,47 @@ async def import_opera_dataset(
     channel_mapping: Optional[Dict[int, str]] = None,
     z_plane: int = 1,
     channels_to_import: Optional[List[int]] = None,
-    save_preview: bool = True
+    save_preview: bool = True,
+    config_path: Optional[Path] = None,
 ) -> Dict:
     """
     Import Opera Phoenix dataset into coordinate-based Zarr canvas.
-    
+
+    Tile stage coordinates are calculated using the same formula as move_to_well()
+    in squid_controller.py, reading wellplate_offset_x/y_mm from the squid config
+    file so that imported tiles land at the positions the microscope expects.
+
     Args:
         opera_tif_path: Path to plate1.ome.tif
         output_base_path: Base path for output Zarr storage
         experiment_name: Name for the experiment (default: "opera_import")
         channel_mapping: Dict mapping Opera channel idx to squid channel names
                         Default: {0: 'Fluorescence 405 nm Ex' (DAPI),
-                                  1: 'Fluorescence 561 nm Ex' (ER),
+                                  1: 'Fluorescence 488 nm Ex' (Target),
                                   2: 'Fluorescence 638 nm Ex' (Virus),
-                                  3: 'Fluorescence 488 nm Ex' (Target)}
+                                  3: 'Fluorescence 561 nm Ex' (ER)}
         z_plane: Which z-plane to import (0, 1, or 2; default: 1 = middle)
         channels_to_import: List of channel indices to import (default: all)
         save_preview: Whether to save preview images (default: True)
-        
+        config_path: Path to squid .ini config file used to read wellplate offsets.
+                     Defaults to squid_control/config/configuration_HCS_v2_example.ini
+
     Returns:
         Dict with import statistics and results
     """
     start_time = time.time()
-    
+
+    # Resolve config path — default to configuration_HCS_v2_example.ini
+    if config_path is None:
+        config_path = Path(__file__).parent.parent / 'squid_control' / 'config' / 'configuration_HCS_v2_example.ini'
+
+    # Read wellplate offsets from config (same values used by move_to_well())
+    offset_x_mm, offset_y_mm = read_wellplate_config(config_path)
+    a1_x_mm = _WELLPLATE_96_A1_X_MM + offset_x_mm  # e.g. 14.3 + (-1.6) = 12.7
+    a1_y_mm = _WELLPLATE_96_A1_Y_MM + offset_y_mm  # e.g. 11.36 + (-1.6) = 9.76
+    logger.info(f"Wellplate config: {config_path.name}")
+    logger.info(f"  offset_x={offset_x_mm}, offset_y={offset_y_mm} → A1=({a1_x_mm:.3f}, {a1_y_mm:.3f}) mm")
+
     # Default channel mapping (Opera channels → Squid channels)
     if channel_mapping is None:
         channel_mapping = {
@@ -338,8 +390,8 @@ async def import_opera_dataset(
             initial_memory_mb = process.memory_info().rss / 1024 / 1024
             
             for tile_idx in range(n_tiles):
-                # Calculate coordinates
-                coords = get_opera_stage_coordinates(tile_idx)
+                # Calculate coordinates using config-derived A1 position
+                coords = get_opera_stage_coordinates(tile_idx, a1_x_mm, a1_y_mm)
                 
                 # Skip if not the selected z-plane
                 if coords is None:
@@ -445,7 +497,10 @@ async def import_opera_dataset(
             
             # Step 7: Validation
             logger.info("\n[7/7] Validating import...")
-            validation_results = validate_import(canvas, tiles_imported, num_wells, tiles_per_well)
+            validation_results = validate_import(
+                canvas, tiles_imported, num_wells, tiles_per_well,
+                a1_x_mm=a1_x_mm, a1_y_mm=a1_y_mm,
+            )
             
             # Final statistics
             elapsed_time = time.time() - start_time
@@ -557,27 +612,39 @@ Examples:
         action='store_true',
         help='Skip preview image generation'
     )
-    
+
+    parser.add_argument(
+        '--config',
+        type=Path,
+        default=None,
+        help='Path to squid .ini config file for wellplate offsets '
+             '(default: squid_control/config/configuration_HCS_v2_example.ini)'
+    )
+
     parser.add_argument(
         '--verbose',
         action='store_true',
         help='Enable verbose logging'
     )
-    
+
     args = parser.parse_args()
-    
+
     # Set logging level
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
-    
+
     # Validate inputs
     if not args.opera_tif.exists():
         logger.error(f"Opera TIFF file not found: {args.opera_tif}")
         return 1
-    
+
+    if args.config and not args.config.exists():
+        logger.error(f"Config file not found: {args.config}")
+        return 1
+
     # Create output directory if needed
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Parse channels
     channels_to_import = None
     if args.channels:
@@ -587,7 +654,7 @@ Examples:
         except ValueError:
             logger.error(f"Invalid channel list: {args.channels}")
             return 1
-    
+
     # Run import
     try:
         result = asyncio.run(import_opera_dataset(
@@ -596,7 +663,8 @@ Examples:
             experiment_name=args.experiment_name,
             z_plane=args.z_plane,
             channels_to_import=channels_to_import,
-            save_preview=not args.no_preview
+            save_preview=not args.no_preview,
+            config_path=args.config,
         ))
         
         if result['success']:
