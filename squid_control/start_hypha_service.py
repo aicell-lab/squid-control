@@ -191,6 +191,65 @@ class MicroscopeVideoTrack(MediaStreamTrack):
         # Mark WebRTC as disconnected
         self.microscope_instance.webrtc_connected = False
 
+# Simulation sample presets for AI agent use
+# Each entry defines a named virtual sample with its microscope configuration and zarr dataset.
+SIMULATION_SAMPLES = {
+    "U2OS_FUCCI": {
+        "config_name": "HCS_v2",
+        "zarr_dataset_path": "/mnt/shared_documents/20251215-illumination-calibrated/data.zarr",
+        "description": (
+            "U2OS human osteosarcoma cell line expressing the FUCCI (Fluorescence Ubiquitination "
+            "Cell Cycle Indicator) reporter system. Imaged at 20x objective. Cdt1-mKO2 labels G1 "
+            "nuclei red/orange; Geminin-mAG labels S/G2/M nuclei green. Enables live cell-cycle "
+            "phase tracking via fluorescence."
+        ),
+        "cell_line": "U2OS (Human osteosarcoma)",
+        "staining": "FUCCI live reporter (Cdt1-mKO2 / Geminin-mAG)",
+        "objective": "20x",
+        "channels": [
+            "BF_LED_matrix_full",
+            "Fluorescence_405_nm_Ex",
+            "Fluorescence_488_nm_Ex",
+            "Fluorescence_561_nm_Ex",
+            "Fluorescence_638_nm_Ex",
+        ],
+    },
+    "HPA": {
+        "config_name": "HCS_v2_63x",
+        "zarr_dataset_path": "/mnt/shared_documents/opera_import/data.zarr",
+        "description": (
+            "Human Protein Atlas (HPA) dataset acquired on an Opera Phoenix high-content imaging "
+            "system at 63x objective. Multi-channel immunofluorescence images of subcellular "
+            "protein localisation across various human cell lines. Channels include DAPI (nucleus), "
+            "antibody target, microtubules, and endoplasmic reticulum markers."
+        ),
+        "cell_line": "Various human cell lines (Human Protein Atlas)",
+        "staining": "Immunofluorescence (antibody staining for subcellular protein localisation)",
+        "objective": "63x",
+        "channels": [
+            "BF_LED_matrix_full",
+            "Fluorescence_405_nm_Ex",
+            "Fluorescence_488_nm_Ex",
+            "Fluorescence_561_nm_Ex",
+            "Fluorescence_638_nm_Ex",
+        ],
+    },
+}
+
+# Aliases accepted by switch_sample (upper-cased, normalised)
+_SAMPLE_ALIASES = {
+    "HCS_V2": "U2OS_FUCCI",
+    "DEFAULT": "U2OS_FUCCI",
+    "20X": "U2OS_FUCCI",
+    "U2OS": "U2OS_FUCCI",
+    "FUCCI": "U2OS_FUCCI",
+    "HCS_V2_63X": "HPA",
+    "OPERA": "HPA",
+    "63X": "HPA",
+    "HUMAN_PROTEIN_ATLAS": "HPA",
+}
+
+
 class MicroscopeHyphaService:
     def __init__(self, is_simulation, is_local, config_name=None):  # noqa: PLR0915
         self.current_x = 0
@@ -678,6 +737,92 @@ class MicroscopeHyphaService:
         Notes: Only relevant in simulation mode.
         """
         return self.squidController.get_simulated_sample_data_alias()
+
+    @schema_function(skip_self=True)
+    def list_simulation_samples(self, context=None):
+        """List available simulation samples. Returns sample names with objective, cell line, channels, and zarr path. Call before switch_sample."""
+        return {name: dict(info) for name, info in SIMULATION_SAMPLES.items()}
+
+    @schema_function(skip_self=True)
+    def switch_sample(
+        self,
+        sample_name: str = Field(
+            ...,
+            description="Sample to activate: 'U2OS_FUCCI' (20x, FUCCI cell-cycle reporter, default) or 'HPA' (63x, Human Protein Atlas). Aliases: 'default','20x','fucci','opera','63x','HCS_v2','HCS_v2_63x'.",
+        ),
+        context=None,
+    ):
+        """Switch simulated sample and microscope config (simulation only). Updates camera zarr dataset and reloads .ini config. Returns active_sample, config_name, objective, channels, and description."""
+        try:
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+
+            if not self.is_simulation:
+                raise RuntimeError("switch_sample is only available in simulation mode")
+
+            # Normalise the key: upper-case, replace hyphens/spaces with underscores
+            sample_key = sample_name.upper().replace("-", "_").replace(" ", "_")
+            sample_key = _SAMPLE_ALIASES.get(sample_key, sample_key)
+
+            if sample_key not in SIMULATION_SAMPLES:
+                available = list(SIMULATION_SAMPLES.keys())
+                raise ValueError(
+                    f"Unknown sample '{sample_name}'. Available samples: {available}. "
+                    f"Call list_simulation_samples() to see full details."
+                )
+
+            sample_info = SIMULATION_SAMPLES[sample_key]
+            new_config_name = sample_info["config_name"]
+            new_zarr_path = sample_info["zarr_dataset_path"]
+
+            # 1. Update the camera's zarr dataset path
+            self.squidController.camera.ZARR_DATASET_PATH = new_zarr_path
+
+            # 2. Reset the channel index so it is reloaded from the new dataset's metadata
+            self.squidController.camera.ZARR_CHANNEL_INDEX = {
+                "BF_LED_matrix_full": 0,
+                "Fluorescence_405_nm_Ex": 1,
+                "Fluorescence_488_nm_Ex": 2,
+                "Fluorescence_638_nm_Ex": 3,
+                "Fluorescence_561_nm_Ex": 4,
+                "Fluorescence_730_nm_Ex": 5,
+            }
+
+            # 3. Reload the matching microscope configuration file
+            config_file = f"configuration_{new_config_name}_example.ini"
+            config_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "config", config_file
+            )
+            from .control.config import load_config
+            load_config(config_path, False)
+
+            # 4. Track the active config on both the service and the controller
+            self.config_name = new_config_name
+            self.squidController.config_name = new_config_name
+
+            logger.info(
+                f"Switched simulation sample to '{sample_key}' "
+                f"(config={new_config_name}, zarr={new_zarr_path})"
+            )
+
+            return {
+                "success": True,
+                "active_sample": sample_key,
+                "config_name": new_config_name,
+                "zarr_dataset_path": new_zarr_path,
+                "description": sample_info["description"],
+                "cell_line": sample_info["cell_line"],
+                "staining": sample_info["staining"],
+                "objective": sample_info["objective"],
+                "available_channels": sample_info["channels"],
+                "message": (
+                    f"Successfully switched to sample '{sample_key}' "
+                    f"using {new_config_name} configuration."
+                ),
+            }
+        except Exception as e:
+            logger.error(f"Failed to switch sample: {e}")
+            raise e
 
     @schema_function(skip_self=True)
     def set_wellplate_offset(self, 
@@ -1948,7 +2093,7 @@ class MicroscopeHyphaService:
             "type": "service",
             "ping": self.ping,
             "is_service_healthy": self.is_service_healthy,
-            # MCP endpoints only (7 essential endpoints for chatbot control)
+            # MCP endpoints only (essential endpoints for chatbot control)
             "move_by_distance": self.move_by_distance,
             "snap": self.snap,
             "navigate_to_well": self.navigate_to_well,
@@ -1957,6 +2102,11 @@ class MicroscopeHyphaService:
             "get_status": self.get_status,
             "inspect_image": self.inspect_image,
         }
+
+        # Simulation-only sample-switching tools
+        if self.is_simulation:
+            service_config["list_simulation_samples"] = self.list_simulation_samples
+            service_config["switch_sample"] = self.switch_sample
 
         svc = await server.register_service(service_config)
 
