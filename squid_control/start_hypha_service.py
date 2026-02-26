@@ -191,63 +191,8 @@ class MicroscopeVideoTrack(MediaStreamTrack):
         # Mark WebRTC as disconnected
         self.microscope_instance.webrtc_connected = False
 
-# Simulation sample presets for AI agent use
-# Each entry defines a named virtual sample with its microscope configuration and zarr dataset.
-SIMULATION_SAMPLES = {
-    "U2OS_FUCCI": {
-        "config_name": "HCS_v2",
-        "zarr_dataset_path": "/mnt/shared_documents/20251215-illumination-calibrated/data.zarr",
-        "description": (
-            "U2OS human osteosarcoma cell line expressing the FUCCI (Fluorescence Ubiquitination "
-            "Cell Cycle Indicator) reporter system. Imaged at 20x objective. Cdt1-mKO2 labels G1 "
-            "nuclei red/orange; Geminin-mAG labels S/G2/M nuclei green. Enables live cell-cycle "
-            "phase tracking via fluorescence."
-        ),
-        "cell_line": "U2OS (Human osteosarcoma)",
-        "staining": "FUCCI live reporter (Cdt1-mKO2 / Geminin-mAG)",
-        "objective": "20x",
-        "channels": [
-            "BF_LED_matrix_full",
-            "Fluorescence_405_nm_Ex",
-            "Fluorescence_488_nm_Ex",
-            "Fluorescence_561_nm_Ex",
-            "Fluorescence_638_nm_Ex",
-        ],
-    },
-    "HPA": {
-        "config_name": "HCS_v2_63x",
-        "zarr_dataset_path": "/mnt/shared_documents/opera_import/data.zarr",
-        "description": (
-            "Human Protein Atlas (HPA) dataset acquired on an Opera Phoenix high-content imaging "
-            "system at 63x objective. Multi-channel immunofluorescence images of subcellular "
-            "protein localisation across various human cell lines. Channels include DAPI (nucleus), "
-            "antibody target, microtubules, and endoplasmic reticulum markers."
-        ),
-        "cell_line": "Various human cell lines (Human Protein Atlas)",
-        "staining": "Immunofluorescence (antibody staining for subcellular protein localisation)",
-        "objective": "63x",
-        "channels": [
-            "BF_LED_matrix_full",
-            "Fluorescence_405_nm_Ex",
-            "Fluorescence_488_nm_Ex",
-            "Fluorescence_561_nm_Ex",
-            "Fluorescence_638_nm_Ex",
-        ],
-    },
-}
-
-# Aliases accepted by switch_sample (upper-cased, normalised)
-_SAMPLE_ALIASES = {
-    "HCS_V2": "U2OS_FUCCI",
-    "DEFAULT": "U2OS_FUCCI",
-    "20X": "U2OS_FUCCI",
-    "U2OS": "U2OS_FUCCI",
-    "FUCCI": "U2OS_FUCCI",
-    "HCS_V2_63X": "HPA",
-    "OPERA": "HPA",
-    "63X": "HPA",
-    "HUMAN_PROTEIN_ATLAS": "HPA",
-}
+from .simulation_samples import SAMPLE_ALIASES as _SAMPLE_ALIASES
+from .simulation_samples import SIMULATION_SAMPLES
 
 
 class MicroscopeHyphaService:
@@ -748,7 +693,7 @@ class MicroscopeHyphaService:
         self,
         sample_name: str = Field(
             ...,
-            description="Sample to activate: 'U2OS_FUCCI' (20x, FUCCI cell-cycle reporter, default) or 'HPA' (63x, Human Protein Atlas). Aliases: 'default','20x','fucci','opera','63x','HCS_v2','HCS_v2_63x'.",
+            description="Sample to activate: 'U2OS_FUCCI' (20x, FUCCI, default) or 'HPA_PLATE1'..'HPA_PLATE5' (63x, Human Protein Atlas plates 1-5). Aliases: 'default','20x','fucci','hpa','opera','63x','HCS_v2','HCS_v2_63x'. Call list_simulation_samples() for full details.",
         ),
         context=None,
     ):
