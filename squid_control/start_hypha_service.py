@@ -693,7 +693,7 @@ class MicroscopeHyphaService:
         self,
         sample_name: str = Field(
             ...,
-            description="Sample to activate: 'U2OS_FUCCI' (20x, FUCCI, default) or 'HPA_PLATE1'..'HPA_PLATE5' (63x, Human Protein Atlas plates 1-5). Aliases: 'default','20x','fucci','hpa','opera','63x','HCS_v2','HCS_v2_63x'. Call list_simulation_samples() for full details.",
+            description="Sample to activate: 'U2OS_FUCCI' (20x, FUCCI, default) or 'HPA_PLATE1'..'HPA_PLATE7' (63x, Human Protein Atlas plates 1-5). Aliases: 'default','20x','fucci','hpa','opera','63x','HCS_v2','HCS_v2_63x'. Call list_simulation_samples() for full details.",
         ),
         context=None,
     ):

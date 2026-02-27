@@ -74,6 +74,24 @@ SIMULATION_SAMPLES = {
         "objective": "63x",
         "channels": _HPA_CHANNELS,
     },
+    "HPA_PLATE6": {
+        "config_name": "HCS_v2_63x",
+        "zarr_dataset_path": "/mnt/shared_documents/hpa_plate6/data.zarr",
+        "description": "Human Protein Atlas plate 6 — Opera Phoenix 63x. DAPI, antibody target, microtubules, ER markers.",
+        "cell_line": "Various human cell lines (Human Protein Atlas)",
+        "staining": "Immunofluorescence (subcellular protein localisation)",
+        "objective": "63x",
+        "channels": _HPA_CHANNELS,
+    },
+    "HPA_PLATE7": {
+        "config_name": "HCS_v2_63x",
+        "zarr_dataset_path": "/mnt/shared_documents/hpa_plate7/data.zarr",
+        "description": "Human Protein Atlas plate 7 — Opera Phoenix 63x. DAPI, antibody target, microtubules, ER markers.",
+        "cell_line": "Various human cell lines (Human Protein Atlas)",
+        "staining": "Immunofluorescence (subcellular protein localisation)",
+        "objective": "63x",
+        "channels": _HPA_CHANNELS,
+    },
 }
 
 # Case-insensitive aliases accepted by switch_sample (keys must be upper-cased + underscored)
