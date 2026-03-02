@@ -525,14 +525,6 @@ class MirrorMicroscopeService:
                 ],
             })
 
-            # Turn on illumination when a client connects
-            if self.local_service:
-                try:
-                    await self.local_service.turn_on_illumination()
-                    logger.info("MJPEG: illumination turned on")
-                except Exception as e:
-                    logger.error(f"MJPEG: failed to turn on illumination: {e}")
-
             async def stream():
                 try:
                     while True:
@@ -581,20 +573,12 @@ class MirrorMicroscopeService:
                 except asyncio.CancelledError:
                     pass
 
-            # Turn off illumination when the client disconnects
-            if self.local_service:
-                try:
-                    await self.local_service.turn_off_illumination()
-                    logger.info("MJPEG: illumination turned off, client disconnected")
-                except Exception as e:
-                    logger.error(f"MJPEG: failed to turn off illumination: {e}")
-
         svc = await server.register_service({
             "id": live_view_service_id,
             "name": "Microscope Live View",
             "type": "asgi",
             "serve": serve_mjpeg,
-            "config": {"visibility": "public", "require_context": False},
+            "config": {"visibility": "protected", "require_context": False},
         })
         logger.info(
             f"Live view ASGI service registered with id: {live_view_service_id}, "

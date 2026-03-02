@@ -2280,10 +2280,6 @@ class MicroscopeHyphaService:
                 ],
             })
 
-            # Turn on illumination when a client connects
-            self.turn_on_illumination()
-            logger.info("MJPEG: illumination turned on")
-
             async def stream():
                 try:
                     while True:
@@ -2327,15 +2323,12 @@ class MicroscopeHyphaService:
                 except asyncio.CancelledError:
                     pass
 
-            # Turn off illumination when the client disconnects
-            self.turn_off_illumination()
-            logger.info("MJPEG: illumination turned off, client disconnected")
-
         svc = await server.register_service({
             "id": live_view_service_id,
             "name": "Microscope Live View",
             "type": "asgi",
             "serve": serve_mjpeg,
+            "visibility": "public" if self.is_simulation else "protected",
             "config": {"visibility": "public", "require_context": False},
         })
         logger.info(
