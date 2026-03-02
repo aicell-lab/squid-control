@@ -37,8 +37,8 @@ The Opera dataset contains 4 fluorescence channels:
 |--------------|------------|-------|-------------------|
 | 0 | 405nm (DAPI) | Blue | Cell nucleus |
 | 1 | 488nm | Green | Target protein |
-| 2 | 638nm | Red | SARS-CoV-2 Virus |
-| 3 | 561nm | Yellow/Orange | Endoplasmic Reticulum (ER) |
+| 2 | 561nm | Red | SARS-CoV-2 Virus |
+| 3 | 638nm | Yellow/Orange | Endoplasmic Reticulum (ER) |
 
 ## Tile-to-Well Mapping Algorithm
 
@@ -267,8 +267,8 @@ Opera channels are mapped to Squid's standard channel structure:
 |----------|------------------|---|---------------|-------------|
 | 0 | 405nm (DAPI) | → | Fluorescence 405 nm Ex | 1 |
 | 1 | 488nm (Target) | → | Fluorescence 488 nm Ex | 2 |
-| 2 | 638nm (Virus) | → | Fluorescence 638 nm Ex | 3 |
-| 3 | 561nm (ER) | → | Fluorescence 561 nm Ex | 4 |
+| 2 | 561nm (Virus) | → | Fluorescence 561 nm Ex | 3 |
+| 3 | 638nm (ER) | → | Fluorescence 638 nm Ex | 4 |
 
 **Note:** Squid canvas index 0 is reserved for Brightfield (not in Opera data).
 
@@ -315,8 +315,8 @@ Expected output:
 Channel 0 (BF): range=[0, 0]         # Empty (no brightfield in Opera)
 Channel 1 (405nm): range=[0, 119]    # DAPI data ✓
 Channel 2 (488nm): range=[0, 98]     # Target protein data ✓
-Channel 3 (638nm): range=[0, 143]    # Virus data ✓
-Channel 4 (561nm): range=[0, 76]     # ER data ✓
+Channel 3 (561nm): range=[0, 143]    # Virus data ✓
+Channel 4 (638nm): range=[0, 76]     # ER data ✓
 Channel 5 (730nm): range=[0, 0]      # Empty (not in Opera)
 ```
 

@@ -281,8 +281,8 @@ async def import_opera_dataset(
         channel_mapping = {
             0: 'Fluorescence 405 nm Ex',   # DAPI
             1: 'Fluorescence 488 nm Ex',   # Target protein
-            2: 'Fluorescence 638 nm Ex',   # SARS-CoV-2 virus
-            3: 'Fluorescence 561 nm Ex',   # ER
+            2: 'Fluorescence 561 nm Ex',   # SARS-CoV-2 virus
+            3: 'Fluorescence 638 nm Ex',   # ER
         }
 
     channels_to_import = list(channel_mapping.keys())
