@@ -2170,7 +2170,7 @@ class MicroscopeHyphaService:
             remote_workspace = "squid-control"
 
         remote_server = await connect_to_server(
-                {"client_id": f"squid-remote-server-{self.service_id}-{uuid.uuid4()}", "server_url": "https://hypha.aicell.io", "token": remote_token, "workspace": remote_workspace, "ping_interval": 30}
+                {"client_id": f"squid-remote-server-{self.service_id}-{uuid.uuid4()}", "server_url": "https://hypha.aicell.io", "token": remote_token, "workspace": remote_workspace}
             )
         self.remote_server = remote_server
         if not self.service_id:
@@ -2179,7 +2179,7 @@ class MicroscopeHyphaService:
             token = os.environ.get("REEF_LOCAL_TOKEN")
             workspace = os.environ.get("REEF_LOCAL_WORKSPACE")
             server = await connect_to_server(
-                {"client_id": f"squid-local-server-{self.service_id}-{uuid.uuid4()}", "server_url": self.server_url, "token": token, "workspace": workspace, "ping_interval": 30}
+                {"client_id": f"squid-local-server-{self.service_id}-{uuid.uuid4()}", "server_url": self.server_url, "token": token, "workspace": workspace}
             )
         else:
             # Determine workspace and token based on simulation mode
@@ -2197,7 +2197,7 @@ class MicroscopeHyphaService:
                 workspace = "squid-control"
 
             server = await connect_to_server(
-                {"client_id": f"squid-control-server-{self.service_id}-{uuid.uuid4()}", "server_url": self.server_url, "token": token, "workspace": workspace,  "ping_interval": 30}
+                {"client_id": f"squid-control-server-{self.service_id}-{uuid.uuid4()}", "server_url": self.server_url, "token": token, "workspace": workspace}
             )
 
         self.server = server
@@ -2216,7 +2216,6 @@ class MicroscopeHyphaService:
                     "server_url": "https://hypha.aicell.io",
                     "token": artifact_token,
                     "workspace": "agent-lens",
-                    "ping_interval": 30
                 })
                 await self.artifact_manager.connect_server(artifact_server)
                 logger.info("Artifact manager initialized successfully")

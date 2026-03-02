@@ -44,7 +44,6 @@ async def test_squid_plus_microscope_service():
             "server_url": TEST_SERVER_URL,
             "token": token,
             "workspace": TEST_WORKSPACE,
-            "ping_interval": None
         }) as server:
             print("✅ Connected to server")
 
@@ -102,7 +101,6 @@ async def test_squid_plus_microscope_service():
                 "server_url": "https://hypha.aicell.io",
                 "token": token,
                 "workspace": "agent-lens",
-                "ping_interval": 30
             })
             await microscope.artifact_manager.connect_server(artifact_server)
             microscope.snapshot_manager = SnapshotManager(microscope.artifact_manager)

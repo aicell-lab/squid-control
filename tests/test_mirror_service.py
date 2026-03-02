@@ -50,7 +50,6 @@ async def test_server_connection():
         "server_url": TEST_SERVER_URL,
         "token": token,
         "workspace": TEST_WORKSPACE,
-        "ping_interval": None
     })
 
     yield server

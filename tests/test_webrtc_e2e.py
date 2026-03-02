@@ -1057,7 +1057,6 @@ async def webrtc_test_services():
             "server_url": TEST_SERVER_URL,
             "token": token,
             "workspace": TEST_WORKSPACE,
-            "ping_interval": None
         })
         print("✅ Connected to Hypha server")
 
