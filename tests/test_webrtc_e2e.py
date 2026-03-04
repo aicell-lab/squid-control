@@ -13,7 +13,7 @@ import pytest
 import pytest_asyncio
 from hypha_rpc import connect_to_server
 
-from squid_control.start_hypha_service import (
+from squid_control.service import (
     MicroscopeHyphaService,
     MicroscopeVideoTrack,
 )
@@ -23,7 +23,7 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 # Test configuration
 TEST_SERVER_URL = "https://hypha.aicell.io"
-TEST_WORKSPACE = "agent-lens"
+TEST_WORKSPACE = "reef-imaging"
 TEST_TIMEOUT = 180  # 3 minutes for WebRTC tests
 
 class TestHTTPHandler(SimpleHTTPRequestHandler):
@@ -1041,9 +1041,9 @@ def create_webrtc_test_html(service_id, webrtc_service_id, server_url, workspace
 async def webrtc_test_services():
     """Create microscope and WebRTC services for testing."""
     # Check for token first
-    token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
+    token = os.environ.get("REEF_WORKSPACE_TOKEN")
     if not token:
-        pytest.skip("AGENT_LENS_WORKSPACE_TOKEN not set in environment")
+        pytest.skip("REEF_WORKSPACE_TOKEN not set in environment")
 
     print("🔗 Setting up WebRTC test services...")
 

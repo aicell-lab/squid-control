@@ -70,7 +70,7 @@ class ZarrCanvas:
 
         # Get wellplate offset from CONFIG if available
         try:
-            from squid_control.control.config import CONFIG
+            from squid_control.hardware.config import CONFIG
             self._wellplate_offset_x_mm = getattr(CONFIG, 'WELLPLATE_OFFSET_X_MM', 0.0)
             self._wellplate_offset_y_mm = getattr(CONFIG, 'WELLPLATE_OFFSET_Y_MM', 0.0)
         except Exception:
@@ -562,7 +562,7 @@ class ZarrCanvas:
             self.zarr_root = root  # Store reference for metadata updates
 
             # Import ChannelMapper for better metadata
-            from squid_control.control.config import ChannelMapper
+            from squid_control.hardware.config import ChannelMapper
 
             # Create enhanced channel metadata with proper colors and info
             # Initially all channels are inactive until data is written
@@ -810,13 +810,13 @@ class ZarrCanvas:
                     
                     # Resize shading field to match processed image dimensions if needed
                     if shading_field.shape != processed_image.shape:
-                        from squid_control.control.utils.illumination_calibration import resize_shading_field
+                        from squid_control.utils.illumination_calibration import resize_shading_field
                         shading_field_resized = resize_shading_field(shading_field, processed_image.shape)
                     else:
                         shading_field_resized = shading_field
                     
                     # Apply flat-field correction
-                    from squid_control.control.utils.illumination_calibration import apply_flat_field_correction
+                    from squid_control.utils.illumination_calibration import apply_flat_field_correction
                     processed_image = apply_flat_field_correction(processed_image, shading_field_resized)
                     
                     logger.debug(f"Applied flat-field correction for channel '{channel_name}'")
@@ -1689,7 +1689,7 @@ class ExperimentManager:
         # Get stage limits from CONFIG if not provided
         if stage_limits is None:
             try:
-                from squid_control.control.config import CONFIG
+                from squid_control.hardware.config import CONFIG
                 self.stage_limits = {
                     'x_positive': CONFIG.SOFTWARE_POS_LIMIT.X_POSITIVE,
                     'x_negative': CONFIG.SOFTWARE_POS_LIMIT.X_NEGATIVE,
@@ -1750,7 +1750,7 @@ class ExperimentManager:
         
         # Get all available channels
         try:
-            from squid_control.control.config import ChannelMapper
+            from squid_control.hardware.config import ChannelMapper
             all_channels = ChannelMapper.get_all_human_names()
         except Exception:
             all_channels = ['BF LED matrix full']
@@ -1809,7 +1809,7 @@ class ExperimentManager:
         if zarr_path.exists():
             # Get all available channels
             try:
-                from squid_control.control.config import ChannelMapper
+                from squid_control.hardware.config import ChannelMapper
                 all_channels = ChannelMapper.get_all_human_names()
             except Exception:
                 all_channels = ['BF LED matrix full']
@@ -1861,7 +1861,7 @@ class ExperimentManager:
             experiment_path = self.base_path / target_experiment
             
             try:
-                from squid_control.control.config import ChannelMapper
+                from squid_control.hardware.config import ChannelMapper
                 all_channels = ChannelMapper.get_all_human_names()
             except Exception:
                 all_channels = ['BF LED matrix full']
@@ -2097,6 +2097,3 @@ class ExperimentManager:
         logger.info("ExperimentManager closed")
 
 
-# Backward compatibility aliases
-WellZarrCanvasBase = ZarrCanvas
-WellZarrCanvas = ZarrCanvas

@@ -111,7 +111,7 @@ class VideoFrameProcessor:
         """Process raw frame for video streaming - OPTIMIZED"""
         try:
             # Import CONFIG here to avoid circular imports
-            from squid_control.control.config import CONFIG
+            from squid_control.hardware.config import CONFIG
             
             # OPTIMIZATION 1: Crop FIRST, then resize to reduce data for all subsequent operations
             crop_height = CONFIG.ACQUISITION.CROP_HEIGHT

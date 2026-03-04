@@ -40,7 +40,7 @@ class OfflineProcessor:
 
     def _ensure_config_loaded(self):
         """Ensure the configuration is properly loaded with auto-detection."""
-        from squid_control.control.config import CONFIG, load_config
+        from squid_control.hardware.config import CONFIG, load_config
 
         # Check if DEFAULT_SAVING_PATH is already loaded
         if not CONFIG.DEFAULT_SAVING_PATH:
@@ -103,12 +103,12 @@ class OfflineProcessor:
         """
         from hypha_artifact import AsyncHyphaArtifact
         
-        token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
+        token = os.environ.get("REEF_WORKSPACE_TOKEN")
         if not token:
-            raise Exception("AGENT_LENS_WORKSPACE_TOKEN environment variable not set")
+            raise Exception("REEF_WORKSPACE_TOKEN environment variable not set")
         
         server_url = server_url or "https://hypha.aicell.io"
-        workspace = "agent-lens"
+        workspace = "reef-imaging"
         
         print(f"📤 Creating artifact '{dataset_name}' for upload...")
         
@@ -187,7 +187,7 @@ class OfflineProcessor:
             [experiment_id-20250822T143055, experiment_id_2025-08-22_14-30-55, ...]
         """
 
-        from squid_control.control.config import CONFIG
+        from squid_control.hardware.config import CONFIG
         print(f"CONFIG.DEFAULT_SAVING_PATH = {CONFIG.DEFAULT_SAVING_PATH}")
         base_path = Path(CONFIG.DEFAULT_SAVING_PATH)
         print(f"Searching in base path: {base_path}")
@@ -340,7 +340,7 @@ class OfflineProcessor:
             Dictionary mapping filename channel names (zarr format) to human names (expected by canvas)
         """
 
-        from squid_control.control.config import ChannelMapper
+        from squid_control.hardware.config import ChannelMapper
 
         # Create mapping from zarr names (used in filenames) to human names (expected by canvas)
         filename_to_human_mapping = {}
@@ -921,7 +921,7 @@ class OfflineProcessor:
             experiment_folder_name: Name of the experiment folder to clean up temp folders for
         """
         try:
-            from squid_control.control.config import CONFIG
+            from squid_control.hardware.config import CONFIG
 
             if CONFIG.DEFAULT_SAVING_PATH and Path(CONFIG.DEFAULT_SAVING_PATH).exists():
                 base_temp_path = Path(CONFIG.DEFAULT_SAVING_PATH)
@@ -983,7 +983,7 @@ class OfflineProcessor:
             print(f"Found {len(all_positions)} positions to process from {len(coordinates_data)} regions")
 
             # 2. Create/find stitch folder - use consistent name without timestamp for resume capability
-            from squid_control.control.config import CONFIG
+            from squid_control.hardware.config import CONFIG
 
             if CONFIG.DEFAULT_SAVING_PATH and Path(CONFIG.DEFAULT_SAVING_PATH).exists():
                 base_temp_path = Path(CONFIG.DEFAULT_SAVING_PATH)
@@ -1165,7 +1165,7 @@ class OfflineProcessor:
         Wait for stitching to complete properly with timeout and progress monitoring.
         
         Args:
-            canvas: WellZarrCanvas instance
+            canvas: ZarrCanvas instance
             timeout_seconds: Maximum time to wait for stitching completion
         """
         start_time = time.time()
@@ -1225,7 +1225,7 @@ class OfflineProcessor:
         This ensures proper processing with all scales and coordinate conversion.
         
         Args:
-            canvas: WellZarrCanvas instance
+            canvas: ZarrCanvas instance
             image: Image array
             x_mm, y_mm: Absolute coordinates (like scan_region_to_zarr)
             zarr_channel_idx: Local zarr channel index
@@ -1236,8 +1236,8 @@ class OfflineProcessor:
             # Add to stitching queue with normal scan flag (all scales) - same as scan_region_to_zarr
             queue_item = {
                 'image': image.copy(),
-                'x_mm': x_mm,  # Use absolute coordinates - WellZarrCanvas will convert to well-relative
-                'y_mm': y_mm,  # Use absolute coordinates - WellZarrCanvas will convert to well-relative
+                'x_mm': x_mm,  # Use absolute coordinates - ZarrCanvas will convert to canvas-relative
+                'y_mm': y_mm,  # Use absolute coordinates - ZarrCanvas will convert to canvas-relative
                 'channel_idx': zarr_channel_idx,
                 'z_idx': z_idx,
                 'timepoint': timepoint,
@@ -1262,7 +1262,7 @@ class OfflineProcessor:
         Add image to canvas with backpressure to prevent queue overflow.
         
         Args:
-            canvas: WellZarrCanvas instance
+            canvas: ZarrCanvas instance
             image: Image array
             x_mm, y_mm: Coordinates
             zarr_channel_idx: Channel index
@@ -1288,7 +1288,7 @@ class OfflineProcessor:
         Export a well canvas to a ZIP file on disk using CONFIG.DEFAULT_SAVING_PATH.
         
         Args:
-            canvas: WellZarrCanvas instance
+            canvas: ZarrCanvas instance
             filename: Desired filename (e.g., 'well_A1_96.zip')
             
         Returns:
@@ -1296,7 +1296,7 @@ class OfflineProcessor:
         """
         from pathlib import Path
 
-        from squid_control.control.config import CONFIG
+        from squid_control.hardware.config import CONFIG
 
         # Use CONFIG.DEFAULT_SAVING_PATH for output directory
         try:
@@ -1320,7 +1320,7 @@ class OfflineProcessor:
             for partial_file in partial_files:
                 try:
                     os.remove(partial_file)
-                except:
+                except OSError:
                     pass
 
         # Export canvas to this specific file path

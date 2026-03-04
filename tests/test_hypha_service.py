@@ -7,7 +7,7 @@ import pytest
 import pytest_asyncio
 from hypha_rpc import connect_to_server
 
-from squid_control.start_hypha_service import (
+from squid_control.service import (
     MicroscopeHyphaService,
 )
 
@@ -16,7 +16,7 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 # Test configuration
 TEST_SERVER_URL = "https://hypha.aicell.io"
-TEST_WORKSPACE = "agent-lens"
+TEST_WORKSPACE = "reef-imaging"
 TEST_TIMEOUT = 120  # seconds
 
 
@@ -27,9 +27,9 @@ async def test_microscope_service():
     os.environ['SQUID_TEST_MODE'] = 'true'
     
     # Check for token first
-    token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
+    token = os.environ.get("REEF_WORKSPACE_TOKEN")
     if not token:
-        pytest.skip("AGENT_LENS_WORKSPACE_TOKEN not set in environment")
+        pytest.skip("REEF_WORKSPACE_TOKEN not set in environment")
 
     print(f"🔗 Connecting to {TEST_SERVER_URL} workspace {TEST_WORKSPACE}...")
 
@@ -63,16 +63,16 @@ async def test_microscope_service():
 
 
             # Initialize artifact manager and snapshot manager for testing
-            from squid_control.hypha_tools.artifact_manager.artifact_manager import (
+            from squid_control.storage.artifact_manager.artifact_manager import (
                 SquidArtifactManager,
             )
-            from squid_control.hypha_tools.snapshot_utils import SnapshotManager
+            from squid_control.storage.snapshot_utils import SnapshotManager
             
             microscope.artifact_manager = SquidArtifactManager()
             artifact_server = await connect_to_server({
                 "server_url": "https://hypha.aicell.io",
                 "token": token,
-                "workspace": "agent-lens",
+                "workspace": "reef-imaging",
             })
             await microscope.artifact_manager.connect_server(artifact_server)
             microscope.snapshot_manager = SnapshotManager(microscope.artifact_manager)
@@ -387,23 +387,6 @@ async def test_video_contrast_adjustment_service(test_microscope_service):
     assert microscope.video_contrast_min == 10
     assert microscope.video_contrast_max == 200
 
-async def test_simulated_sample_data_service(test_microscope_service):
-    """Test simulated sample data management through the service."""
-    microscope, service = test_microscope_service
-
-    # Test getting current alias
-    current_alias = await service.get_simulated_sample_data_alias()
-    assert isinstance(current_alias, str)
-
-    # Test setting new alias
-    new_alias = "test-sample/new-data"
-    result = await service.set_simulated_sample_data_alias(new_alias)
-    assert new_alias in result
-
-    # Verify it was set
-    retrieved_alias = await service.get_simulated_sample_data_alias()
-    assert retrieved_alias == new_alias
-
 # Error handling tests
 async def test_service_error_handling(test_microscope_service):
     """Test error handling in service methods."""
@@ -445,7 +428,6 @@ async def test_concurrent_operations(test_microscope_service):
     tasks = [
         asyncio.wait_for(service.get_status(), timeout=10),
         asyncio.wait_for(service.ping(), timeout=10),
-        asyncio.wait_for(service.get_simulated_sample_data_alias(), timeout=10)
     ]
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -588,22 +570,6 @@ async def test_simulation_features(test_microscope_service):
     """Test simulation-specific functionality."""
     microscope, service = test_microscope_service
 
-    # Test simulated sample data management
-    original_alias = await service.get_simulated_sample_data_alias()
-    assert isinstance(original_alias, str)
-
-    # Test setting different sample data
-    test_alias = "test-dataset/sample-data"
-    result = await service.set_simulated_sample_data_alias(test_alias)
-    assert test_alias in result
-
-    # Verify it was actually set
-    current_alias = await service.get_simulated_sample_data_alias()
-    assert current_alias == test_alias
-
-    # Reset to original
-    await service.set_simulated_sample_data_alias(original_alias)
-
     # Test simulation mode characteristics
     assert microscope.is_simulation == True
     assert microscope.squidController.is_simulation == True
@@ -654,7 +620,7 @@ async def test_multi_channel_imaging(test_microscope_service):
     microscope, service = test_microscope_service
 
     channels_to_test = [0, 11, 12, 13, 14, 15]  # All supported channels
-    from squid_control.control.config import ChannelMapper
+    from squid_control.hardware.config import ChannelMapper
 
     for channel in channels_to_test:
         try:
@@ -1387,7 +1353,7 @@ async def test_microscope_configuration_schema_method(test_microscope_service):
             print("1. Testing schema method...")
 
             # Test schema method with different inputs
-            from squid_control.start_hypha_service import Microscope
+            from squid_control.service import Microscope
             if hasattr(Microscope, 'GetMicroscopeConfigurationInput'):
                 # Test with valid input
                 config_input = Microscope.GetMicroscopeConfigurationInput(

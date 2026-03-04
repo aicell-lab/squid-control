@@ -137,8 +137,8 @@ omit = [
     "squid_control/control/camera/camera_TIS.py",
     "squid_control/control/processing_handler.py",
     "squid_control/control/serial_peripherals.py",
-    # AI/service modules not used in core simulation
-    "squid_control/hypha_tools/*",
+    # Artifact manager modules not used in core simulation coverage
+    "squid_control/storage/artifact_manager/*",
     # Test files
     "tests/*",
     "scripts/*",

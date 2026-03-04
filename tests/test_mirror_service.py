@@ -7,11 +7,11 @@ import pytest_asyncio
 from hypha_rpc import connect_to_server
 
 # Import the mirror service components
-from squid_control.services.mirror.mirror_service import MirrorMicroscopeService
-from squid_control.services.mirror.video_track import MicroscopeVideoTrack
+from squid_control.mirror.mirror_service import MirrorMicroscopeService
+from squid_control.mirror.video_track import MicroscopeVideoTrack
 
 # Import the real microscope service for testing
-from squid_control.start_hypha_service import MicroscopeHyphaService
+from squid_control.service import MicroscopeHyphaService
 
 # Mark all tests in this module as asyncio and integration tests
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
@@ -24,7 +24,7 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 # Test configuration
 TEST_SERVER_URL = "https://hypha.aicell.io"
-TEST_WORKSPACE = "agent-lens"
+TEST_WORKSPACE = "reef-imaging"
 TEST_TIMEOUT = 120  # seconds
 
 # Test constants
@@ -41,9 +41,9 @@ TEST_DEFAULT_FPS = 5
 @pytest_asyncio.fixture(scope="function")
 async def test_server_connection():
     """Create a connection to the test server."""
-    token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
+    token = os.environ.get("REEF_WORKSPACE_TOKEN")
     if not token:
-        pytest.skip("AGENT_LENS_WORKSPACE_TOKEN not set - skipping integration test")
+        pytest.skip("REEF_WORKSPACE_TOKEN not set - skipping integration test")
 
     # Use the existing workspace since the token is tied to it
     server = await connect_to_server({
@@ -137,7 +137,7 @@ async def real_mirror_service(test_server_connection, real_microscope_service):
     # Configure for testing
     mirror_service.cloud_server_url = TEST_SERVER_URL
     mirror_service.cloud_workspace = server.config.workspace
-    mirror_service.cloud_token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
+    mirror_service.cloud_token = os.environ.get("REEF_WORKSPACE_TOKEN")
     mirror_service.cloud_service_id = f"test-mirror-{uuid.uuid4().hex[:8]}"
 
     # Set up the local service connection to point to our real microscope service

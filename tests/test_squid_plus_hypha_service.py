@@ -8,7 +8,7 @@ import pytest
 import pytest_asyncio
 from hypha_rpc import connect_to_server
 
-from squid_control.start_hypha_service import (
+from squid_control.service import (
     MicroscopeHyphaService,
 )
 
@@ -17,7 +17,7 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 # Test configuration
 TEST_SERVER_URL = "https://hypha.aicell.io"
-TEST_WORKSPACE = "agent-lens"
+TEST_WORKSPACE = "reef-imaging"
 TEST_TIMEOUT = 120  # seconds
 
 
@@ -28,9 +28,9 @@ async def test_squid_plus_microscope_service():
     os.environ['SQUID_TEST_MODE'] = 'true'
     
     # Check for token first
-    token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
+    token = os.environ.get("REEF_WORKSPACE_TOKEN")
     if not token:
-        pytest.skip("AGENT_LENS_WORKSPACE_TOKEN not set in environment")
+        pytest.skip("REEF_WORKSPACE_TOKEN not set in environment")
 
     print(f"🔗 Connecting to {TEST_SERVER_URL} workspace {TEST_WORKSPACE}...")
 
@@ -58,10 +58,7 @@ async def test_squid_plus_microscope_service():
             # For simulation mode, we need to ensure the Squid+ config is used
             # The SquidController in simulation mode always uses HCS_v2 config,
             # so we need to temporarily replace it with the Squid+ config
-            
-            # Set environment variable to force Squid+ mode
-            os.environ['SQUID_SIMULATION_MODE'] = 'true'
-            
+
             # Create a temporary Squid+ config file to replace the HCS_v2 config
             squid_plus_config_src = 'squid_control/config/configuration_Squid+_example.ini'
             hcs_config_dst = 'squid_control/config/configuration_HCS_v2_example.ini'
@@ -93,14 +90,14 @@ async def test_squid_plus_microscope_service():
 
 
             # Initialize artifact manager and snapshot manager for testing
-            from squid_control.hypha_tools.artifact_manager.artifact_manager import SquidArtifactManager
-            from squid_control.hypha_tools.snapshot_utils import SnapshotManager
+            from squid_control.storage.artifact_manager.artifact_manager import SquidArtifactManager
+            from squid_control.storage.snapshot_utils import SnapshotManager
             
             microscope.artifact_manager = SquidArtifactManager()
             artifact_server = await connect_to_server({
                 "server_url": "https://hypha.aicell.io",
                 "token": token,
-                "workspace": "agent-lens",
+                "workspace": "reef-imaging",
             })
             await microscope.artifact_manager.connect_server(artifact_server)
             microscope.snapshot_manager = SnapshotManager(microscope.artifact_manager)

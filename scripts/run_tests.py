@@ -89,16 +89,16 @@ def main():
         print("🌐 Running INTEGRATION TESTS only (excluding WebRTC tests)")
         print("📹 Use --webrtc-only to run WebRTC tests separately")
         # Check for required tokens
-        if not os.environ.get("AGENT_LENS_WORKSPACE_TOKEN"):
-            print("⚠️  WARNING: AGENT_LENS_WORKSPACE_TOKEN not set - integration tests may fail")
-            print("   Set the token with: export AGENT_LENS_WORKSPACE_TOKEN=your_token")
+        if not os.environ.get("REEF_WORKSPACE_TOKEN"):
+            print("⚠️  WARNING: REEF_WORKSPACE_TOKEN not set - integration tests may fail")
+            print("   Set the token with: export REEF_WORKSPACE_TOKEN=your_token")
     elif args.webrtc_only:
         cmd.append("tests/test_webrtc_e2e.py")
         print("📹 Running WEBRTC INTEGRATION TESTS only (requires network and tokens)")
         # Check for required tokens
-        if not os.environ.get("AGENT_LENS_WORKSPACE_TOKEN"):
-            print("⚠️  WARNING: AGENT_LENS_WORKSPACE_TOKEN not set - WebRTC tests may fail")
-            print("   Set the token with: export AGENT_LENS_WORKSPACE_TOKEN=your_token")
+        if not os.environ.get("REEF_WORKSPACE_TOKEN"):
+            print("⚠️  WARNING: REEF_WORKSPACE_TOKEN not set - WebRTC tests may fail")
+            print("   Set the token with: export REEF_WORKSPACE_TOKEN=your_token")
     elif args.skip_integration:
         cmd.extend(["-m", "not integration"])
         cmd.append("tests/")
