@@ -23,7 +23,7 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 # Test configuration
 TEST_SERVER_URL = "https://hypha.aicell.io"
-TEST_WORKSPACE = "agent-lens"
+TEST_WORKSPACE = "reef-imaging"
 TEST_TIMEOUT = 180  # 3 minutes for WebRTC tests
 
 class TestHTTPHandler(SimpleHTTPRequestHandler):

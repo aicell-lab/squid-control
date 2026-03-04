@@ -108,7 +108,7 @@ class OfflineProcessor:
             raise Exception("AGENT_LENS_WORKSPACE_TOKEN environment variable not set")
         
         server_url = server_url or "https://hypha.aicell.io"
-        workspace = "agent-lens"
+        workspace = "reef-imaging"
         
         print(f"📤 Creating artifact '{dataset_name}' for upload...")
         

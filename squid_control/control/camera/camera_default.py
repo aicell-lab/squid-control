@@ -662,7 +662,7 @@ class Camera_Simulation(object):
     _zarr_cache = {}
     
     # Local path to zarr dataset or remote URL
-    ZARR_DATASET_PATH = "/mnt/shared_documents/20251215-illumination-calibrated/data.zarr" #"https://hypha.aicell.io/agent-lens/apps/agent-lens/example-image-data.zarr"
+    ZARR_DATASET_PATH = "/mnt/shared_documents/20251215-illumination-calibrated/data.zarr" #"https://hypha.aicell.io/reef-imaging/apps/reef-imaging/example-image-data.zarr"
     
     # Channel name to zarr index mapping for the example-image-data.zarr dataset
     # The zarr dataset has channels indexed 0-5 in this order

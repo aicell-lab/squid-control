@@ -35,7 +35,7 @@ class SnapshotManager:
         """
         self.artifact_manager = artifact_manager
         self._svc = artifact_manager._svc
-        self.workspace = "agent-lens"
+        self.workspace = "reef-imaging"
 
     async def get_or_create_snapshots_gallery(self, microscope_service_id: str) -> dict:
         """

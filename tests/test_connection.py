@@ -20,7 +20,7 @@ async def test_connection():
         server = await connect_to_server({
             'server_url': 'https://hypha.aicell.io',
             'token': token,
-            'workspace': 'agent-lens',
+            'workspace': 'reef-imaging',
         })
         print('✅ Successfully connected to server')
         print(f'📊 Server workspace: {server.config.workspace}')

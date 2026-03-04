@@ -311,7 +311,7 @@ class SquidArtifactManager:
 
     async def create_or_get_microscope_gallery(self, microscope_service_id, experiment_id=None):
         """
-        Create or get a gallery for a specific microscope in the agent-lens workspace.
+        Create or get a gallery for a specific microscope in the reef-imaging workspace.
         
         Args:
             microscope_service_id (str): The hypha service ID of the microscope
@@ -320,7 +320,7 @@ class SquidArtifactManager:
         Returns:
             dict: The gallery artifact information
         """
-        workspace = "agent-lens"
+        workspace = "reef-imaging"
 
         # Determine gallery naming based on microscope service ID
         # Check if microscope service ID ends with a number (e.g., '-1', '-2', etc.)

@@ -16,7 +16,7 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 # Test configuration
 TEST_SERVER_URL = "https://hypha.aicell.io"
-TEST_WORKSPACE = "agent-lens"
+TEST_WORKSPACE = "reef-imaging"
 TEST_TIMEOUT = 120  # seconds
 
 
@@ -72,7 +72,7 @@ async def test_microscope_service():
             artifact_server = await connect_to_server({
                 "server_url": "https://hypha.aicell.io",
                 "token": token,
-                "workspace": "agent-lens",
+                "workspace": "reef-imaging",
             })
             await microscope.artifact_manager.connect_server(artifact_server)
             microscope.snapshot_manager = SnapshotManager(microscope.artifact_manager)
