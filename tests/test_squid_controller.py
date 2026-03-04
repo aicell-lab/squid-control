@@ -149,14 +149,6 @@ async def test_configuration_and_pixel_size(sim_controller_fixture):
         from squid_control.control.config import CONFIG
         assert hasattr(CONFIG, 'PIXEL_SIZE_ADJUSTMENT_FACTOR')
         assert CONFIG.PIXEL_SIZE_ADJUSTMENT_FACTOR > 0
-        # Test sample data alias methods
-        original_alias = controller.get_simulated_sample_data_alias()
-        test_alias = "test/sample/data"
-        controller.set_simulated_sample_data_alias(test_alias)
-        assert controller.get_simulated_sample_data_alias() == test_alias
-
-        # Reset to original
-        controller.set_simulated_sample_data_alias(original_alias)
         break
 
 async def test_stage_position_methods(sim_controller_fixture):
@@ -294,7 +286,6 @@ async def test_controller_properties_and_attributes(sim_controller_fixture):
         assert hasattr(controller, 'current_exposure_time')
         assert hasattr(controller, 'current_intensity')
         assert hasattr(controller, 'pixel_size_xy')
-        assert hasattr(controller, 'sample_data_alias')
 
         # Test that all required controllers are initialized
         assert controller.objectiveStore is not None
@@ -450,18 +441,6 @@ async def test_configuration_access(sim_controller_fixture):
         assert hasattr(controller, 'current_channel')
         assert hasattr(controller, 'current_intensity')
         assert hasattr(controller, 'current_exposure_time')
-        break
-
-async def test_simulated_sample_data_alias(sim_controller_fixture):
-    """Test setting and getting the simulated sample data alias."""
-    async for controller in sim_controller_fixture:
-        default_alias = controller.get_simulated_sample_data_alias()
-        assert default_alias == "agent-lens/20250824-example-data-20250824-221822"
-
-        new_alias = "new/sample/path"
-        # This method is synchronous
-        controller.set_simulated_sample_data_alias(new_alias)
-        assert controller.get_simulated_sample_data_alias() == new_alias # get is also synchronous
         break
 
 async def test_get_pixel_size(sim_controller_fixture):

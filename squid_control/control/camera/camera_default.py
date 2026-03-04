@@ -850,8 +850,8 @@ class Camera_Simulation(object):
             traceback.print_exc()
             return None
 
-    async def send_trigger(self, x=29.81, y=36.85, dz=0, pixel_size_um=0.333, channel=0, intensity=100, exposure_time=100, magnification_factor=20, sample_data_alias="agent-lens/20250824-example-data-20250824-221822"):
-        print(f"Sending trigger with x={x}, y={y}, dz={dz}, pixel_size_um={pixel_size_um}, channel={channel}, intensity={intensity}, exposure_time={exposure_time}, magnification_factor={magnification_factor}, sample_data_alias={sample_data_alias}")
+    async def send_trigger(self, x=29.81, y=36.85, dz=0, pixel_size_um=0.333, channel=0, intensity=100, exposure_time=100, magnification_factor=20):
+        print(f"Sending trigger with x={x}, y={y}, dz={dz}, pixel_size_um={pixel_size_um}, channel={channel}, intensity={intensity}, exposure_time={exposure_time}, magnification_factor={magnification_factor}")
         self.frame_ID += 1
         self.timestamp = time.time()
 
@@ -989,14 +989,14 @@ class Camera_Simulation(object):
     def set_line3_to_exposure_active(self):
         pass
 
-    async def send_trigger_buffered(self, x=29.81, y=36.85, dz=0, pixel_size_um=0.333, channel=0, intensity=100, exposure_time=100, magnification_factor=20, sample_data_alias="agent-lens/20250824-example-data-20250824-221822"):
+    async def send_trigger_buffered(self, x=29.81, y=36.85, dz=0, pixel_size_um=0.333, channel=0, intensity=100, exposure_time=100, magnification_factor=20):
         """
         Buffered trigger method for video buffering.
-        
+
         For zarr visualization, use the vizarr package.
         """
         # Delegate to regular send_trigger
-        await self.send_trigger(x, y, dz, pixel_size_um, channel, intensity, exposure_time, magnification_factor, sample_data_alias=sample_data_alias)
+        await self.send_trigger(x, y, dz, pixel_size_um, channel, intensity, exposure_time, magnification_factor)
 
 
 

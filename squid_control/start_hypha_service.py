@@ -642,23 +642,6 @@ class MicroscopeHyphaService:
             logger.error(f"Failed to update parameters: {e}")
             raise e
 
-    def set_simulated_sample_data_alias(self, sample_data_alias: str="agent-lens/20250824-example-data-20250824-221822", context=None):
-        """
-        Configure which virtual Zarr sample dataset to use for simulation mode imaging.
-        Returns: String confirmation message with the set sample alias.
-        Notes: Only functional in simulation mode. Changes which Zarr-based virtual sample appears under the microscope.
-        """
-        self.squidController.set_simulated_sample_data_alias(sample_data_alias)
-        return f"The alias of simulated sample is set to {sample_data_alias}"
-
-    def get_simulated_sample_data_alias(self, context=None):
-        """
-        Query the currently active virtual sample dataset alias for simulation mode.
-        Returns: String with Zarr dataset alias (format: 'workspace/dataset-id').
-        Notes: Only relevant in simulation mode.
-        """
-        return self.squidController.get_simulated_sample_data_alias()
-
     @schema_function(skip_self=True)
     def list_simulation_samples(self, context=None):
         """List available simulation samples. Returns sample names with objective, cell line, channels, and zarr path. Call before switch_sample."""
@@ -1909,8 +1892,6 @@ class MicroscopeHyphaService:
             "navigate_to_well": self.navigate_to_well,
             "move_to_position": self.move_to_position,
             "move_to_loading_position": self.move_to_loading_position,
-            "set_simulated_sample_data_alias": self.set_simulated_sample_data_alias,
-            "get_simulated_sample_data_alias": self.get_simulated_sample_data_alias,
             "set_wellplate_offset": self.set_wellplate_offset,
             "contrast_autofocus": self.contrast_autofocus,
             "reflection_autofocus": self.reflection_autofocus,

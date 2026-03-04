@@ -387,23 +387,6 @@ async def test_video_contrast_adjustment_service(test_microscope_service):
     assert microscope.video_contrast_min == 10
     assert microscope.video_contrast_max == 200
 
-async def test_simulated_sample_data_service(test_microscope_service):
-    """Test simulated sample data management through the service."""
-    microscope, service = test_microscope_service
-
-    # Test getting current alias
-    current_alias = await service.get_simulated_sample_data_alias()
-    assert isinstance(current_alias, str)
-
-    # Test setting new alias
-    new_alias = "test-sample/new-data"
-    result = await service.set_simulated_sample_data_alias(new_alias)
-    assert new_alias in result
-
-    # Verify it was set
-    retrieved_alias = await service.get_simulated_sample_data_alias()
-    assert retrieved_alias == new_alias
-
 # Error handling tests
 async def test_service_error_handling(test_microscope_service):
     """Test error handling in service methods."""
@@ -445,7 +428,6 @@ async def test_concurrent_operations(test_microscope_service):
     tasks = [
         asyncio.wait_for(service.get_status(), timeout=10),
         asyncio.wait_for(service.ping(), timeout=10),
-        asyncio.wait_for(service.get_simulated_sample_data_alias(), timeout=10)
     ]
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -587,22 +569,6 @@ async def test_edge_cases_and_error_handling(test_microscope_service):
 async def test_simulation_features(test_microscope_service):
     """Test simulation-specific functionality."""
     microscope, service = test_microscope_service
-
-    # Test simulated sample data management
-    original_alias = await service.get_simulated_sample_data_alias()
-    assert isinstance(original_alias, str)
-
-    # Test setting different sample data
-    test_alias = "test-dataset/sample-data"
-    result = await service.set_simulated_sample_data_alias(test_alias)
-    assert test_alias in result
-
-    # Verify it was actually set
-    current_alias = await service.get_simulated_sample_data_alias()
-    assert current_alias == test_alias
-
-    # Reset to original
-    await service.set_simulated_sample_data_alias(original_alias)
 
     # Test simulation mode characteristics
     assert microscope.is_simulation == True

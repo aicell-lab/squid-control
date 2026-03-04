@@ -424,8 +424,6 @@ class SquidController:
         self.current_exposure_time = 100
         self.current_intensity = 100
         self.pixel_size_xy = 0.333
-        # simulated sample data alias
-        self.sample_data_alias = "agent-lens/20250824-example-data-20250824-221822"
         self.get_pixel_size()
 
         # Initialize experiment-based zarr management
@@ -757,14 +755,8 @@ class SquidController:
         magnification_factor = SIMULATED_CAMERA.MAGNIFICATION_FACTOR
         self.current_exposure_time = exposure_time
         self.current_intensity = intensity
-        await self.camera.send_trigger(current_x, current_y, self.dz, self.pixel_size_xy, channel, intensity, exposure_time, magnification_factor, sample_data_alias=self.sample_data_alias)
+        await self.camera.send_trigger(current_x, current_y, self.dz, self.pixel_size_xy, channel, intensity, exposure_time, magnification_factor)
         print(f'For simulated camera, exposure_time={exposure_time}, intensity={intensity}, magnification_factor={magnification_factor}, current position: {current_x},{current_y},{current_z}')
-
-    def set_simulated_sample_data_alias(self, sample_data_alias):
-        self.sample_data_alias = sample_data_alias
-
-    def get_simulated_sample_data_alias(self):
-        return self.sample_data_alias
 
     async def contrast_autofocus(self):
 
