@@ -58,10 +58,7 @@ async def test_squid_plus_microscope_service():
             # For simulation mode, we need to ensure the Squid+ config is used
             # The SquidController in simulation mode always uses HCS_v2 config,
             # so we need to temporarily replace it with the Squid+ config
-            
-            # Set environment variable to force Squid+ mode
-            os.environ['SQUID_SIMULATION_MODE'] = 'true'
-            
+
             # Create a temporary Squid+ config file to replace the HCS_v2 config
             squid_plus_config_src = 'squid_control/config/configuration_Squid+_example.ini'
             hcs_config_dst = 'squid_control/config/configuration_HCS_v2_example.ini'

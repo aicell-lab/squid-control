@@ -50,7 +50,6 @@ jobs:
     - name: Run unit tests
       shell: bash
       env:
-        SQUID_SIMULATION_MODE: "true"
         PYTHONPATH: "."
       run: |
         echo "🧪 Running UNIT TESTS (without integration tests)"
@@ -132,9 +131,8 @@ jobs:
     - name: Run integration tests
       shell: bash
       env:
-        SQUID_SIMULATION_MODE: "true"
         PYTHONPATH: "."
-        AGENT_LENS_WORKSPACE_TOKEN: ${{ secrets.AGENT_LENS_WORKSPACE_TOKEN }}
+        REEF_WORKSPACE_TOKEN: ${{ secrets.REEF_WORKSPACE_TOKEN }}
       run: |
         echo "🌐 Running INTEGRATION TESTS (Hypha RPC services, excluding WebRTC)"
         echo "🔗 Requires network access and workspace token"
@@ -171,9 +169,8 @@ jobs:
     - name: Run WebRTC integration tests
       shell: bash
       env:
-        SQUID_SIMULATION_MODE: "true"
         PYTHONPATH: "."
-        AGENT_LENS_WORKSPACE_TOKEN: ${{ secrets.AGENT_LENS_WORKSPACE_TOKEN }}
+        REEF_WORKSPACE_TOKEN: ${{ secrets.REEF_WORKSPACE_TOKEN }}
       run: |
         echo ""
         echo "📹 Running WEBRTC INTEGRATION TESTS (Video streaming & metadata)"

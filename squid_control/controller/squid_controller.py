@@ -29,7 +29,6 @@ from squid_control.stitching.zarr_canvas import ZarrCanvas
 
 _is_simulation_mode = (
     "--simulation" in sys.argv or
-    os.environ.get("SQUID_SIMULATION_MODE", "").lower() in ["true", "1", "yes"] or
     os.environ.get("PYTEST_CURRENT_TEST") is not None  # Running in pytest
 )
 

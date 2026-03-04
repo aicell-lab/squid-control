@@ -88,7 +88,6 @@ Bridges a local microscope service to the public Hypha cloud, enabling remote ac
 | `REEF_WORKSPACE_TOKEN` | Authentication token for the `reef-imaging` Hypha workspace |
 | `REEF_LOCAL_TOKEN` | Token for a private local Hypha server |
 | `REEF_LOCAL_WORKSPACE` | Workspace name on the local Hypha server |
-| `SQUID_SIMULATION_MODE` | Set to `true` to force simulation mode without `--simulation` flag |
 | `SQUID_CONFIG_PATH` | Absolute path to a custom `.ini` configuration file |
 
 Copy `.env.example` to `.env` and fill in your tokens before running.

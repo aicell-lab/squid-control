@@ -56,7 +56,6 @@ from squid_control.hardware.config import CONFIG, load_config
 | `REEF_WORKSPACE_TOKEN` | Auth token for the `reef-imaging` Hypha workspace |
 | `REEF_LOCAL_TOKEN` | Token for a private local Hypha server |
 | `REEF_LOCAL_WORKSPACE` | Workspace name on the local server |
-| `SQUID_SIMULATION_MODE` | Set to `"true"` to force simulation mode |
 | `SQUID_CONFIG_PATH` | Absolute path to a custom INI config file |
 
 Copy `.env.example` to `.env` before running.

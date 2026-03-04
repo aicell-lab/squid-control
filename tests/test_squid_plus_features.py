@@ -257,27 +257,26 @@ class TestSquidPlusIntegration:
     async def squid_plus_controller_fixture(self):
         """Fixture for SquidController with Squid+ configuration"""
         # Mock the configuration to enable Squid+ features
-        with patch.dict(os.environ, {'SQUID_SIMULATION_MODE': 'true'}):
-            with patch('squid_control.hardware.config.CONFIG') as mock_config:
-                # Set up Squid+ configuration
-                mock_config.FILTER_CONTROLLER_ENABLE = True
-                mock_config.USE_XERYON = True
-                mock_config.XERYON_SERIAL_NUMBER = "test_sn_12345"
-                mock_config.XERYON_OBJECTIVE_SWITCHER_POS_1 = ['20x']
-                mock_config.XERYON_OBJECTIVE_SWITCHER_POS_2 = ['4x']
-                mock_config.XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM = 1.0
-                
-                controller = SquidController(is_simulation=True)
-                yield controller
-                
-                # Cleanup
-                try:
-                    if hasattr(controller, 'camera') and controller.camera is not None:
-                        if hasattr(controller.camera, 'zarr_image_manager') and controller.camera.zarr_image_manager is not None:
-                            await controller.camera._cleanup_zarr_resources_async()
-                        controller.close()
-                except Exception as e:
-                    print(f"Warning: Controller cleanup error (ignored): {e}")
+        with patch('squid_control.hardware.config.CONFIG') as mock_config:
+            # Set up Squid+ configuration
+            mock_config.FILTER_CONTROLLER_ENABLE = True
+            mock_config.USE_XERYON = True
+            mock_config.XERYON_SERIAL_NUMBER = "test_sn_12345"
+            mock_config.XERYON_OBJECTIVE_SWITCHER_POS_1 = ['20x']
+            mock_config.XERYON_OBJECTIVE_SWITCHER_POS_2 = ['4x']
+            mock_config.XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM = 1.0
+
+            controller = SquidController(is_simulation=True)
+            yield controller
+
+            # Cleanup
+            try:
+                if hasattr(controller, 'camera') and controller.camera is not None:
+                    if hasattr(controller.camera, 'zarr_image_manager') and controller.camera.zarr_image_manager is not None:
+                        await controller.camera._cleanup_zarr_resources_async()
+                    controller.close()
+            except Exception as e:
+                print(f"Warning: Controller cleanup error (ignored): {e}")
 
     @pytest.mark.timeout(60)
     async def test_squid_plus_controller_initialization(self, squid_plus_controller_fixture):

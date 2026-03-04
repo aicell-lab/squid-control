@@ -218,7 +218,6 @@ See `hardware/microcontroller.py` for the full command set (`CMD_SET` enum).
 | `REEF_WORKSPACE_TOKEN` | `service/`, `mirror/`, `storage/` | Hypha `reef-imaging` workspace token |
 | `REEF_LOCAL_TOKEN` | `service/` | Local Hypha server token |
 | `REEF_LOCAL_WORKSPACE` | `service/` | Local Hypha workspace name |
-| `SQUID_SIMULATION_MODE` | `controller/` | Set to `"true"` to force simulation |
 | `SQUID_CONFIG_PATH` | `controller/` | Override path to INI config file |
 
 ---

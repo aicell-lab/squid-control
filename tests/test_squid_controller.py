@@ -52,27 +52,13 @@ async def test_controller_initialization(sim_controller_fixture):
 
 @pytest.mark.timeout(60)
 async def test_simulation_mode_detection():
-    """Test simulation mode detection and import handling."""
-    # Test with environment variable
-    with patch.dict(os.environ, {'SQUID_SIMULATION_MODE': 'true'}):
-        # This should trigger the simulation mode detection
-        controller = SquidController(is_simulation=True)
-        assert controller.is_simulation is True
-        # Properly close controller
-        try:
-            controller.close()
-        except Exception as e:
-            print(f"Close error (expected): {e}")
-
-    # Test with pytest environment
-    with patch.dict(os.environ, {'PYTEST_CURRENT_TEST': 'test_case'}):
-        controller = SquidController(is_simulation=True)
-        assert controller.is_simulation is True
-        # Properly close controller
-        try:
-            controller.close()
-        except Exception as e:
-            print(f"Close error (expected): {e}")
+    """Test that is_simulation=True correctly enables simulation mode."""
+    controller = SquidController(is_simulation=True)
+    assert controller.is_simulation is True
+    try:
+        controller.close()
+    except Exception:
+        pass
 
 @pytest.mark.timeout(60)  # Longer timeout for comprehensive test
 async def test_well_plate_navigation_comprehensive(sim_controller_fixture):

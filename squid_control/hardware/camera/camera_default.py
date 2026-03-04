@@ -8,10 +8,9 @@ import asyncio
 import zarr
 import fsspec
 
-# Check if we're in simulation mode by looking for --simulation in sys.argv or environment
+# Check if we're in simulation mode by looking for --simulation in sys.argv or pytest
 _is_simulation_mode = (
-    "--simulation" in sys.argv or 
-    os.environ.get("SQUID_SIMULATION_MODE", "").lower() in ["true", "1", "yes"] or
+    "--simulation" in sys.argv or
     os.environ.get("PYTEST_CURRENT_TEST") is not None  # Running in pytest
 )
 
