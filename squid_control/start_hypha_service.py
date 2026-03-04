@@ -1051,9 +1051,9 @@ class MicroscopeHyphaService:
         """Cleanup method specifically for test environments."""
         try:
             # Stop video buffering if running
-            if self.buffer_acquisition_running:
+            if self.frame_acquisition_running:
                 logger.info("Stopping video buffering for test cleanup")
-                await self.stop_frame_buffer_acquisition()
+                await self.stop_video_buffering()
 
             # Close camera resources properly (if any)
             if hasattr(self, 'squidController') and self.squidController:
@@ -1626,7 +1626,7 @@ class MicroscopeHyphaService:
                 raise Exception("User not authorized to access this service")
 
             self.squidController.liveController.stop_live()
-            self.multipointController.abort_acqusition_requested=True
+            self.squidController.multipointController.abort_acqusition_requested = True
             logger.info("Stop scanning well plate")
             return "Stop scanning well plate"
         except Exception as e:
@@ -1925,11 +1925,6 @@ class MicroscopeHyphaService:
             "upload_zarr_dataset": self.upload_zarr_dataset,
             # Offline processing functions
             "process_timelapse_offline": self.process_timelapse_offline,
-            # Segmentation functions
-            "segmentation_start": self.segmentation_start,
-            "segmentation_get_status": self.segmentation_get_status,
-            "segmentation_cancel": self.segmentation_cancel,
-            "segmentation_get_polygons": self.segmentation_get_polygons,
         }
 
         # Conditionally register Squid+ specific endpoints
