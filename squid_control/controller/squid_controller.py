@@ -2375,12 +2375,12 @@ class SquidController(ScanningMixin, AcquisitionMixin):
                     logger.info(f"Objective switcher initialized with hardware (SN: {xeryon_sn})")
 
                     # Home and position the objective switcher immediately
-                    logger.info("Homing objective switcher...")
-                    self.objective_switcher.home()
-                    logger.info("✓ Objective switcher homed successfully")
+                    if not self.objective_switcher.home():
+                        raise RuntimeError("Objective switcher homing failed")
 
                     # Set the speed
-                    self.objective_switcher.set_speed(xeryon_speed)
+                    if not self.objective_switcher.set_speed(xeryon_speed):
+                        raise RuntimeError(f"Failed to set objective switcher speed to {xeryon_speed}")
                     logger.info(f"Objective switcher speed set to {xeryon_speed}")
 
                     # Move to initial position based on default objective
@@ -2393,14 +2393,17 @@ class SquidController(ScanningMixin, AcquisitionMixin):
                     # Check which position the default objective belongs to
                     if default_obj and default_obj in pos1_objs:
                         logger.info(f"Moving to position 1 for default objective: {default_obj}")
-                        self.objective_switcher.move_to_position_1(move_z=False)
+                        if not self.objective_switcher.move_to_position_1(move_z=False):
+                            raise RuntimeError("Failed to move objective switcher to position 1")
                     elif default_obj and default_obj in pos2_objs:
                         logger.info(f"Moving to position 2 for default objective: {default_obj}")
-                        self.objective_switcher.move_to_position_2(move_z=False)
+                        if not self.objective_switcher.move_to_position_2(move_z=False):
+                            raise RuntimeError("Failed to move objective switcher to position 2")
                     else:
                         # Default to position 1 if no match found
                         logger.warning(f"Default objective '{default_obj}' not found in position lists, defaulting to position 1")
-                        self.objective_switcher.move_to_position_1(move_z=False)
+                        if not self.objective_switcher.move_to_position_1(move_z=False):
+                            raise RuntimeError("Failed to move objective switcher to fallback position 1")
 
                     logger.info("✓ Objective switcher ready")
                 else:
@@ -2420,4 +2423,3 @@ if __name__ == "__main__":
     print("SquidController module loaded successfully")
     print("Use: python -m squid_control microscope --simulation")
     print("Or: python -m squid_control mirror")
-
