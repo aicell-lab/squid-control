@@ -94,43 +94,9 @@ class ObjectiveSwitcherController:
                 self.current_position = 0
                 return True
             else:
-                # Real hardware homing with manual limit avoidance
-                logger.info("Homing objective switcher (this will take a few seconds)...")
+                # Match official Squid behavior: stop scan, then find index directly.
+                logger.info("Homing objective switcher...")
                 self.axisX.stopScan()
-                
-                # CRITICAL: Forcefully move away from limits before findIndex()
-                # This is necessary because the stage might be at a limit from previous power-off
-                # We use aggressive bidirectional scans to ensure we break free from any limit
-                try:
-                    logger.info("Moving away from limits before homing (this takes ~3 seconds)...")
-                    
-                    # Strategy: Scan in BOTH directions aggressively to ensure we're not at a limit
-                    # The controller will auto-stop at limits, so this is safe
-                    
-                    # Step 1: Strong scan in negative direction for 1 second
-                    # This moves away from positive limit or hits negative limit
-                    logger.info("Step 1: Scanning negative direction...")
-                    self.axisX.startScan(-1, execTime=1.0)  # 1 second negative scan
-                    time.sleep(0.3)  # Settle time
-                    
-                    # Step 2: Strong scan in positive direction for 1 second  
-                    # This moves away from negative limit or hits positive limit
-                    logger.info("Step 2: Scanning positive direction...")
-                    self.axisX.startScan(1, execTime=1.0)  # 1 second positive scan
-                    time.sleep(0.3)  # Settle time
-                    
-                    # Step 3: Final centering - scan negative briefly to end up in middle
-                    logger.info("Step 3: Final centering...")
-                    self.axisX.startScan(-1, execTime=0.5)  # 0.5 second to center
-                    time.sleep(0.3)
-                    
-                    logger.info("Pre-positioning complete, stage should be away from limits")
-                    
-                except Exception as e:
-                    logger.warning(f"Could not perform pre-scan: {e}")
-                    logger.warning("Proceeding with homing anyway...")
-                
-                # Now perform homing - should be safe after jogging away from limits
                 self.axisX.findIndex()
                 self.current_position = 0
                 logger.info("✓ Objective switcher homed successfully")
@@ -210,9 +176,9 @@ class ObjectiveSwitcherController:
         """
         Move to position 2 (e.g., 4x objective)
         
-        CRITICAL ORDER (opposite of position 1!):
-        1. Retract Z stage FIRST (to avoid collision)
-        2. THEN move Xeryon axis
+        CRITICAL ORDER:
+        1. Move Xeryon axis first
+        2. Then retract Z (if needed)
         
         Args:
             move_z (bool): Whether to move Z stage to compensate for objective change
