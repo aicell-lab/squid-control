@@ -13,7 +13,7 @@ import pytest
 import pytest_asyncio
 from hypha_rpc import connect_to_server
 
-from squid_control.start_hypha_service import (
+from squid_control.service import (
     MicroscopeHyphaService,
     MicroscopeVideoTrack,
 )

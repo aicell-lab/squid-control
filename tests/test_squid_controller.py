@@ -6,12 +6,12 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from squid_control.control.config import (  # Import necessary config
+from squid_control.hardware.config import (  # Import necessary config
     CONFIG,
     SIMULATED_CAMERA,
     WELLPLATE_FORMAT_96,
 )
-from squid_control.squid_controller import SquidController
+from squid_control.controller.squid_controller import SquidController
 
 # Mark all tests in this module as asyncio
 pytestmark = pytest.mark.asyncio
@@ -146,7 +146,7 @@ async def test_configuration_and_pixel_size(sim_controller_fixture):
         assert controller.pixel_size_xy > 0
 
         # Test pixel size adjustment factor from CONFIG (not as controller attribute)
-        from squid_control.control.config import CONFIG
+        from squid_control.hardware.config import CONFIG
         assert hasattr(CONFIG, 'PIXEL_SIZE_ADJUSTMENT_FACTOR')
         assert CONFIG.PIXEL_SIZE_ADJUSTMENT_FACTOR > 0
         break
@@ -640,7 +640,7 @@ def test_get_microscope_configuration_data():
     """Test the get_microscope_configuration_data function from config.py."""
     print("Testing get_microscope_configuration_data function...")
 
-    from squid_control.control.config import get_microscope_configuration_data
+    from squid_control.hardware.config import get_microscope_configuration_data
 
     # Test 1: Get all configuration
     print("1. Testing 'all' configuration...")
@@ -714,7 +714,7 @@ def test_configuration_data_content():
     """Test the content and structure of configuration data."""
     print("Testing configuration data content and structure...")
 
-    from squid_control.control.config import get_microscope_configuration_data
+    from squid_control.hardware.config import get_microscope_configuration_data
 
     # Test 1: Camera configuration content
     print("1. Testing camera configuration content...")
@@ -787,7 +787,7 @@ def test_configuration_json_serializable():
 
     import json
 
-    from squid_control.control.config import get_microscope_configuration_data
+    from squid_control.hardware.config import get_microscope_configuration_data
 
     # Test 1: Serialize all configuration
     print("1. Testing full configuration JSON serialization...")
@@ -1663,7 +1663,7 @@ async def test_squid_plus_integration_with_existing_features(sim_controller_fixt
         print("3. Testing configuration still works...")
         
         # Test that configuration is accessible
-        from squid_control.control.config import CONFIG
+        from squid_control.hardware.config import CONFIG
         assert CONFIG is not None
         print("   ✓ Configuration still accessible")
         
@@ -1702,7 +1702,7 @@ async def test_squid_plus_configuration_parameters(sim_controller_fixture):
     async for controller in sim_controller_fixture:
         print("🧪 Testing Squid+ configuration parameters...")
         
-        from squid_control.control.config import CONFIG
+        from squid_control.hardware.config import CONFIG
         
         # Test filter wheel configuration
         assert hasattr(CONFIG, 'FILTER_CONTROLLER_ENABLE')
@@ -1750,7 +1750,7 @@ async def test_camera_type_switching():
     
     # Test 1: Default camera
     print("1. Testing Default camera type...")
-    from squid_control.control.camera import get_camera
+    from squid_control.hardware.camera import get_camera
     
     default_camera, default_camera_fc = get_camera('Default')
     print(f"   ✓ Default camera module: {default_camera.__name__}")
@@ -1801,7 +1801,7 @@ async def test_toupcam_camera_specific_features():
     """Test Toupcam-specific camera features"""
     print("🧪 Testing Toupcam-specific camera features...")
     
-    from squid_control.control.camera import get_camera
+    from squid_control.hardware.camera import get_camera
     
     # Get Toupcam camera
     toupcam_camera, _ = get_camera('Toupcam')

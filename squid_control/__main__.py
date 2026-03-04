@@ -22,7 +22,7 @@ Examples:
   python -m squid_control mirror --cloud-service-id "microscope-control-squid-2" --local-service-id "microscope-control-squid-2"
   
   # Run specific service directly
-  python -m squid_control.services.mirror --cloud-service-id "microscope-control-squid-2"
+  python -m squid_control.mirror --cloud-service-id "microscope-control-squid-2"
         """
     )
 
@@ -116,17 +116,17 @@ def main():
         if args.command == "microscope":
             # Import locally to avoid circular imports
             # Create a new argument parser for the microscope service
-            # that matches what start_hypha_service.py expects
+            # that matches what the microscope service expects
             import argparse as ap
 
-            from .start_hypha_service import main as microscope_main
+            from .service import main as microscope_main
             microscope_parser = ap.ArgumentParser()
             microscope_parser.add_argument("--simulation", action="store_true", default=False)
             microscope_parser.add_argument("--local", action="store_true", default=False)
             microscope_parser.add_argument("--verbose", "-v", action="count")
             microscope_parser.add_argument("--config", type=str, default=None)
 
-            # Convert our args to the format expected by start_hypha_service.py
+            # Convert args to format expected by the microscope service
             microscope_args = []
             if args.simulation:
                 microscope_args.append("--simulation")
@@ -139,7 +139,7 @@ def main():
 
             # Temporarily replace sys.argv to pass arguments to microscope_main
             original_argv = sys.argv
-            sys.argv = ["start_hypha_service.py"] + microscope_args
+            sys.argv = ["squid_control.service"] + microscope_args
 
             try:
                 microscope_main()
@@ -152,7 +152,7 @@ def main():
             import asyncio
             import traceback
 
-            from .services.mirror.cli import MirrorMicroscopeService
+            from .mirror.cli import MirrorMicroscopeService
 
             # Create and configure the mirror service
             mirror_service = MirrorMicroscopeService()

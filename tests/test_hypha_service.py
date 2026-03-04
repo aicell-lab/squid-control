@@ -7,7 +7,7 @@ import pytest
 import pytest_asyncio
 from hypha_rpc import connect_to_server
 
-from squid_control.start_hypha_service import (
+from squid_control.service import (
     MicroscopeHyphaService,
 )
 
@@ -63,10 +63,10 @@ async def test_microscope_service():
 
 
             # Initialize artifact manager and snapshot manager for testing
-            from squid_control.hypha_tools.artifact_manager.artifact_manager import (
+            from squid_control.storage.artifact_manager.artifact_manager import (
                 SquidArtifactManager,
             )
-            from squid_control.hypha_tools.snapshot_utils import SnapshotManager
+            from squid_control.storage.snapshot_utils import SnapshotManager
             
             microscope.artifact_manager = SquidArtifactManager()
             artifact_server = await connect_to_server({
@@ -620,7 +620,7 @@ async def test_multi_channel_imaging(test_microscope_service):
     microscope, service = test_microscope_service
 
     channels_to_test = [0, 11, 12, 13, 14, 15]  # All supported channels
-    from squid_control.control.config import ChannelMapper
+    from squid_control.hardware.config import ChannelMapper
 
     for channel in channels_to_test:
         try:
@@ -1353,7 +1353,7 @@ async def test_microscope_configuration_schema_method(test_microscope_service):
             print("1. Testing schema method...")
 
             # Test schema method with different inputs
-            from squid_control.start_hypha_service import Microscope
+            from squid_control.service import Microscope
             if hasattr(Microscope, 'GetMicroscopeConfigurationInput'):
                 # Test with valid input
                 config_input = Microscope.GetMicroscopeConfigurationInput(

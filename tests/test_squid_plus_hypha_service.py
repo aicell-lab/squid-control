@@ -8,7 +8,7 @@ import pytest
 import pytest_asyncio
 from hypha_rpc import connect_to_server
 
-from squid_control.start_hypha_service import (
+from squid_control.service import (
     MicroscopeHyphaService,
 )
 
@@ -93,8 +93,8 @@ async def test_squid_plus_microscope_service():
 
 
             # Initialize artifact manager and snapshot manager for testing
-            from squid_control.hypha_tools.artifact_manager.artifact_manager import SquidArtifactManager
-            from squid_control.hypha_tools.snapshot_utils import SnapshotManager
+            from squid_control.storage.artifact_manager.artifact_manager import SquidArtifactManager
+            from squid_control.storage.snapshot_utils import SnapshotManager
             
             microscope.artifact_manager = SquidArtifactManager()
             artifact_server = await connect_to_server({

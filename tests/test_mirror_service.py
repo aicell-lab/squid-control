@@ -7,11 +7,11 @@ import pytest_asyncio
 from hypha_rpc import connect_to_server
 
 # Import the mirror service components
-from squid_control.services.mirror.mirror_service import MirrorMicroscopeService
-from squid_control.services.mirror.video_track import MicroscopeVideoTrack
+from squid_control.mirror.mirror_service import MirrorMicroscopeService
+from squid_control.mirror.video_track import MicroscopeVideoTrack
 
 # Import the real microscope service for testing
-from squid_control.start_hypha_service import MicroscopeHyphaService
+from squid_control.service import MicroscopeHyphaService
 
 # Mark all tests in this module as asyncio and integration tests
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]

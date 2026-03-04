@@ -40,7 +40,7 @@ class OfflineProcessor:
 
     def _ensure_config_loaded(self):
         """Ensure the configuration is properly loaded with auto-detection."""
-        from squid_control.control.config import CONFIG, load_config
+        from squid_control.hardware.config import CONFIG, load_config
 
         # Check if DEFAULT_SAVING_PATH is already loaded
         if not CONFIG.DEFAULT_SAVING_PATH:
@@ -187,7 +187,7 @@ class OfflineProcessor:
             [experiment_id-20250822T143055, experiment_id_2025-08-22_14-30-55, ...]
         """
 
-        from squid_control.control.config import CONFIG
+        from squid_control.hardware.config import CONFIG
         print(f"CONFIG.DEFAULT_SAVING_PATH = {CONFIG.DEFAULT_SAVING_PATH}")
         base_path = Path(CONFIG.DEFAULT_SAVING_PATH)
         print(f"Searching in base path: {base_path}")
@@ -340,7 +340,7 @@ class OfflineProcessor:
             Dictionary mapping filename channel names (zarr format) to human names (expected by canvas)
         """
 
-        from squid_control.control.config import ChannelMapper
+        from squid_control.hardware.config import ChannelMapper
 
         # Create mapping from zarr names (used in filenames) to human names (expected by canvas)
         filename_to_human_mapping = {}
@@ -921,7 +921,7 @@ class OfflineProcessor:
             experiment_folder_name: Name of the experiment folder to clean up temp folders for
         """
         try:
-            from squid_control.control.config import CONFIG
+            from squid_control.hardware.config import CONFIG
 
             if CONFIG.DEFAULT_SAVING_PATH and Path(CONFIG.DEFAULT_SAVING_PATH).exists():
                 base_temp_path = Path(CONFIG.DEFAULT_SAVING_PATH)
@@ -983,7 +983,7 @@ class OfflineProcessor:
             print(f"Found {len(all_positions)} positions to process from {len(coordinates_data)} regions")
 
             # 2. Create/find stitch folder - use consistent name without timestamp for resume capability
-            from squid_control.control.config import CONFIG
+            from squid_control.hardware.config import CONFIG
 
             if CONFIG.DEFAULT_SAVING_PATH and Path(CONFIG.DEFAULT_SAVING_PATH).exists():
                 base_temp_path = Path(CONFIG.DEFAULT_SAVING_PATH)
@@ -1296,7 +1296,7 @@ class OfflineProcessor:
         """
         from pathlib import Path
 
-        from squid_control.control.config import CONFIG
+        from squid_control.hardware.config import CONFIG
 
         # Use CONFIG.DEFAULT_SAVING_PATH for output directory
         try:
