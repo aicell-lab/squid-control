@@ -11,8 +11,7 @@ import numpy as np
 # app specific libraries
 from squid_control.control import core, microcontroller
 from squid_control.control.camera import get_camera
-from squid_control.control.config import *
-from squid_control.control.config import ChannelMapper
+from squid_control.control.config import CONFIG, ChannelMapper, load_config
 from squid_control.control.utils import rotate_and_flip_image
 from squid_control.stitching.zarr_canvas import ZarrCanvas
 
@@ -23,7 +22,6 @@ _is_simulation_mode = (
 )
 
 if _is_simulation_mode:
-    print("Simulation mode detected - skipping hardware peripheral imports")
     SERIAL_PERIPHERALS_AVAILABLE = False
     serial_peripherals = None
 else:
@@ -31,7 +29,6 @@ else:
         from squid_control.control import serial_peripherals
         SERIAL_PERIPHERALS_AVAILABLE = True
     except ImportError as e:
-        print(f"serial_peripherals import error - hardware peripheral functionality not available: {e}")
         SERIAL_PERIPHERALS_AVAILABLE = False
         serial_peripherals = None
 
@@ -52,7 +49,7 @@ if os.path.exists(cache_file_path):
     try:
         with open(cache_file_path) as f:
             config_path = f.readline().strip()
-    except:
+    except OSError:
         pass
 
 from squid_control.utils.logging_utils import setup_logging
@@ -83,10 +80,10 @@ class SquidController:
 
             if os.path.exists(squid_plus_config_main):
                 config_path = squid_plus_config_main
-                print("🔬 Detected Squid+ microscope - using Squid+ configuration")
+                logger.info("Detected Squid+ microscope - using Squid+ configuration")
             elif os.path.exists(hcs_config_main):
                 config_path = hcs_config_main
-                print("🔬 Detected original Squid microscope - using HCS_v2 configuration")
+                logger.info("Detected original Squid microscope - using HCS_v2 configuration")
             else:
                 # Fall back to config directory
                 config_dir = os.path.join(os.path.dirname(path), 'config')
@@ -95,21 +92,21 @@ class SquidController:
 
                 if os.path.exists(squid_plus_config):
                     config_path = squid_plus_config
-                    print("🔬 Detected Squid+ microscope - using Squid+ configuration from config directory")
+                    logger.info("Detected Squid+ microscope - using Squid+ configuration from config directory")
                 elif os.path.exists(hcs_config):
                     config_path = hcs_config
-                    print("🔬 Detected original Squid microscope - using HCS_v2 configuration from config directory")
+                    logger.info("Detected original Squid microscope - using HCS_v2 configuration from config directory")
                 else:
                     # Final fallback
                     config_path = hcs_config
-                    print("⚠️  No configuration file found, using default path (may fail)")
+                    logger.warning("No configuration file found, using default path (may fail)")
 
-        print(f"Loading configuration from: {config_path}")
+        logger.info(f"Loading configuration from: {config_path}")
         load_config(config_path, False)
 
         # Create objects after configuration is loaded to use updated CONFIG values
         self.objectiveStore = core.ObjectiveStore()
-        print(f"ObjectiveStore initialized with default objective: {self.objectiveStore.current_objective}")
+        logger.info(f"ObjectiveStore initialized with default objective: {self.objectiveStore.current_objective}")
 
         # Get camera modules - use separate camera types for main and focus cameras
         focus_camera_type = getattr(CONFIG, 'FOCUS_CAMERA_TYPE', CONFIG.CAMERA_TYPE)
@@ -164,13 +161,13 @@ class SquidController:
 
                     # Open focus camera only if it was found
                     if sn_camera_focus is not None:
-                        print(f"Found focus camera: {CONFIG.FOCUS_CAMERA_MODEL} (SN: {sn_camera_focus})")
+                        logger.info(f"Found focus camera: {CONFIG.FOCUS_CAMERA_MODEL} (SN: {sn_camera_focus})")
                         self.camera_focus = camera_fc.Camera(sn=sn_camera_focus)
                         self.camera_focus.open()
                     else:
-                        print(f"⚠️  Focus camera not found: {CONFIG.FOCUS_CAMERA_MODEL}")
-                        print("   Laser autofocus will not be available.")
-                        print("   Using simulated focus camera instead.")
+                        logger.warning(f"Focus camera not found: {CONFIG.FOCUS_CAMERA_MODEL}")
+                        logger.warning("Laser autofocus will not be available.")
+                        logger.warning("Using simulated focus camera instead.")
                         self.camera_focus = camera_fc.Camera_Simulation()
                         self.camera_focus.open()
                 else:
@@ -180,8 +177,8 @@ class SquidController:
                     )
                     self.camera.open()
             except Exception as e:
-                print(f"! Camera initialization failed: {e}")
-                print("! Using simulated camera instead !")
+                logger.error(f"Camera initialization failed: {e}")
+                logger.warning("Using simulated camera instead")
                 # When hardware fails, fallback to simulation with default zarr dataset
                 zarr_fallback = "/mnt/shared_documents/20251215-illumination-calibrated/data.zarr"
                 if CONFIG.SUPPORT_LASER_AUTOFOCUS:
@@ -266,9 +263,9 @@ class SquidController:
         while self.microcontroller.is_busy():
             time.sleep(0.005)
             if time.time() - t0 > 10:
-                print("z homing timeout, the program will exit")
+                logger.error("z homing timeout, the program will exit")
                 exit()
-        print("objective retracted")
+        logger.info("objective retracted")
 
         # Initialize Squid+ hardware after basic setup (creates objects but doesn't home yet)
         self._initialize_squid_plus_hardware()
@@ -304,7 +301,7 @@ class SquidController:
         )
 
         # home XY, set zero and set software limit
-        print("home xy")
+        logger.info("home xy")
         timestamp_start = time.time()
         # x needs to be at > + 20 mm when homing y
         self.navigationController.move_x(20)  # to-do: add blocking code
@@ -316,7 +313,7 @@ class SquidController:
         while self.microcontroller.is_busy():
             time.sleep(0.005)
             if time.time() - t0 > 10:
-                print("y homing timeout, the program will exit")
+                logger.error("y homing timeout, the program will exit")
                 exit()
         self.navigationController.zero_y()
         # home x
@@ -325,11 +322,11 @@ class SquidController:
         while self.microcontroller.is_busy():
             time.sleep(0.005)
             if time.time() - t0 > 10:
-                print("y homing timeout, the program will exit")
+                logger.error("y homing timeout, the program will exit")
                 exit()
         self.navigationController.zero_x()
         self.slidePositionController.homing_done = True
-        print("home xy done")
+        logger.info("home xy done")
 
         # Initialize filter wheel AFTER XY homing (matches official software pattern in gui_hcs.py setup_hardware)
         if hasattr(self, 'filter_wheel') and self.filter_wheel is not None:
@@ -367,7 +364,7 @@ class SquidController:
         while self.microcontroller.is_busy():
             time.sleep(0.005)
             if time.time() - t0 > 5:
-                print("z return timeout, the program will exit")
+                logger.error("z return timeout, the program will exit")
                 exit()
 
         # set output's gains
@@ -485,9 +482,9 @@ class SquidController:
             # Ensure binning_factor is at least 1 to avoid division by zero
             binning_factor = max(1, binning_factor)
 
-            print(f"Using objective: {object_dict_key}")
-            print(f"CONFIG.DEFAULT_OBJECTIVE: {CONFIG.DEFAULT_OBJECTIVE}")
-            print(f"Tube lens: {tube_lens_mm} mm, Objective tube lens: {objective_tube_lens_mm} mm, Pixel size: {pixel_size_um} µm, Magnification: {magnification}, Binning factor: {binning_factor}")
+            logger.info(f"Using objective: {object_dict_key}")
+            logger.info(f"CONFIG.DEFAULT_OBJECTIVE: {CONFIG.DEFAULT_OBJECTIVE}")
+            logger.info(f"Tube lens: {tube_lens_mm} mm, Objective tube lens: {objective_tube_lens_mm} mm, Pixel size: {pixel_size_um} µm, Magnification: {magnification}, Binning factor: {binning_factor}")
         except Exception as e:
             logger.error(f"Missing required parameters for pixel size calculation: {e}")
             return
@@ -502,7 +499,7 @@ class SquidController:
         # Apply any additional adjustment factor if needed
         self.pixel_size_xy = self.pixel_size_xy * CONFIG.PIXEL_SIZE_ADJUSTMENT_FACTOR
 
-        print(f"Pixel size: {self.pixel_size_xy} µm (binning factor: {binning_factor}, adjustment factor: {CONFIG.PIXEL_SIZE_ADJUSTMENT_FACTOR})")
+        logger.info(f"Pixel size: {self.pixel_size_xy} µm (binning factor: {binning_factor}, adjustment factor: {CONFIG.PIXEL_SIZE_ADJUSTMENT_FACTOR})")
 
 
     def move_to_scaning_position(self):
@@ -522,7 +519,7 @@ class SquidController:
         while self.microcontroller.is_busy():
             time.sleep(0.005)
             if time.time() - t0 > 5:
-                print('z return timeout, the program will exit')
+                logger.error('z return timeout, the program will exit')
                 exit()
 
     def plate_scan(self, well_plate_type='96', illumination_settings=None, do_contrast_autofocus=False, do_reflection_af=True, wells_to_scan=['A1'], Nx=3, Ny=3, dx=0.8, dy=0.8, action_ID='testPlateScanNew'):
@@ -585,15 +582,15 @@ class SquidController:
 
         # Start scanning
         self.is_busy = True
-        print('Starting new plate scan with custom illumination settings')
+        logger.info('Starting new plate scan with custom illumination settings')
         self.multipointController.run_acquisition()
-        print('New plate scan completed')
+        logger.info('New plate scan completed')
         self.is_busy = False
 
     def stop_plate_scan(self):
         self.multipointController.abort_acqusition_requested = True
         self.is_busy = False
-        print('Plate scan stopped')
+        logger.info('Plate scan stopped')
 
     def stop_scan_plate_save_raw_images_new(self):
         """Stop the plate scan that saves raw images - alias for stop_plate_scan"""
@@ -726,7 +723,6 @@ class SquidController:
         # Start scanning with expanded location_list
         self.is_busy = True
         logger.info(f'Starting flexible position scan with {len(location_list)} total scan points')
-        print(f'Starting flexible position scan with {len(location_list)} total scan points')
         
         # Store location names in scanCoordinates for proper naming
         if self.scanCoordinates is not None:
@@ -735,8 +731,7 @@ class SquidController:
         
         # Pass location_list to run_acquisition
         self.multipointController.run_acquisition(location_list=location_list)
-        
-        print('Flexible position scan completed')
+
         logger.info('Flexible position scan completed')
         self.is_busy = False
 
@@ -745,10 +740,9 @@ class SquidController:
         self.multipointController.abort_acqusition_requested = True
         self.is_busy = False
         logger.info('Flexible position scan stopped')
-        print('Flexible position scan stopped')
 
     async def send_trigger_simulation(self, channel=0, intensity=100, exposure_time=100):
-        print('Getting simulated image')
+        logger.debug('Getting simulated image')
         current_x, current_y, current_z, *_ = self.navigationController.update_pos(microcontroller=self.microcontroller)
         self.dz = current_z - SIMULATED_CAMERA.ORIN_Z
         self.current_channel = channel
@@ -756,7 +750,7 @@ class SquidController:
         self.current_exposure_time = exposure_time
         self.current_intensity = intensity
         await self.camera.send_trigger(current_x, current_y, self.dz, self.pixel_size_xy, channel, intensity, exposure_time, magnification_factor)
-        print(f'For simulated camera, exposure_time={exposure_time}, intensity={intensity}, magnification_factor={magnification_factor}, current position: {current_x},{current_y},{current_z}')
+        logger.debug(f'For simulated camera, exposure_time={exposure_time}, intensity={intensity}, magnification_factor={magnification_factor}, current position: {current_x},{current_y},{current_z}')
 
     async def contrast_autofocus(self):
 
@@ -1138,13 +1132,13 @@ class SquidController:
         while self.microcontroller.is_busy():
             time.sleep(0.005)
             if time.time() - t0 > 10:
-                print('z homing timeout, the program will exit')
+                logger.error('z homing timeout, the program will exit')
                 exit()
-        print('objective retracted')
+        logger.info('objective retracted')
         self.navigationController.set_z_limit_pos_mm(CONFIG.SOFTWARE_POS_LIMIT.Z_POSITIVE)
 
         # home XY, set zero and set software limit
-        print('home xy')
+        logger.info('home xy')
         timestamp_start = time.time()
         # x needs to be at > + 20 mm when homing y
         self.navigationController.move_x(20) # to-do: add blocking code
@@ -1156,7 +1150,7 @@ class SquidController:
         while self.microcontroller.is_busy():
             time.sleep(0.005)
             if time.time() - t0 > 10:
-                print('y homing timeout, the program will exit')
+                logger.error('y homing timeout, the program will exit')
                 exit()
         self.navigationController.zero_y()
         # home x
@@ -1165,11 +1159,11 @@ class SquidController:
         while self.microcontroller.is_busy():
             time.sleep(0.005)
             if time.time() - t0 > 10:
-                print('y homing timeout, the program will exit')
+                logger.error('y homing timeout, the program will exit')
                 exit()
         self.navigationController.zero_x()
         self.slidePositionController.homing_done = True
-        print('home xy done')
+        logger.info('home xy done')
 
     def return_stage(self):
         # move to scanning position
@@ -1187,7 +1181,7 @@ class SquidController:
         while self.microcontroller.is_busy():
             time.sleep(0.005)
             if time.time() - t0 > 5:
-                print('z return timeout, the program will exit')
+                logger.error('z return timeout, the program will exit')
 
     async def snap_image(self, channel=0, intensity=100, exposure_time=100, full_frame=False):
         # Check if illumination was already on before we start

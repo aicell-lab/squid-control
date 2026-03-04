@@ -1,6 +1,6 @@
 import json
 
-from squid_control.control.config import *
+from squid_control.control.config import CONFIG
 
 # Edge positions in mm
 edge_positions_mm = [

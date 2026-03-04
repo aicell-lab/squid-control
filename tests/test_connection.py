@@ -10,9 +10,9 @@ from hypha_rpc import connect_to_server
 @pytest.mark.asyncio
 @pytest.mark.integration
 async def test_connection():
-    token = os.environ.get('AGENT_LENS_WORKSPACE_TOKEN')
+    token = os.environ.get('REEF_WORKSPACE_TOKEN')
     if not token:
-        print('❌ No AGENT_LENS_WORKSPACE_TOKEN found in environment')
+        print('❌ No REEF_WORKSPACE_TOKEN found in environment')
         return False
 
     print('🔗 Attempting to connect to Hypha server...')

@@ -103,9 +103,9 @@ class OfflineProcessor:
         """
         from hypha_artifact import AsyncHyphaArtifact
         
-        token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
+        token = os.environ.get("REEF_WORKSPACE_TOKEN")
         if not token:
-            raise Exception("AGENT_LENS_WORKSPACE_TOKEN environment variable not set")
+            raise Exception("REEF_WORKSPACE_TOKEN environment variable not set")
         
         server_url = server_url or "https://hypha.aicell.io"
         workspace = "reef-imaging"
@@ -1320,7 +1320,7 @@ class OfflineProcessor:
             for partial_file in partial_files:
                 try:
                     os.remove(partial_file)
-                except:
+                except OSError:
                     pass
 
         # Export canvas to this specific file path

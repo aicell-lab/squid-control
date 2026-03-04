@@ -27,9 +27,9 @@ async def test_microscope_service():
     os.environ['SQUID_TEST_MODE'] = 'true'
     
     # Check for token first
-    token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
+    token = os.environ.get("REEF_WORKSPACE_TOKEN")
     if not token:
-        pytest.skip("AGENT_LENS_WORKSPACE_TOKEN not set in environment")
+        pytest.skip("REEF_WORKSPACE_TOKEN not set in environment")
 
     print(f"🔗 Connecting to {TEST_SERVER_URL} workspace {TEST_WORKSPACE}...")
 

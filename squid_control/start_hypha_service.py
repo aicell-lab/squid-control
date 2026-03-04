@@ -208,7 +208,6 @@ class MicroscopeHyphaService:
         self.is_local = is_local
         self.config_name = config_name
         self.squidController = SquidController(is_simulation=is_simulation, config_name=config_name)
-        self.squidController.move_to_well('C',3)
 
         # Determine if this is a Squid+ microscope
         self.is_squid_plus = self._is_squid_plus_microscope()
@@ -1225,7 +1224,7 @@ class MicroscopeHyphaService:
 
             # Save using artifact manager (REQUIRED when not return_array)
             if not self.snapshot_manager:
-                raise Exception("Snapshot manager not available. Ensure AGENT_LENS_WORKSPACE_TOKEN is set.")
+                raise Exception("Snapshot manager not available. Ensure REEF_WORKSPACE_TOKEN is set.")
 
             # Get current position for metadata
             status = self.get_status()
@@ -2117,18 +2116,12 @@ class MicroscopeHyphaService:
                 raise
 
     async def setup(self):
+        self.squidController.move_to_well('C', 3)
 
-        # Determine workspace and token based on simulation mode
-        if self.is_simulation and not self.is_local:
-            remote_token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
-            remote_workspace = "reef-imaging"
-        else:
-            remote_token = os.environ.get("SQUID_WORKSPACE_TOKEN")
-            remote_workspace = "squid-control"
-
+        remote_token = os.environ.get("REEF_WORKSPACE_TOKEN")
         remote_server = await connect_to_server(
-                {"client_id": f"squid-remote-server-{self.service_id}-{uuid.uuid4()}", "server_url": "https://hypha.aicell.io", "token": remote_token, "workspace": remote_workspace}
-            )
+            {"client_id": f"squid-remote-server-{self.service_id}-{uuid.uuid4()}", "server_url": "https://hypha.aicell.io", "token": remote_token, "workspace": "reef-imaging"}
+        )
         self.remote_server = remote_server
         if not self.service_id:
             raise ValueError("MICROSCOPE_SERVICE_ID is not set in the environment variables.")
@@ -2139,22 +2132,11 @@ class MicroscopeHyphaService:
                 {"client_id": f"squid-local-server-{self.service_id}-{uuid.uuid4()}", "server_url": self.server_url, "token": token, "workspace": workspace}
             )
         else:
-            # Determine workspace and token based on simulation mode
-            if self.is_simulation:
-                try:
-                    token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
-                except:
-                    token = await login({"server_url": self.server_url})
-                workspace = "reef-imaging"
-            else:
-                try:
-                    token = os.environ.get("SQUID_WORKSPACE_TOKEN")
-                except:
-                    token = await login({"server_url": self.server_url})
-                workspace = "squid-control"
-
+            token = os.environ.get("REEF_WORKSPACE_TOKEN") or await login(
+                {"server_url": self.server_url}
+            )
             server = await connect_to_server(
-                {"client_id": f"squid-control-server-{self.service_id}-{uuid.uuid4()}", "server_url": self.server_url, "token": token, "workspace": workspace}
+                {"client_id": f"squid-control-server-{self.service_id}-{uuid.uuid4()}", "server_url": self.server_url, "token": token, "workspace": "reef-imaging"}
             )
 
         self.server = server
@@ -2167,7 +2149,7 @@ class MicroscopeHyphaService:
             self.artifact_manager = SquidArtifactManager()
 
             # Connect to reef-imaging workspace for artifact uploads (zarr datasets + snapshots)
-            artifact_token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
+            artifact_token = os.environ.get("REEF_WORKSPACE_TOKEN")
             if artifact_token:
                 artifact_server = await connect_to_server({
                     "server_url": "https://hypha.aicell.io",
@@ -2181,7 +2163,7 @@ class MicroscopeHyphaService:
                 self.squidController.zarr_artifact_manager = self.artifact_manager
                 logger.info("Artifact manager passed to squid controller")
             else:
-                logger.warning("AGENT_LENS_WORKSPACE_TOKEN not found, artifact upload functionality disabled")
+                logger.warning("REEF_WORKSPACE_TOKEN not found, artifact upload functionality disabled")
                 self.artifact_manager = None
         except Exception as e:
             logger.warning(f"Failed to initialize artifact manager: {e}")
@@ -2723,7 +2705,7 @@ class MicroscopeHyphaService:
         """
         Upload the experiment's zarr canvas folder directly to the artifact manager gallery using hypha-artifact.
         Returns: Dictionary with success status, experiment name, dataset name (with timestamp), total size (MB), and acquisition settings.
-        Notes: Dataset named '{experiment_name}-{date-time}'. Requires AGENT_LENS_WORKSPACE_TOKEN environment variable.
+        Notes: Dataset named '{experiment_name}-{date-time}'. Requires REEF_WORKSPACE_TOKEN environment variable.
         """
         try:
             # Check authentication
@@ -2778,9 +2760,9 @@ class MicroscopeHyphaService:
             # Use hypha-artifact for direct folder upload
             from hypha_artifact import AsyncHyphaArtifact
             
-            token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
+            token = os.environ.get("REEF_WORKSPACE_TOKEN")
             if not token:
-                raise Exception("AGENT_LENS_WORKSPACE_TOKEN environment variable not set")
+                raise Exception("REEF_WORKSPACE_TOKEN environment variable not set")
             
             workspace = "reef-imaging"
             logger.info(f"Creating artifact '{dataset_name}' for upload")
@@ -3533,7 +3515,7 @@ class MicroscopeHyphaService:
 
             # Check if zarr artifact manager is available
             if self.artifact_manager is None:
-                raise Exception("Artifact manager not initialized. Check that AGENT_LENS_WORKSPACE_TOKEN is set.")
+                raise Exception("Artifact manager not initialized. Check that REEF_WORKSPACE_TOKEN is set.")
 
             logger.info(f"Starting offline processing for experiment ID: {experiment_id}")
             logger.info(f"Parameters: upload_immediately={upload_immediately}, cleanup_temp_files={cleanup_temp_files}, use_parallel_wells={use_parallel_wells}")

@@ -1041,9 +1041,9 @@ def create_webrtc_test_html(service_id, webrtc_service_id, server_url, workspace
 async def webrtc_test_services():
     """Create microscope and WebRTC services for testing."""
     # Check for token first
-    token = os.environ.get("AGENT_LENS_WORKSPACE_TOKEN")
+    token = os.environ.get("REEF_WORKSPACE_TOKEN")
     if not token:
-        pytest.skip("AGENT_LENS_WORKSPACE_TOKEN not set in environment")
+        pytest.skip("REEF_WORKSPACE_TOKEN not set in environment")
 
     print("🔗 Setting up WebRTC test services...")
 

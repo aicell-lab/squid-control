@@ -39,7 +39,7 @@ def get_sn_by_model(model_name):
     try:
         device_manager = gx.DeviceManager()
         device_num, device_info_list = device_manager.update_device_list()
-    except:
+    except Exception:
         device_num = 0
     if device_num > 0:
         for i in range(device_num):

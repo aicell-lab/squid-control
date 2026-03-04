@@ -36,7 +36,7 @@ def get_sn_by_model(model_name):
     """
     try:
         device_list = toupcam.Toupcam.EnumV2()
-    except:
+    except Exception:
         logger.error("Problem generating Toupcam device list")
         return None
     
@@ -386,7 +386,7 @@ class Camera(object):
         if self.camera and self._capabilities and self._capabilities['has_fan']:
             try:
                 self._set_fan_speed(0)
-            except:
+            except Exception:
                 pass
         
         # Close camera

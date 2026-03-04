@@ -12,36 +12,31 @@ from squid_control.control.camera import TriggerModeSetting
 
 
 def conf_attribute_reader(string_value):
-    """
-    :brief: standardized way for reading config entries
-    that are strings, in priority order
-    None -> bool -> dict/list (via json) -> int -> float -> string
-    REMEMBER TO ENCLOSE PROPERTY NAMES IN LISTS/DICTS IN
-    DOUBLE QUOTES
+    """Standardized way for reading config entries that are strings.
+
+    Parses in priority order: None -> bool -> dict/list (via JSON) -> int -> float -> string.
+
+    Note: Property names in lists/dicts must be enclosed in double quotes.
     """
     actualvalue = str(string_value).strip()
+    if actualvalue == "None":
+        return None
+    if actualvalue in ("True", "true"):
+        return True
+    if actualvalue in ("False", "false"):
+        return False
     try:
-        if str(actualvalue) == "None":
-            return None
-    except:
+        return json.loads(actualvalue)
+    except json.JSONDecodeError:
         pass
     try:
-        if str(actualvalue) == "True" or str(actualvalue) == "true":
-            return True
-        if str(actualvalue) == "False" or str(actualvalue) == "false":
-            return False
-    except:
+        return int(actualvalue)
+    except ValueError:
         pass
     try:
-        actualvalue = json.loads(actualvalue)
-    except:
-        try:
-            actualvalue = int(str(actualvalue))
-        except:
-            try:
-                actualvalue = float(actualvalue)
-            except:
-                actualvalue = str(actualvalue)
+        return float(actualvalue)
+    except ValueError:
+        pass
     return actualvalue
 
 

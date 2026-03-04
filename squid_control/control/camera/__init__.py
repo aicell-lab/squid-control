@@ -26,13 +26,13 @@ def get_camera(camera_type, focus_camera_type=None):
     if camera_type == "Toupcam":
         try:
             import squid_control.control.camera.camera_toupcam as camera
-        except:
+        except ImportError:
             print("Problem importing Toupcam, defaulting to default camera")
             import squid_control.control.camera.camera_default as camera
     elif camera_type == "FLIR":
         try:
             import squid_control.control.camera.camera_flir as camera
-        except:
+        except ImportError:
             print("Problem importing FLIR camera, defaulting to default camera")
             import squid_control.control.camera.camera_default as camera
     else:
@@ -42,13 +42,13 @@ def get_camera(camera_type, focus_camera_type=None):
     if focus_camera_type == "Toupcam":
         try:
             import squid_control.control.camera.camera_toupcam as camera_fc
-        except:
+        except ImportError:
             print("Problem importing Toupcam for focus, defaulting to default camera")
             import squid_control.control.camera.camera_default as camera_fc
     elif focus_camera_type == "FLIR":
         try:
             import squid_control.control.camera.camera_flir as camera_fc
-        except:
+        except ImportError:
             print("Problem importing FLIR camera for focus, defaulting to default camera")
             import squid_control.control.camera.camera_default as camera_fc
     else:

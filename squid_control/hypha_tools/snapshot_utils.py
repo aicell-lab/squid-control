@@ -239,7 +239,7 @@ class SnapshotManager:
             # If upload fails, try to discard staged changes
             try:
                 await self._svc.discard(artifact_id=dataset["id"])
-            except:
+            except Exception:
                 pass
             raise Exception(f"Failed to save snapshot: {e}")
 
