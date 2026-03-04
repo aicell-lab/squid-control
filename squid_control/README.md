@@ -43,7 +43,7 @@ squid_control/
 │   └── cli.py               # CLI for the mirror subcommand
 │
 ├── stitching/               # Multi-well image stitching
-│   └── zarr_canvas.py       # WellZarrCanvas, ExperimentManager — OME-Zarr builder
+│   └── zarr_canvas.py       # ZarrCanvas, ExperimentManager — OME-Zarr builder
 │
 ├── storage/                 # Data storage and upload utilities
 │   ├── artifact_manager/    # Hypha Artifact Manager client

@@ -2097,6 +2097,3 @@ class ExperimentManager:
         logger.info("ExperimentManager closed")
 
 
-# Backward compatibility aliases
-WellZarrCanvasBase = ZarrCanvas
-WellZarrCanvas = ZarrCanvas

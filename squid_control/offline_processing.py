@@ -1165,7 +1165,7 @@ class OfflineProcessor:
         Wait for stitching to complete properly with timeout and progress monitoring.
         
         Args:
-            canvas: WellZarrCanvas instance
+            canvas: ZarrCanvas instance
             timeout_seconds: Maximum time to wait for stitching completion
         """
         start_time = time.time()
@@ -1225,7 +1225,7 @@ class OfflineProcessor:
         This ensures proper processing with all scales and coordinate conversion.
         
         Args:
-            canvas: WellZarrCanvas instance
+            canvas: ZarrCanvas instance
             image: Image array
             x_mm, y_mm: Absolute coordinates (like scan_region_to_zarr)
             zarr_channel_idx: Local zarr channel index
@@ -1236,8 +1236,8 @@ class OfflineProcessor:
             # Add to stitching queue with normal scan flag (all scales) - same as scan_region_to_zarr
             queue_item = {
                 'image': image.copy(),
-                'x_mm': x_mm,  # Use absolute coordinates - WellZarrCanvas will convert to well-relative
-                'y_mm': y_mm,  # Use absolute coordinates - WellZarrCanvas will convert to well-relative
+                'x_mm': x_mm,  # Use absolute coordinates - ZarrCanvas will convert to canvas-relative
+                'y_mm': y_mm,  # Use absolute coordinates - ZarrCanvas will convert to canvas-relative
                 'channel_idx': zarr_channel_idx,
                 'z_idx': z_idx,
                 'timepoint': timepoint,
@@ -1262,7 +1262,7 @@ class OfflineProcessor:
         Add image to canvas with backpressure to prevent queue overflow.
         
         Args:
-            canvas: WellZarrCanvas instance
+            canvas: ZarrCanvas instance
             image: Image array
             x_mm, y_mm: Coordinates
             zarr_channel_idx: Channel index
@@ -1288,7 +1288,7 @@ class OfflineProcessor:
         Export a well canvas to a ZIP file on disk using CONFIG.DEFAULT_SAVING_PATH.
         
         Args:
-            canvas: WellZarrCanvas instance
+            canvas: ZarrCanvas instance
             filename: Desired filename (e.g., 'well_A1_96.zip')
             
         Returns:

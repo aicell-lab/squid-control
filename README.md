@@ -193,7 +193,7 @@ Live microscope video is delivered over WebRTC:
 Well plate scans produce OME-Zarr datasets assembled in real time:
 
 - **Format:** OME-Zarr 0.4, axes T/C/Z/Y/X, 4× downsampling between scales
-- **Per-well canvases:** Each well gets an independent `WellZarrCanvas`
+- **Per-well canvases:** Each well gets an independent `ZarrCanvas`
 - **Quick scan mode:** Continuous-motion acquisition at up to 10 fps, stitched on the fly
 - **Export:** Canvas exported as ZIP archive, uploadable to Hypha Artifact Manager
 
