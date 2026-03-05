@@ -558,7 +558,7 @@ class MicroscopeHyphaService:
             # 3. Reload the matching microscope configuration file
             config_file = f"configuration_{new_config_name}_example.ini"
             config_path = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)), "config", config_file
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", config_file
             )
             from squid_control.hardware.config import load_config
             load_config(config_path, False)
