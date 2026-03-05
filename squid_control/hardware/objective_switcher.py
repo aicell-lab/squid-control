@@ -53,7 +53,7 @@ class ObjectiveSwitcherController:
         """Initialize hardware connection to Xeryon objective switcher"""
         try:
             # Import Xeryon module
-            from squid_control.hardware.Xeryon import Xeryon, Stage
+            from squid_control.hardware.drivers.Xeryon import Xeryon, Stage
             
             # Find the port with the matching serial number
             ports = serial.tools.list_ports.comports()
