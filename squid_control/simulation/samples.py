@@ -23,10 +23,8 @@ SIMULATION_SAMPLES = {
         "objective": "20x",
         "channels": [
             "BF_LED_matrix_full",
-            "Fluorescence_405_nm_Ex",
             "Fluorescence_488_nm_Ex",
             "Fluorescence_561_nm_Ex",
-            "Fluorescence_638_nm_Ex",
         ],
     },
     "HPA_PLATE1": {
