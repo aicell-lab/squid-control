@@ -125,6 +125,7 @@ class MicroscopeHyphaService:
         # WebRTC related attributes
         self.video_track = None
         self.webrtc_service_id = None
+        self.mjpeg_url = None  # Set after MJPEG ASGI service is registered
         self.is_streaming = False
         self.video_contrast_min = 0
         self.video_contrast_max = None
@@ -433,6 +434,8 @@ class MicroscopeHyphaService:
                 'F730_intensity_exposure': self.F730_intensity_exposure,
                 'video_fps': self.buffer_fps,
                 'video_buffering_active': self.frame_acquisition_running,
+                'mjpeg_url': self.mjpeg_url,
+                'webrtc_service_id': self.webrtc_service_id,
                 'current_well_location': well_info,  # Add well location information
                 'pixel_size_xy': self.squidController.pixel_size_xy,
                 # Unified scan status
@@ -446,6 +449,17 @@ class MicroscopeHyphaService:
         except Exception as e:
             logger.error(f"Failed to get status: {e}")
             raise e
+
+    @schema_function(skip_self=True)
+    def get_live_view_url(self, context=None):
+        """Get live video stream URLs. Returns mjpeg_url (browser-compatible) and webrtc_service_id (low-latency). Values are None if not running in remote mode."""
+        if context and not self.check_permission(context.get("user", {})):
+            raise Exception("User not authorized to access this service")
+
+        return {
+            "mjpeg_url": self.mjpeg_url,
+            "webrtc_service_id": self.webrtc_service_id,
+        }
 
     @schema_function(skip_self=True)
     def update_parameters_from_client(self,
@@ -1784,6 +1798,9 @@ class MicroscopeHyphaService:
             service_config.update(squid_plus_endpoints)
             logger.info(f"Registered {len(squid_plus_endpoints)} Squid+ specific endpoints")
 
+        # Only register video streaming endpoints in remote mode (local mode has no video services)
+        if not self.is_local:
+            service_config["get_live_view_url"] = self.get_live_view_url
 
         svc = await server.register_service(service_config)
 
@@ -1845,6 +1862,10 @@ class MicroscopeHyphaService:
         if self.is_simulation:
             service_config["list_simulation_samples"] = self.list_simulation_samples
             service_config["switch_sample"] = self.switch_sample
+
+        # Only register video streaming endpoints in remote mode (local mode has no video services)
+        if not self.is_local:
+            service_config["get_live_view_url"] = self.get_live_view_url
 
         svc = await server.register_service(service_config)
 
@@ -2106,9 +2127,10 @@ class MicroscopeHyphaService:
             "visibility": "public" if self.is_simulation else "protected",
             "config": {"visibility": "public", "require_context": False},
         })
+        self.mjpeg_url = f"{self.server_url}{server.config.workspace}/apps/{live_view_service_id}"
         logger.info(
             f"Live view ASGI service registered with id: {live_view_service_id}, "
-            f"accessible at {self.server_url}{server.config.workspace}/apps/{live_view_service_id}"
+            f"accessible at {self.mjpeg_url}"
         )
         return svc
 

@@ -62,6 +62,7 @@ class MirrorMicroscopeService:
         # Video streaming state
         self.is_streaming = False
         self.webrtc_service_id = None
+        self.mjpeg_url = None  # Set after MJPEG ASGI service is registered
         self.webrtc_connected = False
         self.metadata_data_channel = None
 
@@ -336,6 +337,10 @@ class MirrorMicroscopeService:
         # Add all mirrored methods to the service configuration
         service_config.update(self.mirrored_methods)
 
+        # Override get_live_view_url with the mirror's own version that returns cloud URLs.
+        # Local services never register video streaming, so the mirrored version would always return {None, None}.
+        service_config["get_live_view_url"] = self.get_live_view_url
+
         # Register the service
         self.cloud_service = await server.register_service(service_config)
 
@@ -579,9 +584,10 @@ class MirrorMicroscopeService:
             "serve": serve_mjpeg,
             "config": {"visibility": "protected", "require_context": False},
         })
+        self.mjpeg_url = f"{self.cloud_server_url}/{server.config.workspace}/apps/{live_view_service_id}"
         logger.info(
             f"Live view ASGI service registered with id: {live_view_service_id}, "
-            f"accessible at {self.cloud_server_url}/{server.config.workspace}/apps/{live_view_service_id}"
+            f"accessible at {self.mjpeg_url}"
         )
         return svc
 
@@ -630,6 +636,13 @@ class MirrorMicroscopeService:
     def ping(self):
         """Ping function for health checks"""
         return "pong"
+
+    def get_live_view_url(self, context=None):
+        """Get live video stream URLs. Returns mjpeg_url (browser-compatible) and webrtc_service_id (low-latency)."""
+        return {
+            "mjpeg_url": self.mjpeg_url,
+            "webrtc_service_id": self.webrtc_service_id,
+        }
 
     async def fetch_ice_servers(self):
         """Fetch ICE servers from the coturn service"""
