@@ -61,7 +61,7 @@ import pytest
 import pytest_asyncio
 
 from squid_control.hardware.config import CONFIG
-from squid_control.offline_processing import OfflineProcessor
+from scripts.offline_processing import OfflineProcessor
 
 
 class OfflineDataGenerator:

@@ -3366,7 +3366,7 @@ class MicroscopeHyphaService:
                 """
                 try:
                     # Import and create the offline processor
-                    from squid_control.offline_processing import OfflineProcessor
+                    from scripts.offline_processing import OfflineProcessor
                     processor = OfflineProcessor(
                         self.squidController,
                         self.artifact_manager,
