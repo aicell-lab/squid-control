@@ -13,6 +13,15 @@ _HPA_CHANNELS = [
     "Fluorescence_638_nm_Ex",   # ER / mitochondria
 ]
 
+# HPA full-scan channel layout (20x Squid — no brightfield)
+_HPA_FULL_SCAN_CHANNELS = [
+    "Fluorescence_405_nm_Ex",   # DAPI (nucleus)
+    "Fluorescence_488_nm_Ex",   # Antibody target (protein of interest)
+    "Fluorescence_561_nm_Ex",   # Microtubules / tubulin
+    "Fluorescence_638_nm_Ex",   # ER / mitochondria
+    "Fluorescence_730_nm_Ex",   # Additional far-red marker
+]
+
 SIMULATION_SAMPLES = {
     "U2OS_FUCCI": {
         "config_name": "HCS_v2",
@@ -21,11 +30,22 @@ SIMULATION_SAMPLES = {
         "cell_line": "U2OS (Human osteosarcoma)",
         "staining": "FUCCI live reporter (Cdt1-mKO2 / Geminin-mAG)",
         "objective": "20x",
+        "scan_type": "full scan",
         "channels": [
             "BF_LED_matrix_full",
             "Fluorescence_488_nm_Ex",
             "Fluorescence_561_nm_Ex",
         ],
+    },
+    "HPA_FULL_SCAN": {
+        "config_name": "HCS_v2",
+        "zarr_dataset_path": "/mnt/shared_documents/hpa-full-scan-2026-03-10-17-48/data.zarr",
+        "description": "[Recommended] Human Protein Atlas full plate scan (2026-03-10) — 20x. Full-well coverage with DAPI, antibody target, microtubules, ER markers, and far-red channel. Other HPA plates only have images at the well centre.",
+        "cell_line": "Various human cell lines (Human Protein Atlas)",
+        "staining": "Immunofluorescence (subcellular protein localisation)",
+        "objective": "20x",
+        "scan_type": "full scan",
+        "channels": _HPA_FULL_SCAN_CHANNELS,
     },
     "HPA_PLATE1": {
         "config_name": "HCS_v2_63x",
@@ -34,6 +54,7 @@ SIMULATION_SAMPLES = {
         "cell_line": "Various human cell lines (Human Protein Atlas)",
         "staining": "Immunofluorescence (subcellular protein localisation)",
         "objective": "63x",
+        "scan_type": "centre only",
         "channels": _HPA_CHANNELS,
     },
     "HPA_PLATE2": {
@@ -43,6 +64,7 @@ SIMULATION_SAMPLES = {
         "cell_line": "Various human cell lines (Human Protein Atlas)",
         "staining": "Immunofluorescence (subcellular protein localisation)",
         "objective": "63x",
+        "scan_type": "centre only",
         "channels": _HPA_CHANNELS,
     },
     "HPA_PLATE3": {
@@ -52,6 +74,7 @@ SIMULATION_SAMPLES = {
         "cell_line": "Various human cell lines (Human Protein Atlas)",
         "staining": "Immunofluorescence (subcellular protein localisation)",
         "objective": "63x",
+        "scan_type": "centre only",
         "channels": _HPA_CHANNELS,
     },
     "HPA_PLATE4": {
@@ -61,6 +84,7 @@ SIMULATION_SAMPLES = {
         "cell_line": "Various human cell lines (Human Protein Atlas)",
         "staining": "Immunofluorescence (subcellular protein localisation)",
         "objective": "63x",
+        "scan_type": "centre only",
         "channels": _HPA_CHANNELS,
     },
     "HPA_PLATE5": {
@@ -70,6 +94,7 @@ SIMULATION_SAMPLES = {
         "cell_line": "Various human cell lines (Human Protein Atlas)",
         "staining": "Immunofluorescence (subcellular protein localisation)",
         "objective": "63x",
+        "scan_type": "centre only",
         "channels": _HPA_CHANNELS,
     },
     "HPA_PLATE6": {
@@ -79,6 +104,7 @@ SIMULATION_SAMPLES = {
         "cell_line": "Various human cell lines (Human Protein Atlas)",
         "staining": "Immunofluorescence (subcellular protein localisation)",
         "objective": "63x",
+        "scan_type": "centre only",
         "channels": _HPA_CHANNELS,
     },
     "HPA_PLATE7": {
@@ -88,6 +114,7 @@ SIMULATION_SAMPLES = {
         "cell_line": "Various human cell lines (Human Protein Atlas)",
         "staining": "Immunofluorescence (subcellular protein localisation)",
         "objective": "63x",
+        "scan_type": "centre only",
         "channels": _HPA_CHANNELS,
     },
 }
@@ -99,9 +126,9 @@ SAMPLE_ALIASES = {
     "20X": "U2OS_FUCCI",
     "U2OS": "U2OS_FUCCI",
     "FUCCI": "U2OS_FUCCI",
-    "HCS_V2_63X": "HPA_PLATE1",
-    "OPERA": "HPA_PLATE1",
-    "63X": "HPA_PLATE1",
-    "HPA": "HPA_PLATE1",
-    "HUMAN_PROTEIN_ATLAS": "HPA_PLATE1",
+    "HCS_V2_63X": "HPA_FULL_SCAN",
+    "OPERA": "HPA_FULL_SCAN",
+    "63X": "HPA_FULL_SCAN",
+    "HPA": "HPA_FULL_SCAN",
+    "HUMAN_PROTEIN_ATLAS": "HPA_FULL_SCAN",
 }
