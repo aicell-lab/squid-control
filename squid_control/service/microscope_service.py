@@ -1852,10 +1852,16 @@ class MicroscopeHyphaService:
             # MCP endpoints only (essential endpoints for chatbot control)
             "move_by_distance": self.move_by_distance,
             "snap": self.snap,
+            "set_illumination": self.set_illumination,
+            "set_camera_exposure": self.set_camera_exposure,
             "navigate_to_well": self.navigate_to_well,
             "move_to_position": self.move_to_position,
             "reflection_autofocus": self.reflection_autofocus,
+            "set_reflection_autofocus_reference": self.autofocus_set_reflection_reference,
+            "contrast_autofocus": self.contrast_autofocus,
+            "get_current_well_location": self.get_current_well_location,
             "get_status": self.get_status,
+            
         }
 
         # Simulation-only sample-switching tools
