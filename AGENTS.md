@@ -2,144 +2,401 @@
 
 This file is the repository-level guide for coding agents working in `squid-control`.
 
-## Project Summary
+## Project Overview
 
-`squid-control` is a headless Python 3.11+ control system for the Cephla Squid microscope. It includes:
+`squid-control` is a Python 3.11+ control system for the Cephla Squid microscope. It provides a complete software stack for microscope hardware control, remote access via the Hypha platform, real-time video streaming, automated well plate scanning, and multi-channel fluorescence imaging.
 
-- Real hardware control through a Teensy 4.1 microcontroller
-- Remote control over Hypha RPC and WebRTC
-- A simulation mode backed by Zarr sample data
-- Plate scanning and OME-Zarr stitching
-- A mirror service for cloud-to-local proxying
+### Key Capabilities
 
-## Repo Map
+| Capability | Description |
+|-----------|-------------|
+| **Hardware control** | Stage X/Y/Z, multi-channel LED illumination, camera triggering via Teensy 4.1 microcontroller |
+| **Remote API** | Full microscope control over the internet via Hypha RPC (WebSocket + WebRTC) |
+| **Live video** | WebRTC streaming of the microscope camera feed to any web browser |
+| **Well plate scanning** | Automated multi-well, multi-channel, multi-Z acquisition for 6–384 well plates |
+| **Image stitching** | Real-time OME-Zarr tile assembly with multi-scale pyramid output |
+| **Simulation mode** | Full software simulation using real Zarr sample data — no hardware required |
+| **Mirror service** | Cloud proxy that gives public remote access to a microscope behind a firewall |
 
-```text
+## Technology Stack
+
+- **Language**: Python 3.11+
+- **Build System**: setuptools (defined in `pyproject.toml`)
+- **Key Dependencies**:
+  - Scientific computing: numpy, scipy, pandas
+  - Image processing: opencv-python, scikit-image, Pillow, tifffile
+  - Data storage: zarr, blosc, fsspec
+  - Hardware communication: pyserial, crc
+  - Web services: hypha-rpc, hypha-artifact, flask, aiohttp
+  - Video streaming: av, aiortc (WebRTC)
+  - Data validation: pydantic
+  - ML/AI: openai, jax
+
+## Project Structure
+
+```
 squid_control/
-├── controller/    High-level microscope orchestration
-├── hardware/      Camera, stage, microcontroller, config, drivers
-├── service/       Hypha RPC service and WebRTC streaming
-├── mirror/        Cloud-to-local proxy service
-├── stitching/     OME-Zarr canvas and stitching logic
-├── storage/       Artifact upload and snapshot helpers
-├── simulation/    Virtual sample data and simulation utilities
-└── utils/         Logging, image processing, calibration, video helpers
+├── __init__.py              # Public API — imports SquidController, MicroscopeHyphaService
+├── __main__.py              # CLI entry point: python -m squid_control microscope|mirror
+│
+├── controller/              # High-level microscope orchestration
+│   ├── squid_controller.py  # SquidController — central application object
+│   ├── scanning.py          # ScanningMixin — plate_scan(), flexible_position_scan()
+│   └── acquisition.py       # AcquisitionMixin — snap_image(), autofocus, camera frames
+│
+├── hardware/                # Hardware abstraction layer
+│   ├── core.py              # Low-level controllers (NavigationController, LiveController, etc.)
+│   ├── microcontroller.py   # Serial protocol for Teensy 4.1 (USB, 2Mbaud)
+│   ├── config.py            # Configuration system (Pydantic models + INI file loader)
+│   ├── filter_wheel.py      # Filter wheel hardware driver (Squid+)
+│   ├── objective_switcher.py# Motorised objective switcher (Squid+)
+│   ├── serial_peripherals.py# Additional serial-connected peripherals
+│   ├── processing_handler.py# Image processing pipeline handler
+│   ├── camera/              # Camera drivers
+│   │   ├── __init__.py      # get_camera() factory, TriggerModeSetting enum
+│   │   ├── camera_default.py# GeniCam / simulation camera
+│   │   └── camera_toupcam.py# ToupCam vendor driver
+│   └── drivers/             # Third-party SDK wrappers
+│       ├── gxipy/           # Daheng Imaging GxiPy SDK
+│       └── Xeryon.py        # Xeryon piezo stage driver
+│
+├── service/                 # Hypha RPC service layer
+│   ├── microscope_service.py# MicroscopeHyphaService — all RPC endpoints (~100 methods)
+│   └── video_stream.py      # MicroscopeVideoTrack — WebRTC video frame producer
+│
+├── mirror/                  # Cloud-to-local proxy service
+│   ├── mirror_service.py    # MirrorMicroscopeService — dynamic method mirroring
+│   ├── video_track.py       # WebRTC video track for mirror service
+│   └── cli.py               # CLI for the mirror subcommand
+│
+├── stitching/               # Multi-well image stitching
+│   └── zarr_canvas.py       # ZarrCanvas, ExperimentManager — OME-Zarr builder
+│
+├── storage/                 # Data storage and upload utilities
+│   ├── artifact_manager/    # Hypha Artifact Manager client
+│   └── snapshot_utils.py    # Snapshot capture and upload
+│
+├── simulation/              # Virtual sample data for simulation mode
+│   └── samples.py           # SIMULATION_SAMPLES, SAMPLE_ALIASES — Zarr dataset registry
+│
+├── utils/                   # Shared utilities
+│   ├── logging_utils.py     # setup_logging() — rotating file + console handler
+│   ├── video_utils.py       # VideoBuffer, VideoFrameProcessor
+│   ├── image_processing.py  # rotate_and_flip_image() and other transforms
+│   └── illumination_calibration/  # LED intensity calibration tools
+│
+└── config/                  # Configuration files
+    ├── configuration_HCS_v2_example.ini
+    ├── configuration_HCS_v2_63x_example.ini
+    ├── configuration_Squid+_example.ini
+    ├── u2os_fucci_illumination_configurations.xml
+    └── focus_camera_configurations.xml
 ```
 
-Important entry points:
+## Build and Installation
 
-- `python -m squid_control microscope --simulation`
-- `python -m squid_control microscope`
-- `python -m squid_control microscope --local`
-- `python -m squid_control mirror --local-service-id <id> --cloud-service-id <id>`
-
-## Environment And Tooling
-
-- Python: `>=3.11`
-- Install for development: `pip install -e .[dev]`
-- Lint and format with `ruff`
-- Tests run with `pytest`
-
-Useful commands:
+### Development Setup
 
 ```bash
-ruff check .
-ruff format .
-pytest -m "not integration"
-pytest tests/test_squid_controller.py
-pytest tests/test_hypha_service.py
-pytest tests/test_mirror_service.py
-pytest tests/test_webrtc_e2e.py
+# Clone and setup
+git clone https://github.com/aicell-lab/squid-control.git
+cd squid-control
+
+# Create conda environment (recommended)
+conda create -n squid python=3.11
+conda activate squid
+
+# Install in editable mode with dev dependencies
+pip install -e .[dev]
 ```
 
-## Working Agreements
+### Production Installation
 
-### Prefer simulation first
+```bash
+pip install .
+```
 
-- Start with simulation mode unless the task is explicitly hardware-only.
-- Default validation path: `python -m squid_control microscope --simulation`
-- Prefer tests marked for simulation or non-integration flows when making routine changes.
+### Docker Build
 
-### Keep hardware-safe behavior
+```bash
+docker build -f docker/Dockerfile -t squid-control .
+docker run -it squid-control
+```
 
-- Do not assume physical hardware is connected.
-- Be careful around stage motion, illumination, and camera control code.
-- Preserve cleanup paths around hardware access, especially `try`/`finally` blocks.
+## Running the Application
 
-### Follow existing Python conventions
+### Simulation Mode (No Hardware Required)
 
-- Use type hints on new or changed functions where practical.
-- Keep line length aligned with repo tooling (`ruff`, 88 columns).
-- Use `async`/`await` for I/O-facing flows that are already asynchronous.
-- Prefer descriptive names over abbreviations.
-- Use `logger = logging.getLogger(__name__)`; avoid `print()`.
+```bash
+python -m squid_control microscope --simulation
+```
 
-### Error handling
+### Hardware Mode
 
-- Raise specific exceptions instead of returning error payloads from Python internals.
-- Avoid bare `except:`.
-- Log hardware and service failures with enough context to debug them.
+```bash
+python -m squid_control microscope
+```
 
-## Project-Specific Conventions
+### Local Mode (Private Server)
 
-### Configuration
+```bash
+python -m squid_control microscope --local
+```
 
-- Use `from squid_control.hardware.config import CONFIG, load_config`
-- Read configuration from `CONFIG` instead of hardcoding values.
-- Supported config profiles mentioned in the repo include `HCS_v2`, `HCS_v2_63x`, and `Squid+`.
+### Mirror Service
 
-### Hypha service methods
+```bash
+python -m squid_control mirror \
+  --local-service-id "microscope-control-squid-1" \
+  --cloud-service-id "microscope-control-squid-1"
+```
 
-When editing RPC-facing service methods:
+## Testing
 
-- Use `@schema_function(skip_self=True)` where the module already follows that pattern.
-- Use `Field(...)` descriptions for Pydantic-exposed parameters.
-- Check permissions for write operations via `self.check_permission(context.get("user", {}))`.
-- Keep service metadata registrations in sync with new methods.
+### Quick Tests (Simulation Only)
 
-### Image processing
+```bash
+pytest -m "not integration"
+```
 
-- Crop before resize.
-- Use `CONFIG.ACQUISITION.CROP_HEIGHT` and `CONFIG.ACQUISITION.CROP_WIDTH`.
-- Preserve source bit depth through the processing path where possible.
-- Bounds-check crop coordinates.
+### All Tests (Requires Tokens)
 
-### Video streaming
+```bash
+pytest
+```
 
-- `squid_control/service/video_stream.py` uses buffered frame acquisition.
-- Buffering is lazy-started and auto-stops after idle time.
-- Tests may bypass buffering behavior, so keep test expectations aligned with that design.
+### Specific Test Files
 
-## Testing Guidance
+```bash
+pytest tests/test_squid_controller.py   # Controller and simulation
+pytest tests/test_hypha_service.py      # RPC API endpoints
+pytest tests/test_mirror_service.py     # Mirror service
+pytest tests/test_webrtc_e2e.py         # End-to-end video streaming
+```
 
-- For quick validation, start with `pytest -m "not integration"`.
-- Integration tests may require tokens or network access.
-- Hardware tests should stay opt-in.
-- When changing service, controller, or streaming behavior, run the narrowest relevant test file first, then broaden if needed.
+### Test Markers
 
-Common test markers in the repo include:
+| Marker | Description |
+|--------|-------------|
+| `integration` | Requires network access and Hypha tokens |
+| `simulation` | Uses simulation mode |
+| `hardware` | Requires real hardware (skipped by default) |
+| `local` | Requires local setup |
+| `slow` | Long-running tests |
+| `unit` | Unit tests |
 
-- `simulation`
-- `integration`
-- `slow`
-- `local`
-- `hardware`
-- `unit`
+## Code Style Guidelines
+
+### Linting and Formatting
+
+The project uses **ruff** for linting and formatting:
+
+```bash
+# Check code
+ruff check .
+
+# Fix issues
+ruff check . --fix
+
+# Format code
+ruff format .
+```
+
+### Pre-commit Hooks
+
+```bash
+pre-commit install
+pre-commit run --all-files
+```
+
+### Style Configuration
+
+- **Line length**: 88 characters (Black-compatible)
+- **Quote style**: Double quotes
+- **Import sorting**: Enabled via ruff
+
+### Type Hints
+
+- Use type hints on new or changed functions where practical
+- Use `async`/`await` for I/O-facing flows
+
+### Logging
+
+- Use `logger = logging.getLogger(__name__)` in each module
+- Never use `print()` for logging
+- Log hardware and service failures with enough context
+
+## Configuration System
+
+### Configuration Files
+
+Hardware parameters are stored in INI files. Available profiles:
+
+| Profile | Description |
+|---------|-------------|
+| `HCS_v2` | Standard setup — 20× objective, HCS well plate stage |
+| `HCS_v2_63x` | High-magnification — 63× oil immersion objective |
+| `Squid+` | Extended — motorised filter wheel and objective switcher |
+
+### Loading Configuration
+
+```python
+from squid_control.hardware.config import CONFIG, load_config
+
+# Load specific config
+load_config("HCS_v2_63x")
+
+# Access values
+print(CONFIG.CAMERA_TYPE)
+print(CONFIG.ACQUISITION.CROP_WIDTH)
+```
+
+### Custom Config Path
+
+```bash
+export SQUID_CONFIG_PATH=/path/to/custom_config.ini
+```
 
 ## Environment Variables
 
-Common variables used by the project:
+| Variable | Description | Required For |
+|----------|-------------|--------------|
+| `REEF_WORKSPACE_TOKEN` | Hypha `reef-imaging` workspace token | Cloud integration |
+| `REEF_LOCAL_TOKEN` | Local Hypha server token | Local mode |
+| `REEF_LOCAL_WORKSPACE` | Local Hypha workspace name | Local mode |
+| `SQUID_CONFIG_PATH` | Custom INI config file path | Custom hardware config |
+| `MICROSCOPE_SERVICE_ID` | Service ID for Hypha registration | Service identification |
+| `ZARR_PATH` | Base path for Zarr canvas storage | Image stitching |
+| `AUTHORIZED_USERS` | Comma-separated list of authorized emails | Access control |
 
-- `REEF_WORKSPACE_TOKEN`
-- `REEF_LOCAL_TOKEN`
-- `REEF_LOCAL_WORKSPACE`
-- `SQUID_CONFIG_PATH`
+## Hardware Communication
 
-Some older test docs also mention environment variables for integration and local test control. Check `tests/README.md` and `tests/conftest.py` if a specific test flow needs extra setup.
+The PC communicates with a **Teensy 4.1 microcontroller** over USB serial at 2,000,000 baud.
 
-## Agent Notes
+### Protocol
 
-- Keep changes narrow and consistent with the surrounding module.
-- Prefer small, verifiable edits over broad refactors unless the task asks for one.
-- Update nearby docs when behavior or developer workflow changes.
-- If you add a new operational workflow, include the command that future agents should run to verify it.
+- Command (PC → Teensy): 8 bytes `[cmd_id, cmd_type, param×5, crc8]`
+- Response (Teensy → PC): 24 bytes `[cmd_id, status, x×4, y×4, z×4, theta×4, switches, reserved×4, crc8]`
+
+See `hardware/microcontroller.py` for the full command set.
+
+## Key Classes Reference
+
+### SquidController
+
+Central application object that owns all hardware controllers.
+
+```python
+from squid_control.controller import SquidController
+
+ctrl = SquidController(is_simulation=True)
+await ctrl.snap_image(channel=0, intensity=30, exposure_time=50)
+ctrl.move_to_well('C', 3)
+```
+
+**Inherits from:**
+- `ScanningMixin` — plate scanning methods
+- `AcquisitionMixin` — image acquisition and autofocus
+
+### MicroscopeHyphaService
+
+Exposes `SquidController` as a Hypha RPC service.
+
+```python
+from squid_control.service import MicroscopeHyphaService
+
+svc = MicroscopeHyphaService(is_simulation=True)
+await svc.setup()
+```
+
+When adding new RPC endpoints:
+1. Add method to `MicroscopeHyphaService` in `service/microscope_service.py`
+2. Decorate with `@schema_function(skip_self=True)`
+3. Use `Field(...)` for parameter descriptions
+4. Check permissions via `self.check_permission(context.get("user", {}))`
+
+### MirrorMicroscopeService
+
+Connects to a local microscope service and re-registers all its methods on the cloud Hypha server.
+
+```python
+from squid_control.mirror import MirrorMicroscopeService
+
+mirror = MirrorMicroscopeService(
+    cloud_server_url="https://hypha.aicell.io",
+    cloud_workspace="reef-imaging",
+    local_server_url="http://localhost:9527",
+    local_service_id="microscope-control-squid-1",
+    cloud_service_id="microscope-control-squid-1",
+)
+await mirror.run()
+```
+
+## Simulation Mode
+
+Simulation mode replaces all hardware with software equivalents:
+
+| Real hardware | Simulation replacement |
+|--------------|----------------------|
+| Physical camera | `Camera_Simulation` — serves crops from Zarr archives |
+| Teensy microcontroller | `Microcontroller_Simulation` — tracks position in memory |
+| Stage movement | Instant coordinate update |
+| Illumination | No-op with state tracking |
+
+The virtual sample data is fetched from the Hypha Artifact Manager.
+
+## Working Agreements
+
+### Prefer Simulation First
+
+- Start with simulation mode unless the task is explicitly hardware-only
+- Default validation path: `python -m squid_control microscope --simulation`
+- Prefer tests marked for simulation or non-integration flows
+
+### Keep Hardware-Safe Behavior
+
+- Do not assume physical hardware is connected
+- Be careful around stage motion, illumination, and camera control code
+- Preserve cleanup paths around hardware access, especially `try`/`finally` blocks
+
+### Error Handling
+
+- Raise specific exceptions instead of returning error payloads
+- Avoid bare `except:`
+- Log failures with enough context to debug
+
+### Image Processing
+
+- Crop before resize
+- Use `CONFIG.ACQUISITION.CROP_HEIGHT` and `CONFIG.ACQUISITION.CROP_WIDTH`
+- Preserve source bit depth through the processing path
+- Bounds-check crop coordinates
+
+## Security Considerations
+
+- Never commit tokens or credentials to the repository
+- Use `.env` file for local environment variables (it's in `.gitignore`)
+- The `AUTHORIZED_USERS` environment variable controls access to write operations
+- Always validate user permissions in RPC methods that modify hardware state
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Import errors**: Ensure you're in the correct conda environment and installed with `pip install -e .`
+2. **Permission denied on /dev/ttyUSB0**: Add user to `dialout` group or run with appropriate permissions
+3. **Camera not found**: Check camera connections and drivers
+4. **Hypha connection failed**: Verify `REEF_WORKSPACE_TOKEN` is set and valid
+
+### Debug Logging
+
+```bash
+python -m squid_control microscope --simulation --verbose
+```
+
+## Additional Documentation
+
+- `README.md` — Project overview and quick start
+- `squid_control/README.md` — Detailed developer reference with class descriptions
+- `tests/README.md` — Testing documentation
+- `scripts/README_OPERA_IMPORT.md` — Opera data import instructions
