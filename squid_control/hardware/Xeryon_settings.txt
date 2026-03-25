@@ -27,8 +27,8 @@ ENCD=0     % Set the encoder direction
 ACTD=0     % Set the actuation direction
 ENCO=-70  % Set the encoder offset
 
-PTOL=1     % Set position tolerance 1
-PTO2=3     % Set position tolerance 2
+PTOL=40    % Relaxed from 1 after validation on the live objective switcher
+PTO2=40    % Relaxed from 3 to avoid false position-fail trips
 TOUT=1000  % Set timeout 1 (ms)
 TOU2=2     % Set safety timeout 2 (s) - reduced to prevent prolonged operation in error states
-TOU3=5     % Set safety timeout 3 (s) - set to prevent prolonged operation in error states
+TOU3=10    % Increased from 5 after validation on the live objective switcher

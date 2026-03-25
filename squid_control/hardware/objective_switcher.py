@@ -3,7 +3,6 @@ Objective Switcher Control for Squid+ Microscope
 Based on the official Squid software Xeryon objective switcher implementation
 """
 
-import time
 import logging
 import serial
 import serial.tools.list_ports
@@ -11,6 +10,13 @@ from typing import Optional
 from squid_control.hardware.config import CONFIG
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_POSITION_1_MM = -19.0
+DEFAULT_POSITION_2_MM = 19.0
+DEFAULT_RUNTIME_PTOL = 40
+DEFAULT_RUNTIME_PTO2 = 40
+DEFAULT_RUNTIME_TOU3 = 10
+XERYON_USB_IDS = {(0x04D8, 0xEF4A)}
 
 
 class ObjectiveSwitcherController:
@@ -29,10 +35,13 @@ class ObjectiveSwitcherController:
         
         # Position settings (in mm) - these are the DPOS values sent to Xeryon
         # These MUST match the positions in Xeryon_settings.txt LLIM and HLIM
-        self.position1 = -19  # Position 1 (e.g., 20x objective)
-        self.position2 = 19   # Position 2 (e.g., 4x objective)
+        self.position1 = DEFAULT_POSITION_1_MM  # Position 1 (e.g., 20x objective)
+        self.position2 = DEFAULT_POSITION_2_MM  # Position 2 (e.g., 4x objective)
         self.current_position = None
         self.retracted = False  # Track if Z was retracted for position 2
+        self.runtime_ptol = getattr(CONFIG, 'XERYON_PTOL', DEFAULT_RUNTIME_PTOL)
+        self.runtime_pto2 = getattr(CONFIG, 'XERYON_PTO2', DEFAULT_RUNTIME_PTO2)
+        self.runtime_tou3 = getattr(CONFIG, 'XERYON_TOU3', DEFAULT_RUNTIME_TOU3)
         
         # Get offset from configuration
         self.position2_offset = getattr(CONFIG, 'XERYON_OBJECTIVE_SWITCHER_POS_2_OFFSET_MM', 2.0)
@@ -55,23 +64,41 @@ class ObjectiveSwitcherController:
             # Import Xeryon module
             from squid_control.hardware.drivers.Xeryon import Xeryon, Stage
             
-            # Find the port with the matching serial number
+            # Find the port with the matching serial number.
             ports = serial.tools.list_ports.comports()
+            xeryon_ports = [
+                p for p in ports if (p.vid, p.pid) in XERYON_USB_IDS
+            ]
             port = None
-            for p in ports:
+            for p in xeryon_ports:
                 if p.serial_number == serial_number:
                     port = p.device
                     break
             
             if port is None:
-                raise Exception(f"Xeryon objective switcher with SN {serial_number} not found")
+                if len(xeryon_ports) == 1:
+                    detected = xeryon_ports[0]
+                    port = detected.device
+                    logger.warning(
+                        "Configured Xeryon SN %s not found; falling back to the only connected Xeryon device %s on %s",
+                        serial_number,
+                        detected.serial_number,
+                        detected.device,
+                    )
+                else:
+                    available_serials = [p.serial_number or "<unknown>" for p in xeryon_ports]
+                    raise Exception(
+                        f"Xeryon objective switcher with SN {serial_number} not found. "
+                        f"Available Xeryon serials: {available_serials or 'none'}"
+                    )
             
-            # Initialize Xeryon controller - EXACT same as official software
+            # Initialize the Xeryon controller with the validated switcher profile.
             logger.info(f"Connecting to Xeryon objective switcher on port {port}")
             self.controller = Xeryon(port, 115200)
-            self.axisX = self.controller.addAxis(Stage.XLA_1250_3N, "Z")
+            self.axisX = self.controller.addAxis(Stage.XLS_1250_3N, "X")
             self.controller.start()
             self.controller.reset()
+            self._apply_runtime_tuning()
             
             logger.info("Xeryon objective switcher initialized successfully")
             logger.warning("⚠️  You MUST call home() before using movement commands!")
@@ -79,6 +106,38 @@ class ObjectiveSwitcherController:
         except Exception as e:
             logger.error(f"Failed to initialize Xeryon objective switcher: {e}")
             raise
+
+    def _apply_runtime_tuning(self):
+        """
+        Apply the same tolerance/timeouts that worked on the validated switcher.
+        This keeps runtime behavior aligned even if the controller has stale values.
+        """
+        self.axisX.setSetting("PTOL", str(self.runtime_ptol))
+        self.axisX.setSetting("PTO2", str(self.runtime_pto2))
+        self.axisX.setSetting("TOU3", str(self.runtime_tou3))
+        logger.info(
+            "Applied Xeryon runtime tuning: PTOL=%s PTO2=%s TOU3=%s",
+            self.runtime_ptol,
+            self.runtime_pto2,
+            self.runtime_tou3,
+        )
+
+    def _move_axis(self, target_mm: float, label: str) -> bool:
+        logger.info("Moving objective switcher to %s (DPOS=%s mm)...", label, target_mm)
+        success = self.axisX.setDPOS(target_mm, forceWaiting=True)
+        if not success:
+            try:
+                epos = self.axisX.getEPOS()
+            except Exception:
+                epos = "unknown"
+            logger.error(
+                "Xeryon move failed for %s: target=%s mm current=%s mm",
+                label,
+                target_mm,
+                epos,
+            )
+            return False
+        return True
     
     def home(self) -> bool:
         """
@@ -94,10 +153,13 @@ class ObjectiveSwitcherController:
                 self.current_position = 0
                 return True
             else:
-                # Match official Squid behavior: stop scan, then find index directly.
+                # Stop any scan state before indexing so homing starts from a clean state.
                 logger.info("Homing objective switcher...")
                 self.axisX.stopScan()
-                self.axisX.findIndex()
+                success = self.axisX.findIndex(forceWaiting=True)
+                if not success:
+                    logger.error("Objective switcher homing failed")
+                    return False
                 self.current_position = 0
                 logger.info("✓ Objective switcher homed successfully")
                 return True
@@ -118,8 +180,8 @@ class ObjectiveSwitcherController:
                 self.current_position = 0
                 return True
             else:
-                logger.info("Moving to zero position")
-                self.axisX.setDPOS(0)
+                if not self._move_axis(0, "zero position"):
+                    return False
                 self.current_position = 0
                 return True
         except Exception as e:
@@ -151,11 +213,10 @@ class ObjectiveSwitcherController:
                 self.current_position = 1
                 return True
             else:
-                # Real hardware movement - EXACT same sequence as official software
-                logger.info(f"Moving objective switcher to position 1 (DPOS={self.position1}mm)...")
-                
+                # Real hardware movement: move the Xeryon axis first, then compensate Z.
                 # STEP 1: Move the Xeryon axis FIRST
-                self.axisX.setDPOS(self.position1)
+                if not self._move_axis(self.position1, "position 1"):
+                    return False
                 
                 # STEP 2: Then handle Z stage compensation if switching from position 2
                 if self.stage is not None and self.current_position == 2 and self.retracted:
@@ -197,11 +258,10 @@ class ObjectiveSwitcherController:
                 self.current_position = 2
                 return True
             else:
-                # Real hardware movement - EXACT same sequence as official software
-                logger.info(f"Moving objective switcher to position 2 (DPOS={self.position2}mm)...")
-                
+                # Real hardware movement: move the Xeryon axis first, then compensate Z.
                 # STEP 1: Move the Xeryon axis FIRST
-                self.axisX.setDPOS(self.position2)
+                if not self._move_axis(self.position2, "position 2"):
+                    return False
                 
                 # STEP 2: Then handle Z stage compensation if switching from position 1
                 if self.stage is not None and self.current_position == 1:
