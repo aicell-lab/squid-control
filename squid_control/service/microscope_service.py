@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import contextvars
 import fractions
 import io
 import json
@@ -7,10 +8,12 @@ import logging
 import logging.handlers
 import os
 import sys
+import threading
 import time
 import traceback
 import uuid
 from collections import deque
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -55,8 +58,28 @@ if ENV_FILE:
 
 logger = setup_logging("squid_control_service.log")
 
-from squid_control.simulation.samples import SAMPLE_ALIASES as _SAMPLE_ALIASES
-from squid_control.simulation.samples import SIMULATION_SAMPLES
+
+class MicroscopeBusyError(RuntimeError):
+    """Raised when a requested operation conflicts with an active microscope operation."""
+
+    def __init__(
+        self,
+        requested_operation: str,
+        requested_scopes: List[str],
+        blocking_operations: List[dict],
+    ):
+        self.requested_operation = requested_operation
+        self.requested_scopes = requested_scopes
+        self.blocking_operations = blocking_operations
+
+        blocking_summary = "; ".join(
+            f"{op['name']} on {', '.join(op['scopes'])}" for op in blocking_operations
+        )
+        message = (
+            f"MICROSCOPE_BUSY: cannot start '{requested_operation}' "
+            f"for scopes {requested_scopes} while {blocking_summary} is active."
+        )
+        super().__init__(message)
 
 
 class MicroscopeHyphaService:
@@ -164,6 +187,19 @@ class MicroscopeHyphaService:
             'saved_data_type': None,  # raw_images_well_plate, full_zarr, quick_zarr
         }
 
+        # Centralized busy-state tracking for service-level operation gating.
+        self._operation_state_lock = threading.RLock()
+        self._scope_owners = {
+            'hardware': None,
+            'processing': None,
+        }
+        self._operations_by_token = {}
+        self._operation_counter = 0
+        self._operation_context_token = contextvars.ContextVar(
+            f"microscope_operation_token_{id(self)}",
+            default=None,
+        )
+
         # Initialize coverage tracking if in test mode
         if os.environ.get('SQUID_TEST_MODE'):
             self.coverage_enabled = True
@@ -267,6 +303,199 @@ class MicroscopeHyphaService:
             logger.warning(f"Could not determine microscope type: {e} - assuming original Squid")
             return False
 
+    def _normalize_operation_scopes(self, scopes) -> tuple[str, ...]:
+        if isinstance(scopes, str):
+            scopes = (scopes,)
+
+        normalized = []
+        for scope in scopes:
+            if scope not in {'hardware', 'processing'}:
+                raise ValueError(f"Unknown operation scope: {scope}")
+            if scope not in normalized:
+                normalized.append(scope)
+        return tuple(normalized)
+
+    def _serialize_operation_record(self, record: Optional[dict]) -> Optional[dict]:
+        if record is None:
+            return None
+
+        return {
+            'name': record['name'],
+            'scopes': sorted(record['scopes']),
+            'started_at': record['started_at'],
+            'duration_seconds': round(time.time() - record['started_at'], 3),
+            'metadata': dict(record['metadata']),
+        }
+
+    def _find_blocking_operations(
+        self,
+        scopes,
+        *,
+        current_token: Optional[str] = None,
+    ) -> List[dict]:
+        requested_scopes = self._normalize_operation_scopes(scopes)
+
+        blocking_tokens = []
+        for scope in requested_scopes:
+            owner = self._scope_owners.get(scope)
+            if owner is not None and owner != current_token:
+                blocking_tokens.append(owner)
+
+        return [
+            self._serialize_operation_record(self._operations_by_token[token])
+            for token in dict.fromkeys(blocking_tokens)
+            if token in self._operations_by_token
+        ]
+
+    def _acquire_operation(
+        self,
+        operation_name: str,
+        scopes,
+        *,
+        metadata: Optional[dict] = None,
+    ) -> Optional[str]:
+        requested_scopes = self._normalize_operation_scopes(scopes)
+        current_token = self._operation_context_token.get()
+
+        with self._operation_state_lock:
+            current_record = (
+                self._operations_by_token.get(current_token)
+                if current_token is not None
+                else None
+            )
+
+            if current_record is not None:
+                current_scopes = set(current_record['scopes'])
+                if set(requested_scopes).issubset(current_scopes):
+                    if metadata:
+                        current_record['metadata'].update(metadata)
+                    return None
+
+            blocking_operations = self._find_blocking_operations(
+                requested_scopes,
+                current_token=current_token,
+            )
+            if blocking_operations:
+                raise MicroscopeBusyError(
+                    requested_operation=operation_name,
+                    requested_scopes=list(requested_scopes),
+                    blocking_operations=blocking_operations,
+                )
+
+            if current_record is not None:
+                current_record['scopes'].update(requested_scopes)
+                if metadata:
+                    current_record['metadata'].update(metadata)
+                for scope in requested_scopes:
+                    self._scope_owners[scope] = current_token
+                return None
+
+            self._operation_counter += 1
+            token = f"op-{self._operation_counter}"
+            record = {
+                'token': token,
+                'name': operation_name,
+                'scopes': set(requested_scopes),
+                'started_at': time.time(),
+                'metadata': dict(metadata or {}),
+            }
+            self._operations_by_token[token] = record
+            for scope in requested_scopes:
+                self._scope_owners[scope] = token
+            return token
+
+    def _release_operation(self, token: Optional[str]):
+        if token is None:
+            return
+
+        with self._operation_state_lock:
+            record = self._operations_by_token.pop(token, None)
+            if record is None:
+                return
+
+            for scope in tuple(record['scopes']):
+                if self._scope_owners.get(scope) == token:
+                    self._scope_owners[scope] = None
+
+    @contextmanager
+    def _operation_context(
+        self,
+        operation_name: str,
+        scopes,
+        *,
+        metadata: Optional[dict] = None,
+    ):
+        token = self._acquire_operation(operation_name, scopes, metadata=metadata)
+        reset_token = None
+        if token is not None:
+            reset_token = self._operation_context_token.set(token)
+
+        try:
+            yield token or self._operation_context_token.get()
+        finally:
+            if token is not None:
+                self._release_operation(token)
+                self._operation_context_token.reset(reset_token)
+
+    @asynccontextmanager
+    async def _async_operation_context(
+        self,
+        operation_name: str,
+        scopes,
+        *,
+        metadata: Optional[dict] = None,
+        stop_video: bool = False,
+        settle_time_s: float = 0.0,
+    ):
+        token = self._acquire_operation(operation_name, scopes, metadata=metadata)
+        reset_token = None
+        if token is not None:
+            reset_token = self._operation_context_token.set(token)
+
+        try:
+            if stop_video and self.frame_acquisition_running:
+                logger.info(
+                    "Stopping video buffering before '%s' to avoid camera conflicts",
+                    operation_name,
+                )
+                await self.stop_video_buffering()
+                if settle_time_s > 0:
+                    await asyncio.sleep(settle_time_s)
+
+            yield token or self._operation_context_token.get()
+        finally:
+            if token is not None:
+                self._release_operation(token)
+                self._operation_context_token.reset(reset_token)
+
+    def _get_busy_status_snapshot(self) -> dict:
+        with self._operation_state_lock:
+            hardware_token = self._scope_owners['hardware']
+            processing_token = self._scope_owners['processing']
+            hardware_operation = self._serialize_operation_record(
+                self._operations_by_token.get(hardware_token)
+            )
+            processing_operation = self._serialize_operation_record(
+                self._operations_by_token.get(processing_token)
+            )
+
+            active_operations = []
+            for token in dict.fromkeys(
+                owner for owner in self._scope_owners.values() if owner is not None
+            ):
+                record = self._operations_by_token.get(token)
+                if record is not None:
+                    active_operations.append(self._serialize_operation_record(record))
+
+        return {
+            'busy': bool(active_operations),
+            'hardware_busy': hardware_operation is not None,
+            'processing_busy': processing_operation is not None,
+            'hardware_operation': hardware_operation,
+            'processing_operation': processing_operation,
+            'active_operations': active_operations,
+        }
+
     async def is_service_healthy(self, context=None):
         """Check if all services are healthy"""
         try:
@@ -341,16 +570,21 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            is_success, x_pos, y_pos, z_pos, x_des, y_des, z_des = self.squidController.move_by_distance_limited(x, y, z)
-            if is_success:
-                result = f'The stage moved ({x},{y},{z})mm through x,y,z axis, from ({x_pos},{y_pos},{z_pos})mm to ({x_des},{y_des},{z_des})mm'
-                return {
-                    "success": True,
-                    "message": result,
-                    "initial_position": {"x": x_pos, "y": y_pos, "z": z_pos},
-                    "final_position": {"x": x_des, "y": y_des, "z": z_des}
-                }
-            else:
+            with self._operation_context(
+                "move_by_distance",
+                "hardware",
+                metadata={"x_mm": x, "y_mm": y, "z_mm": z},
+            ):
+                is_success, x_pos, y_pos, z_pos, x_des, y_des, z_des = self.squidController.move_by_distance_limited(x, y, z)
+                if is_success:
+                    result = f'The stage moved ({x},{y},{z})mm through x,y,z axis, from ({x_pos},{y_pos},{z_pos})mm to ({x_des},{y_des},{z_des})mm'
+                    return {
+                        "success": True,
+                        "message": result,
+                        "initial_position": {"x": x_pos, "y": y_pos, "z": z_pos},
+                        "final_position": {"x": x_des, "y": y_des, "z": z_des}
+                    }
+
                 result = f'The stage cannot move ({x},{y},{z})mm through x,y,z axis, from ({x_pos},{y_pos},{z_pos})mm to ({x_des},{y_des},{z_des})mm because out of the range.'
                 raise Exception(result)
         except Exception as e:
@@ -368,32 +602,38 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            self.get_status()
-            initial_x = self.parameters['current_x']
-            initial_y = self.parameters['current_y']
-            initial_z = self.parameters['current_z']
+            with self._operation_context(
+                "move_to_position",
+                "hardware",
+                metadata={"x_mm": x, "y_mm": y, "z_mm": z},
+            ):
+                self.get_status()
+                initial_x = self.parameters['current_x']
+                initial_y = self.parameters['current_y']
+                initial_z = self.parameters['current_z']
+                x_pos, y_pos, z_pos = initial_x, initial_y, initial_z
 
-            if x != 0:
-                is_success, x_pos, y_pos, z_pos, x_des = self.squidController.move_x_to_limited(x)
-                if not is_success:
-                    raise Exception(f'The stage cannot move to position ({x},{y},{z})mm from ({initial_x},{initial_y},{initial_z})mm because out of the limit of X axis.')
+                if x != 0:
+                    is_success, x_pos, y_pos, z_pos, x_des = self.squidController.move_x_to_limited(x)
+                    if not is_success:
+                        raise Exception(f'The stage cannot move to position ({x},{y},{z})mm from ({initial_x},{initial_y},{initial_z})mm because out of the limit of X axis.')
 
-            if y != 0:
-                is_success, x_pos, y_pos, z_pos, y_des = self.squidController.move_y_to_limited(y)
-                if not is_success:
-                    raise Exception(f'X axis moved successfully, the stage is now at ({x_pos},{y_pos},{z_pos})mm. But aimed position is out of the limit of Y axis and the stage cannot move to position ({x},{y},{z})mm.')
+                if y != 0:
+                    is_success, x_pos, y_pos, z_pos, y_des = self.squidController.move_y_to_limited(y)
+                    if not is_success:
+                        raise Exception(f'X axis moved successfully, the stage is now at ({x_pos},{y_pos},{z_pos})mm. But aimed position is out of the limit of Y axis and the stage cannot move to position ({x},{y},{z})mm.')
 
-            if z != 0:
-                is_success, x_pos, y_pos, z_pos, z_des = self.squidController.move_z_to_limited(z)
-                if not is_success:
-                    raise Exception(f'X and Y axis moved successfully, the stage is now at ({x_pos},{y_pos},{z_pos})mm. But aimed position is out of the limit of Z axis and the stage cannot move to position ({x},{y},{z})mm.')
+                if z != 0:
+                    is_success, x_pos, y_pos, z_pos, z_des = self.squidController.move_z_to_limited(z)
+                    if not is_success:
+                        raise Exception(f'X and Y axis moved successfully, the stage is now at ({x_pos},{y_pos},{z_pos})mm. But aimed position is out of the limit of Z axis and the stage cannot move to position ({x},{y},{z})mm.')
 
-            return {
-                "success": True,
-                "message": f'The stage moved to position ({x},{y},{z})mm from ({initial_x},{initial_y},{initial_z})mm successfully.',
-                "initial_position": {"x": initial_x, "y": initial_y, "z": initial_z},
-                "final_position": {"x": x_pos, "y": y_pos, "z": z_pos}
-            }
+                return {
+                    "success": True,
+                    "message": f'The stage moved to position ({x},{y},{z})mm from ({initial_x},{initial_y},{initial_z})mm successfully.',
+                    "initial_position": {"x": initial_x, "y": initial_y, "z": initial_z},
+                    "final_position": {"x": x_pos, "y": y_pos, "z": z_pos}
+                }
         except Exception as e:
             logger.error(f"Failed to move to position: {e}")
             raise e
@@ -414,6 +654,8 @@ class MicroscopeHyphaService:
             #scan_channel = self.squidController.multipointController.selected_configurations
             # Get current well location information
             well_info = self.squidController.get_well_from_position('96')  # Default to 96-well plate
+
+            busy_status = self._get_busy_status_snapshot()
 
             self.parameters = {
                 'current_x': current_x,
@@ -438,6 +680,9 @@ class MicroscopeHyphaService:
                 'webrtc_service_id': self.webrtc_service_id,
                 'current_well_location': well_info,  # Add well location information
                 'pixel_size_xy': self.squidController.pixel_size_xy,
+                'busy_status': busy_status,
+                'hardware_busy': busy_status['hardware_busy'],
+                'processing_busy': busy_status['processing_busy'],
                 # Unified scan status
                 'scan_status': {
                     'state': self.scan_state['state'],
@@ -448,6 +693,18 @@ class MicroscopeHyphaService:
             return self.parameters
         except Exception as e:
             logger.error(f"Failed to get status: {e}")
+            raise e
+
+    @schema_function(skip_self=True)
+    def get_busy_status(self, context=None):
+        """Return centralized hardware and processing busy state for the microscope service."""
+        try:
+            if context and not self.check_permission(context.get("user", {})):
+                raise Exception("User not authorized to access this service")
+
+            return self._get_busy_status_snapshot()
+        except Exception as e:
+            logger.error(f"Failed to get busy status: {e}")
             raise e
 
     @schema_function(skip_self=True)
@@ -484,36 +741,41 @@ class MicroscopeHyphaService:
             if self.parameters is None:
                 self.parameters = {}
 
-            updated_params = {}
-            failed_params = {}
+            with self._operation_context(
+                "update_parameters_from_client",
+                ("hardware", "processing"),
+                metadata={"parameter_keys": sorted(new_parameters.keys())},
+            ):
+                updated_params = {}
+                failed_params = {}
 
-            # Update only the specified keys
-            for key, value in new_parameters.items():
-                if key in self.parameters:
-                    self.parameters[key] = value
-                    updated_params[key] = value
-                    logger.info(f"Updated parameter '{key}' to '{value}'")
+                # Update only the specified keys
+                for key, value in new_parameters.items():
+                    if key in self.parameters:
+                        self.parameters[key] = value
+                        updated_params[key] = value
+                        logger.info(f"Updated parameter '{key}' to '{value}'")
 
-                    # Update the corresponding instance variable if it exists
-                    if hasattr(self, key):
-                        setattr(self, key, value)
+                        # Update the corresponding instance variable if it exists
+                        if hasattr(self, key):
+                            setattr(self, key, value)
+                        else:
+                            logger.warning(f"Instance attribute '{key}' does not exist, parameter updated in config only")
                     else:
-                        logger.warning(f"Instance attribute '{key}' does not exist, parameter updated in config only")
-                else:
-                    failed_params[key] = f"Parameter '{key}' not found in available parameters"
-                    logger.warning(f"Parameter '{key}' not found in available parameters")
+                        failed_params[key] = f"Parameter '{key}' not found in available parameters"
+                        logger.warning(f"Parameter '{key}' not found in available parameters")
 
-            result = {
-                "success": True,
-                "message": f"Updated {len(updated_params)} parameters successfully",
-                "updated_parameters": updated_params
-            }
+                result = {
+                    "success": True,
+                    "message": f"Updated {len(updated_params)} parameters successfully",
+                    "updated_parameters": updated_params
+                }
 
-            if failed_params:
-                result["failed_parameters"] = failed_params
-                result["message"] += f", {len(failed_params)} parameters failed to update"
+                if failed_params:
+                    result["failed_parameters"] = failed_params
+                    result["message"] += f", {len(failed_params)} parameters failed to update"
 
-            return result
+                return result
 
         except Exception as e:
             logger.error(f"Failed to update parameters: {e}")
@@ -541,66 +803,71 @@ class MicroscopeHyphaService:
             if not self.is_simulation:
                 raise RuntimeError("switch_sample is only available in simulation mode")
 
-            # Normalise the key: upper-case, replace hyphens/spaces with underscores
-            sample_key = sample_name.upper().replace("-", "_").replace(" ", "_")
-            sample_key = _SAMPLE_ALIASES.get(sample_key, sample_key)
+            with self._operation_context(
+                "switch_sample",
+                ("hardware", "processing"),
+                metadata={"sample_name": sample_name},
+            ):
+                # Normalise the key: upper-case, replace hyphens/spaces with underscores
+                sample_key = sample_name.upper().replace("-", "_").replace(" ", "_")
+                sample_key = _SAMPLE_ALIASES.get(sample_key, sample_key)
 
-            if sample_key not in SIMULATION_SAMPLES:
-                available = list(SIMULATION_SAMPLES.keys())
-                raise ValueError(
-                    f"Unknown sample '{sample_name}'. Available samples: {available}. "
-                    f"Call list_simulation_samples() to see full details."
+                if sample_key not in SIMULATION_SAMPLES:
+                    available = list(SIMULATION_SAMPLES.keys())
+                    raise ValueError(
+                        f"Unknown sample '{sample_name}'. Available samples: {available}. "
+                        f"Call list_simulation_samples() to see full details."
+                    )
+
+                sample_info = SIMULATION_SAMPLES[sample_key]
+                new_config_name = sample_info["config_name"]
+                new_zarr_path = sample_info["zarr_dataset_path"]
+
+                # 1. Update the camera's zarr dataset path
+                self.squidController.camera.ZARR_DATASET_PATH = new_zarr_path
+
+                # 2. Reset the channel index so it is reloaded from the new dataset's metadata
+                self.squidController.camera.ZARR_CHANNEL_INDEX = {
+                    "BF_LED_matrix_full": 0,
+                    "Fluorescence_405_nm_Ex": 1,
+                    "Fluorescence_488_nm_Ex": 2,
+                    "Fluorescence_638_nm_Ex": 3,
+                    "Fluorescence_561_nm_Ex": 4,
+                    "Fluorescence_730_nm_Ex": 5,
+                }
+
+                # 3. Reload the matching microscope configuration file
+                config_file = f"configuration_{new_config_name}_example.ini"
+                config_path = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", config_file
+                )
+                from squid_control.hardware.config import load_config
+                load_config(config_path, False)
+
+                # 4. Track the active config on both the service and the controller
+                self.config_name = new_config_name
+                self.squidController.config_name = new_config_name
+
+                logger.info(
+                    f"Switched simulation sample to '{sample_key}' "
+                    f"(config={new_config_name}, zarr={new_zarr_path})"
                 )
 
-            sample_info = SIMULATION_SAMPLES[sample_key]
-            new_config_name = sample_info["config_name"]
-            new_zarr_path = sample_info["zarr_dataset_path"]
-
-            # 1. Update the camera's zarr dataset path
-            self.squidController.camera.ZARR_DATASET_PATH = new_zarr_path
-
-            # 2. Reset the channel index so it is reloaded from the new dataset's metadata
-            self.squidController.camera.ZARR_CHANNEL_INDEX = {
-                "BF_LED_matrix_full": 0,
-                "Fluorescence_405_nm_Ex": 1,
-                "Fluorescence_488_nm_Ex": 2,
-                "Fluorescence_638_nm_Ex": 3,
-                "Fluorescence_561_nm_Ex": 4,
-                "Fluorescence_730_nm_Ex": 5,
-            }
-
-            # 3. Reload the matching microscope configuration file
-            config_file = f"configuration_{new_config_name}_example.ini"
-            config_path = os.path.join(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config", config_file
-            )
-            from squid_control.hardware.config import load_config
-            load_config(config_path, False)
-
-            # 4. Track the active config on both the service and the controller
-            self.config_name = new_config_name
-            self.squidController.config_name = new_config_name
-
-            logger.info(
-                f"Switched simulation sample to '{sample_key}' "
-                f"(config={new_config_name}, zarr={new_zarr_path})"
-            )
-
-            return {
-                "success": True,
-                "active_sample": sample_key,
-                "config_name": new_config_name,
-                "zarr_dataset_path": new_zarr_path,
-                "description": sample_info["description"],
-                "cell_line": sample_info["cell_line"],
-                "staining": sample_info["staining"],
-                "objective": sample_info["objective"],
-                "available_channels": sample_info["channels"],
-                "message": (
-                    f"Successfully switched to sample '{sample_key}' "
-                    f"using {new_config_name} configuration."
-                ),
-            }
+                return {
+                    "success": True,
+                    "active_sample": sample_key,
+                    "config_name": new_config_name,
+                    "zarr_dataset_path": new_zarr_path,
+                    "description": sample_info["description"],
+                    "cell_line": sample_info["cell_line"],
+                    "staining": sample_info["staining"],
+                    "objective": sample_info["objective"],
+                    "available_channels": sample_info["channels"],
+                    "message": (
+                        f"Successfully switched to sample '{sample_key}' "
+                        f"using {new_config_name} configuration."
+                    ),
+                }
         except Exception as e:
             logger.error(f"Failed to switch sample: {e}")
             raise e
@@ -615,46 +882,51 @@ class MicroscopeHyphaService:
         from pathlib import Path
         from squid_control.hardware.config import load_config
         
-        CONFIG.WELLPLATE_OFFSET_X_MM = float(offset_x_mm)
-        CONFIG.WELLPLATE_OFFSET_Y_MM = float(offset_y_mm)
-        
-        # Get config file path
-        config_file_path = None
-        try:
-            if CONFIG.CACHE_CONFIG_FILE_PATH and os.path.exists(CONFIG.CACHE_CONFIG_FILE_PATH):
-                with open(CONFIG.CACHE_CONFIG_FILE_PATH) as f:
-                    config_file_path = f.read().strip()
-        except Exception:
-            pass
-        
-        if not config_file_path or not os.path.exists(config_file_path):
-            config_dir = Path(__file__).parent.parent
-            for name in ["configuration_HCS_v2.ini", "configuration_Squid+.ini"]:
-                for path in [config_dir / name, config_dir / "config" / name]:
-                    if path.exists():
-                        config_file_path = str(path)
+        with self._operation_context(
+            "set_wellplate_offset",
+            ("hardware", "processing"),
+            metadata={"offset_x_mm": offset_x_mm, "offset_y_mm": offset_y_mm},
+        ):
+            CONFIG.WELLPLATE_OFFSET_X_MM = float(offset_x_mm)
+            CONFIG.WELLPLATE_OFFSET_Y_MM = float(offset_y_mm)
+            
+            # Get config file path
+            config_file_path = None
+            try:
+                if CONFIG.CACHE_CONFIG_FILE_PATH and os.path.exists(CONFIG.CACHE_CONFIG_FILE_PATH):
+                    with open(CONFIG.CACHE_CONFIG_FILE_PATH) as f:
+                        config_file_path = f.read().strip()
+            except Exception:
+                pass
+            
+            if not config_file_path or not os.path.exists(config_file_path):
+                config_dir = Path(__file__).parent.parent
+                for name in ["configuration_HCS_v2.ini", "configuration_Squid+.ini"]:
+                    for path in [config_dir / name, config_dir / "config" / name]:
+                        if path.exists():
+                            config_file_path = str(path)
+                            break
+                    if config_file_path:
                         break
-                if config_file_path:
-                    break
-        
-        # Update INI file
-        if config_file_path and os.path.exists(config_file_path):
-            cfp = ConfigParser()
-            cfp.read(config_file_path)
-            # Find section with wellplate_offset or use GENERAL
-            section = next((s for s in cfp.sections() + ['DEFAULT'] if cfp.has_option(s, 'wellplate_offset_x_mm')), 
-                          'GENERAL' if 'GENERAL' in cfp.sections() else (cfp.sections()[0] if cfp.sections() else 'DEFAULT'))
-            if section not in cfp.sections() and section != 'DEFAULT':
-                cfp.add_section(section)
-            cfp.set(section, 'wellplate_offset_x_mm', str(offset_x_mm))
-            cfp.set(section, 'wellplate_offset_y_mm', str(offset_y_mm))
-            with open(config_file_path, 'w') as f:
-                cfp.write(f)
-            logger.info(f"Updated config file with wellplate offsets: X={offset_x_mm} mm, Y={offset_y_mm} mm")
-        
-        # Reload configuration
-        load_config(config_file_path, False)
-        return {"offset_x_mm": CONFIG.WELLPLATE_OFFSET_X_MM, "offset_y_mm": CONFIG.WELLPLATE_OFFSET_Y_MM}
+            
+            # Update INI file
+            if config_file_path and os.path.exists(config_file_path):
+                cfp = ConfigParser()
+                cfp.read(config_file_path)
+                # Find section with wellplate_offset or use GENERAL
+                section = next((s for s in cfp.sections() + ['DEFAULT'] if cfp.has_option(s, 'wellplate_offset_x_mm')), 
+                              'GENERAL' if 'GENERAL' in cfp.sections() else (cfp.sections()[0] if cfp.sections() else 'DEFAULT'))
+                if section not in cfp.sections() and section != 'DEFAULT':
+                    cfp.add_section(section)
+                cfp.set(section, 'wellplate_offset_x_mm', str(offset_x_mm))
+                cfp.set(section, 'wellplate_offset_y_mm', str(offset_y_mm))
+                with open(config_file_path, 'w') as f:
+                    cfp.write(f)
+                logger.info(f"Updated config file with wellplate offsets: X={offset_x_mm} mm, Y={offset_y_mm} mm")
+            
+            # Reload configuration
+            load_config(config_file_path, False)
+            return {"offset_x_mm": CONFIG.WELLPLATE_OFFSET_X_MM, "offset_y_mm": CONFIG.WELLPLATE_OFFSET_Y_MM}
 
     async def one_new_frame(self, context=None):
         """
@@ -665,35 +937,35 @@ class MicroscopeHyphaService:
         if context and not self.check_permission(context.get("user", {})):
             raise Exception("User not authorized to access this service")
 
-        # Stop video buffering to prevent camera overload
-        if self.frame_acquisition_running:
-            logger.info("Stopping video buffering for one_new_frame operation to prevent camera conflicts")
-            await self.stop_video_buffering()
-            # Wait a moment for the buffering to fully stop
-            await asyncio.sleep(0.1)
-
         channel = self.squidController.current_channel
         intensity, exposure_time = 50, 100  # Default values
         try:
+            async with self._async_operation_context(
+                "one_new_frame",
+                "hardware",
+                metadata={"channel": channel},
+                stop_video=True,
+                settle_time_s=0.1,
+            ):
             #update the current illumination channel and intensity
-            param_name = self.channel_param_map.get(channel)
-            if param_name:
-                stored_params = getattr(self, param_name, None)
-                if stored_params and isinstance(stored_params, list) and len(stored_params) == 2:
-                    intensity, exposure_time = stored_params
+                param_name = self.channel_param_map.get(channel)
+                if param_name:
+                    stored_params = getattr(self, param_name, None)
+                    if stored_params and isinstance(stored_params, list) and len(stored_params) == 2:
+                        intensity, exposure_time = stored_params
+                    else:
+                        logger.warning(f"Parameter {param_name} for channel {channel} is not properly initialized. Using defaults.")
                 else:
-                    logger.warning(f"Parameter {param_name} for channel {channel} is not properly initialized. Using defaults.")
-            else:
-                logger.warning(f"Unknown channel {channel} in one_new_frame. Using default intensity/exposure.")
+                    logger.warning(f"Unknown channel {channel} in one_new_frame. Using default intensity/exposure.")
 
-            # Get the image from camera - snap_image() returns already cropped image by default
-            # This is exactly what snap() does
-            gray_img = await self.squidController.snap_image(channel, intensity, exposure_time)
+                # Get the image from camera - snap_image() returns already cropped image by default
+                # This is exactly what snap() does
+                gray_img = await self.squidController.snap_image(channel, intensity, exposure_time)
 
-            self.get_status()
+                self.get_status()
 
-            # Return the numpy array directly with preserved bit depth
-            return gray_img
+                # Return the numpy array directly with preserved bit depth
+                return gray_img
 
         except Exception as e:
             logger.error(f"Failed to get new frame: {e}")
@@ -1037,96 +1309,100 @@ class MicroscopeHyphaService:
         if context and not self.check_permission(context.get("user", {})):
             raise Exception("User not authorized to access this service")
 
-        # Stop video buffering to prevent camera overload
-        if self.frame_acquisition_running:
-            logger.info("Stopping video buffering for snap operation to prevent camera conflicts")
-            await self.stop_video_buffering()
-            # Wait a moment for the buffering to fully stop
-            await asyncio.sleep(0.1)
-
         try:
-            # Convert channel (canonical name string) to channel_id (int) if provided, otherwise use current channel
-            if channel is None:
-                channel_id = self.squidController.current_channel
-                # Get canonical name from current channel for metadata
-                try:
-                    channel = ChannelMapper.id_to_zarr_name(channel_id)
-                    logger.info(f"Using current channel: {channel_id} ({channel})")
-                except ValueError:
-                    logger.warning(f"Current channel {channel_id} has no canonical name mapping")
-                    channel = None
-            else:
-                # Convert channel (canonical name string) to channel_id (int)
-                try:
-                    channel_id = ChannelMapper.zarr_name_to_id(channel)
-                    logger.info(f"Using channel: {channel_id} ({channel})")
-                except ValueError:
-                    valid_names = ChannelMapper.get_all_zarr_names()
-                    raise Exception(f"Invalid channel: {channel}. Valid channel names are: {valid_names}")
-            
-            # Get channel parameter name to access current intensity and exposure
-            param_name = self.channel_param_map.get(channel_id)
-            if param_name is None:
-                raise Exception(f"Invalid channel ID: {channel_id}. Valid channel IDs are: {list(self.channel_param_map.keys())}")
-            
-            # Get current intensity and exposure from channel parameters
-            current_params = getattr(self, param_name, [50, 100])  # Default fallback
-            if not (isinstance(current_params, list) and len(current_params) == 2):
-                logger.warning(f"Parameter {param_name} for channel {channel_id} was not a list of two items. Using defaults.")
-                current_params = [50, 100]
-            
-            if intensity is None:
-                intensity = current_params[0]
-                logger.info(f"Using current intensity: {intensity}")
-            
-            if exposure_time is None:
-                # Get exposure time from channel parameters (second element is exposure_time)
-                exposure_time = current_params[1]
-                logger.info(f"Using current exposure_time: {exposure_time}")
+            async with self._async_operation_context(
+                "snap",
+                "hardware",
+                metadata={
+                    "channel": channel,
+                    "requested_exposure_time_ms": exposure_time,
+                    "requested_intensity": intensity,
+                },
+                stop_video=True,
+                settle_time_s=0.1,
+            ):
+                # Convert channel (canonical name string) to channel_id (int) if provided, otherwise use current channel
+                if channel is None:
+                    channel_id = self.squidController.current_channel
+                    # Get canonical name from current channel for metadata
+                    try:
+                        channel = ChannelMapper.id_to_zarr_name(channel_id)
+                        logger.info(f"Using current channel: {channel_id} ({channel})")
+                    except ValueError:
+                        logger.warning(f"Current channel {channel_id} has no canonical name mapping")
+                        channel = None
+                else:
+                    # Convert channel (canonical name string) to channel_id (int)
+                    try:
+                        channel_id = ChannelMapper.zarr_name_to_id(channel)
+                        logger.info(f"Using channel: {channel_id} ({channel})")
+                    except ValueError:
+                        valid_names = ChannelMapper.get_all_zarr_names()
+                        raise Exception(f"Invalid channel: {channel}. Valid channel names are: {valid_names}")
+                
+                # Get channel parameter name to access current intensity and exposure
+                param_name = self.channel_param_map.get(channel_id)
+                if param_name is None:
+                    raise Exception(f"Invalid channel ID: {channel_id}. Valid channel IDs are: {list(self.channel_param_map.keys())}")
+                
+                # Get current intensity and exposure from channel parameters
+                current_params = getattr(self, param_name, [50, 100])  # Default fallback
+                if not (isinstance(current_params, list) and len(current_params) == 2):
+                    logger.warning(f"Parameter {param_name} for channel {channel_id} was not a list of two items. Using defaults.")
+                    current_params = [50, 100]
+                
+                if intensity is None:
+                    intensity = current_params[0]
+                    logger.info(f"Using current intensity: {intensity}")
+                
+                if exposure_time is None:
+                    # Get exposure time from channel parameters (second element is exposure_time)
+                    exposure_time = current_params[1]
+                    logger.info(f"Using current exposure_time: {exposure_time}")
 
-            # Update current channel and parameters
-            self.squidController.current_channel = channel_id
-            if param_name:
-                setattr(self, param_name, [intensity, exposure_time])
+                # Update current channel and parameters
+                self.squidController.current_channel = channel_id
+                if param_name:
+                    setattr(self, param_name, [intensity, exposure_time])
 
-            # Capture image
-            gray_img = await self.squidController.snap_image(channel_id, intensity, exposure_time)
-            logger.info('The image is snapped')
-            # Image is already uint8 from snap_image method
+                # Capture image
+                gray_img = await self.squidController.snap_image(channel_id, intensity, exposure_time)
+                logger.info('The image is snapped')
+                # Image is already uint8 from snap_image method
 
-            if return_array:
-                return gray_img
+                if return_array:
+                    return gray_img
 
-            # Encode the image directly to PNG without converting to BGR
-            _, png_image = cv2.imencode('.png', gray_img)
+                # Encode the image directly to PNG without converting to BGR
+                _, png_image = cv2.imencode('.png', gray_img)
 
-            # Save using artifact manager (REQUIRED when not return_array)
-            if not self.snapshot_manager:
-                raise Exception("Snapshot manager not available. Ensure REEF_WORKSPACE_TOKEN is set.")
+                # Save using artifact manager (REQUIRED when not return_array)
+                if not self.snapshot_manager:
+                    raise Exception("Snapshot manager not available. Ensure REEF_WORKSPACE_TOKEN is set.")
 
-            # Get current position for metadata
-            status = self.get_status()
-            metadata = {
-                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
-                "channel_id": channel_id,
-                "channel": channel,
-                "intensity": intensity,
-                "exposure_time": exposure_time,
-                "position_x": status.get("current_x"),
-                "position_y": status.get("current_y"),
-                "position_z": status.get("current_z"),
-                "microscope_service_id": self.service_id
-            }
+                # Get current position for metadata
+                status = self.get_status()
+                metadata = {
+                    "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
+                    "channel_id": channel_id,
+                    "channel": channel,
+                    "intensity": intensity,
+                    "exposure_time": exposure_time,
+                    "position_x": status.get("current_x"),
+                    "position_y": status.get("current_y"),
+                    "position_z": status.get("current_z"),
+                    "microscope_service_id": self.service_id
+                }
 
-            # Save using artifact manager
-            data_url = await self.snapshot_manager.save_snapshot(
-                microscope_service_id=self.service_id,
-                image_bytes=png_image.tobytes(),
-                metadata=metadata
-            )
-            logger.info(f'The image is snapped and saved to artifact manager as {data_url}')
+                # Save using artifact manager
+                data_url = await self.snapshot_manager.save_snapshot(
+                    microscope_service_id=self.service_id,
+                    image_bytes=png_image.tobytes(),
+                    metadata=metadata
+                )
+                logger.info(f'The image is snapped and saved to artifact manager as {data_url}')
 
-            return data_url
+                return data_url
         except Exception as e:
             logger.error(f"Failed to snap image: {e}")
             raise e
@@ -1142,9 +1418,10 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            self.squidController.liveController.turn_on_illumination()
-            logger.info('Bright field illumination turned on.')
-            return 'Bright field illumination turned on.'
+            with self._operation_context("turn_on_illumination", "hardware"):
+                self.squidController.liveController.turn_on_illumination()
+                logger.info('Bright field illumination turned on.')
+                return 'Bright field illumination turned on.'
         except Exception as e:
             logger.error(f"Failed to open illumination: {e}")
             raise e
@@ -1160,9 +1437,10 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            self.squidController.liveController.turn_off_illumination()
-            logger.info('Illumination turned off.')
-            return 'Illumination turned off.'
+            with self._operation_context("turn_off_illumination", "hardware"):
+                self.squidController.liveController.turn_off_illumination()
+                logger.info('Illumination turned off.')
+                return 'Illumination turned off.'
         except Exception as e:
             logger.error(f"Failed to close illumination: {e}")
             raise e
@@ -1259,10 +1537,20 @@ class MicroscopeHyphaService:
         Returns: The message of the action
         """
         logger.warning("DEPRECATED: scan_plate_save_raw_images is deprecated and will be removed in a future release. Use scan_start() with saved_data_type='raw_images_well_plate' instead.")
+        operation_token = None
+        reset_token = None
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
+
+            operation_token = self._acquire_operation(
+                "scan_plate_save_raw_images",
+                ("hardware", "processing"),
+                metadata={"action_ID": action_ID},
+            )
+            if operation_token is not None:
+                reset_token = self._operation_context_token.set(operation_token)
 
             if illumination_settings is None:
                 logger.warning("No illumination settings provided, using default settings")
@@ -1324,6 +1612,9 @@ class MicroscopeHyphaService:
             # Always reset the scanning flag, regardless of success or failure
             self.scanning_in_progress = False
             logger.info("Well plate scanning completed, video buffering auto-start is now re-enabled")
+            if operation_token is not None:
+                self._release_operation(operation_token)
+                self._operation_context_token.reset(reset_token)
 
     async def scan_flexible_positions(self, positions: List[dict] = None, illumination_settings: List[dict] = None, do_contrast_autofocus: bool = False, do_reflection_af: bool = True, action_ID: str = 'flexibleScan', focus_map_points: List[List[float]] = None, move_for_autofocus: bool = False, context=None):
         """
@@ -1357,10 +1648,20 @@ class MicroscopeHyphaService:
         Returns: Confirmation message
         """
         focus_map_used = False
+        operation_token = None
+        reset_token = None
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
+
+            operation_token = self._acquire_operation(
+                "scan_flexible_positions",
+                ("hardware", "processing"),
+                metadata={"action_ID": action_ID},
+            )
+            if operation_token is not None:
+                reset_token = self._operation_context_token.set(operation_token)
 
             if positions is None or len(positions) == 0:
                 raise ValueError("positions list cannot be empty")
@@ -1419,6 +1720,9 @@ class MicroscopeHyphaService:
             # Always reset the scanning flag, regardless of success or failure
             self.scanning_in_progress = False
             logger.info("Flexible position scanning completed, video buffering auto-start is now re-enabled")
+            if operation_token is not None:
+                self._release_operation(operation_token)
+                self._operation_context_token.reset(reset_token)
 
     @schema_function(skip_self=True)
     def set_illumination(self, channel: int=Field(0, description="Illumination channel: 0=Brightfield, 11=405nm, 12=488nm, 13=638nm, 14=561nm, 15=730nm"), intensity: int=Field(50, description="LED illumination intensity percentage (range: 0-100)"), context=None):
@@ -1432,30 +1736,35 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            # if light is on, turn it off first
-            if self.squidController.liveController.illumination_on:
-                self.squidController.liveController.turn_off_illumination()
-                time.sleep(0.005)
-                self.squidController.liveController.set_illumination(channel, intensity)
-                self.squidController.liveController.turn_on_illumination()
-                time.sleep(0.005)
-            else:
-                self.squidController.liveController.set_illumination(channel, intensity)
-                time.sleep(0.005)
+            with self._operation_context(
+                "set_illumination",
+                "hardware",
+                metadata={"channel": channel, "intensity": intensity},
+            ):
+                # if light is on, turn it off first
+                if self.squidController.liveController.illumination_on:
+                    self.squidController.liveController.turn_off_illumination()
+                    time.sleep(0.005)
+                    self.squidController.liveController.set_illumination(channel, intensity)
+                    self.squidController.liveController.turn_on_illumination()
+                    time.sleep(0.005)
+                else:
+                    self.squidController.liveController.set_illumination(channel, intensity)
+                    time.sleep(0.005)
 
-            param_name = self.channel_param_map.get(channel)
-            self.squidController.current_channel = channel
-            if param_name:
-                current_params = getattr(self, param_name, [intensity, 100]) # Default exposure if not found
-                if not (isinstance(current_params, list) and len(current_params) == 2):
-                    logger.warning(f"Parameter {param_name} for channel {channel} was not a list of two items. Resetting with default exposure.")
-                    current_params = [intensity, 100] # Default exposure
-                setattr(self, param_name, [intensity, current_params[1]])
-            else:
-                logger.warning(f"Unknown channel {channel} in set_illumination, parameters not updated for intensity attributes.")
+                param_name = self.channel_param_map.get(channel)
+                self.squidController.current_channel = channel
+                if param_name:
+                    current_params = getattr(self, param_name, [intensity, 100]) # Default exposure if not found
+                    if not (isinstance(current_params, list) and len(current_params) == 2):
+                        logger.warning(f"Parameter {param_name} for channel {channel} was not a list of two items. Resetting with default exposure.")
+                        current_params = [intensity, 100] # Default exposure
+                    setattr(self, param_name, [intensity, current_params[1]])
+                else:
+                    logger.warning(f"Unknown channel {channel} in set_illumination, parameters not updated for intensity attributes.")
 
-            logger.info(f'The intensity of the channel {channel} illumination is set to {intensity}.')
-            return f'The intensity of the channel {channel} illumination is set to {intensity}.'
+                logger.info(f'The intensity of the channel {channel} illumination is set to {intensity}.')
+                return f'The intensity of the channel {channel} illumination is set to {intensity}.'
         except Exception as e:
             logger.error(f"Failed to set illumination: {e}")
             raise e
@@ -1472,21 +1781,26 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            self.squidController.camera.set_exposure_time(exposure_time)
+            with self._operation_context(
+                "set_camera_exposure",
+                "hardware",
+                metadata={"channel": channel, "exposure_time_ms": exposure_time},
+            ):
+                self.squidController.camera.set_exposure_time(exposure_time)
 
-            param_name = self.channel_param_map.get(channel)
-            self.squidController.current_channel = channel
-            if param_name:
-                current_params = getattr(self, param_name, [50, exposure_time]) # Default intensity if not found
-                if not (isinstance(current_params, list) and len(current_params) == 2):
-                    logger.warning(f"Parameter {param_name} for channel {channel} was not a list of two items. Resetting with default intensity.")
-                    current_params = [50, exposure_time] # Default intensity
-                setattr(self, param_name, [current_params[0], exposure_time])
-            else:
-                logger.warning(f"Unknown channel {channel} in set_camera_exposure, parameters not updated for exposure attributes.")
+                param_name = self.channel_param_map.get(channel)
+                self.squidController.current_channel = channel
+                if param_name:
+                    current_params = getattr(self, param_name, [50, exposure_time]) # Default intensity if not found
+                    if not (isinstance(current_params, list) and len(current_params) == 2):
+                        logger.warning(f"Parameter {param_name} for channel {channel} was not a list of two items. Resetting with default intensity.")
+                        current_params = [50, exposure_time] # Default intensity
+                    setattr(self, param_name, [current_params[0], exposure_time])
+                else:
+                    logger.warning(f"Unknown channel {channel} in set_camera_exposure, parameters not updated for exposure attributes.")
 
-            logger.info(f'The exposure time of the camera is set to {exposure_time}.')
-            return f'The exposure time of the camera is set to {exposure_time}.'
+                logger.info(f'The exposure time of the camera is set to {exposure_time}.')
+                return f'The exposure time of the camera is set to {exposure_time}.'
         except Exception as e:
             logger.error(f"Failed to set camera exposure: {e}")
             raise e
@@ -1523,14 +1837,19 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            # Run the blocking home_stage operation in a separate thread executor
-            # This prevents the asyncio event loop from being blocked during homing
-            await asyncio.get_event_loop().run_in_executor(
-                None,  # Use default ThreadPoolExecutor
-                self.squidController.home_stage
-            )
-            logger.info('The stage moved to home position in z, y, and x axis')
-            return 'The stage moved to home position in z, y, and x axis'
+            async with self._async_operation_context(
+                "home_stage",
+                "hardware",
+                stop_video=False,
+            ):
+                # Run the blocking home_stage operation in a separate thread executor
+                # This prevents the asyncio event loop from being blocked during homing
+                await asyncio.get_event_loop().run_in_executor(
+                    None,  # Use default ThreadPoolExecutor
+                    self.squidController.home_stage
+                )
+                logger.info('The stage moved to home position in z, y, and x axis')
+                return 'The stage moved to home position in z, y, and x axis'
         except Exception as e:
             logger.error(f"Failed to home stage: {e}")
             raise e
@@ -1548,14 +1867,15 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            # Run the blocking return_stage operation in a separate thread executor
-            # This prevents the asyncio event loop from being blocked during stage movement
-            await asyncio.get_event_loop().run_in_executor(
-                None,  # Use default ThreadPoolExecutor
-                self.squidController.return_stage
-            )
-            logger.info('The stage moved to the initial position')
-            return 'The stage moved to the initial position'
+            async with self._async_operation_context("return_stage", "hardware"):
+                # Run the blocking return_stage operation in a separate thread executor
+                # This prevents the asyncio event loop from being blocked during stage movement
+                await asyncio.get_event_loop().run_in_executor(
+                    None,  # Use default ThreadPoolExecutor
+                    self.squidController.return_stage
+                )
+                logger.info('The stage moved to the initial position')
+                return 'The stage moved to the initial position'
         except Exception as e:
             logger.error(f"Failed to return stage: {e}")
             raise e
@@ -1573,14 +1893,15 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            # Run the blocking move_to_slide_loading_position operation in a separate thread executor
-            # This prevents the asyncio event loop from being blocked during stage movement
-            await asyncio.get_event_loop().run_in_executor(
-                None,  # Use default ThreadPoolExecutor
-                self.squidController.slidePositionController.move_to_slide_loading_position
-            )
-            logger.info('The stage moved to loading position')
-            return 'The stage moved to loading position'
+            async with self._async_operation_context("move_to_loading_position", "hardware"):
+                # Run the blocking move_to_slide_loading_position operation in a separate thread executor
+                # This prevents the asyncio event loop from being blocked during stage movement
+                await asyncio.get_event_loop().run_in_executor(
+                    None,  # Use default ThreadPoolExecutor
+                    self.squidController.slidePositionController.move_to_slide_loading_position
+                )
+                logger.info('The stage moved to loading position')
+                return 'The stage moved to loading position'
         except Exception as e:
             logger.error(f"Failed to move to loading position: {e}")
             raise e
@@ -1598,9 +1919,15 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            await self.squidController.contrast_autofocus()
-            logger.info('The camera is auto-focused')
-            return 'The camera is auto-focused'
+            async with self._async_operation_context(
+                "contrast_autofocus",
+                "hardware",
+                stop_video=True,
+                settle_time_s=0.1,
+            ):
+                await self.squidController.contrast_autofocus()
+                logger.info('The camera is auto-focused')
+                return 'The camera is auto-focused'
         except Exception as e:
             logger.error(f"Failed to auto focus: {e}")
             raise e
@@ -1617,9 +1944,15 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            await self.squidController.reflection_autofocus()
-            logger.info('The camera is auto-focused')
-            return 'The camera is auto-focused'
+            async with self._async_operation_context(
+                "reflection_autofocus",
+                "hardware",
+                stop_video=True,
+                settle_time_s=0.1,
+            ):
+                await self.squidController.reflection_autofocus()
+                logger.info('The camera is auto-focused')
+                return 'The camera is auto-focused'
         except Exception as e:
             logger.error(f"Failed to do laser autofocus: {e}")
             raise e
@@ -1637,17 +1970,23 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            if self.is_simulation:
-                pass
-            else:
-                # Run the potentially blocking set_reference operation in a separate thread executor
-                # This prevents the asyncio event loop from being blocked during laser reference setting
-                await asyncio.get_event_loop().run_in_executor(
-                    None,  # Use default ThreadPoolExecutor
-                    self.squidController.laserAutofocusController.set_reference
-                )
-            logger.info('The laser reference is set')
-            return 'The laser reference is set'
+            async with self._async_operation_context(
+                "autofocus_set_reflection_reference",
+                "hardware",
+                stop_video=True,
+                settle_time_s=0.1,
+            ):
+                if self.is_simulation:
+                    pass
+                else:
+                    # Run the potentially blocking set_reference operation in a separate thread executor
+                    # This prevents the asyncio event loop from being blocked during laser reference setting
+                    await asyncio.get_event_loop().run_in_executor(
+                        None,  # Use default ThreadPoolExecutor
+                        self.squidController.laserAutofocusController.set_reference
+                    )
+                logger.info('The laser reference is set')
+                return 'The laser reference is set'
         except Exception as e:
             logger.error(f"Failed to set laser reference: {e}")
             raise e
@@ -1666,17 +2005,22 @@ class MicroscopeHyphaService:
 
             if well_plate_type is None:
                 well_plate_type = '96'
-            # Run the blocking move_to_well operation in a separate thread executor
-            # This prevents the asyncio event loop from being blocked during stage movement
-            await asyncio.get_event_loop().run_in_executor(
-                None,  # Use default ThreadPoolExecutor
-                self.squidController.move_to_well,
-                row,
-                col,
-                well_plate_type
-            )
-            logger.info(f'The stage moved to well position ({row},{col})')
-            return f'The stage moved to well position ({row},{col})'
+            async with self._async_operation_context(
+                "navigate_to_well",
+                "hardware",
+                metadata={"row": row, "col": col, "well_plate_type": well_plate_type},
+            ):
+                # Run the blocking move_to_well operation in a separate thread executor
+                # This prevents the asyncio event loop from being blocked during stage movement
+                await asyncio.get_event_loop().run_in_executor(
+                    None,  # Use default ThreadPoolExecutor
+                    self.squidController.move_to_well,
+                    row,
+                    col,
+                    well_plate_type
+                )
+                logger.info(f'The stage moved to well position ({row},{col})')
+                return f'The stage moved to well position ({row},{col})'
         except Exception as e:
             logger.error(f"Failed to navigate to well: {e}")
             raise e
@@ -1754,6 +2098,7 @@ class MicroscopeHyphaService:
             "reflection_autofocus": self.reflection_autofocus,
             "autofocus_set_reflection_reference": self.autofocus_set_reflection_reference,
             "get_status": self.get_status,
+            "get_busy_status": self.get_busy_status,
             "update_parameters_from_client": self.update_parameters_from_client,
             "adjust_video_frame": self.adjust_video_frame,
             "start_video_buffering": self.start_video_buffering,
@@ -2552,10 +2897,18 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            return self.squidController.set_stage_velocity(
-                velocity_x_mm_per_s=velocity_x_mm_per_s,
-                velocity_y_mm_per_s=velocity_y_mm_per_s
-            )
+            with self._operation_context(
+                "set_stage_velocity",
+                "hardware",
+                metadata={
+                    "velocity_x_mm_per_s": velocity_x_mm_per_s,
+                    "velocity_y_mm_per_s": velocity_y_mm_per_s,
+                },
+            ):
+                return self.squidController.set_stage_velocity(
+                    velocity_x_mm_per_s=velocity_x_mm_per_s,
+                    velocity_y_mm_per_s=velocity_y_mm_per_s
+                )
         except Exception as e:
             logger.error(f"Error setting stage velocity: {e}")
             raise e
@@ -2577,127 +2930,132 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            # Check if experiment manager is initialized
-            if not hasattr(self.squidController, 'experiment_manager') or self.squidController.experiment_manager is None:
-                raise Exception("Experiment manager not initialized. Start a scanning operation first to create data.")
+            async with self._async_operation_context(
+                "upload_zarr_dataset",
+                "processing",
+                metadata={"experiment_name": experiment_name},
+            ):
+                # Check if experiment manager is initialized
+                if not hasattr(self.squidController, 'experiment_manager') or self.squidController.experiment_manager is None:
+                    raise Exception("Experiment manager not initialized. Start a scanning operation first to create data.")
 
-            # Get experiment information
-            experiment_info = self.squidController.experiment_manager.get_experiment_info(experiment_name)
-            
-            # Check if zarr data exists
-            zarr_path = Path(experiment_info.get("zarr_path", ""))
-            if not zarr_path.exists():
-                raise Exception(f"No zarr data found for experiment '{experiment_name}'. Start a scanning operation first to create data.")
+                # Get experiment information
+                experiment_info = self.squidController.experiment_manager.get_experiment_info(experiment_name)
+                
+                # Check if zarr data exists
+                zarr_path = Path(experiment_info.get("zarr_path", ""))
+                if not zarr_path.exists():
+                    raise Exception(f"No zarr data found for experiment '{experiment_name}'. Start a scanning operation first to create data.")
 
-            total_size_mb = experiment_info.get("total_size_mb", 0)
-            logger.info(f"Uploading experiment '{experiment_name}' ({total_size_mb:.2f} MB)")
+                total_size_mb = experiment_info.get("total_size_mb", 0)
+                logger.info(f"Uploading experiment '{experiment_name}' ({total_size_mb:.2f} MB)")
 
-            # Prepare acquisition settings if requested
-            acquisition_settings = None
-            if include_acquisition_settings:
+                # Prepare acquisition settings if requested
+                acquisition_settings = None
+                if include_acquisition_settings:
+                    try:
+                        from squid_control.hardware.config import CONFIG, ChannelMapper
+                        
+                        # Get canvas to extract metadata
+                        canvas = self.squidController.experiment_manager.get_canvas(experiment_name)
+                        export_info = canvas.get_export_info() if canvas else {}
+                        
+                        acquisition_settings = {
+                            "pixel_size_xy_um": export_info.get("canvas_dimensions", {}).get("pixel_size_um", self.squidController.pixel_size_xy),
+                            "channels": export_info.get("channels", ChannelMapper.get_all_human_names()),
+                            "canvas_dimensions": export_info.get("canvas_dimensions", {}),
+                            "num_scales": export_info.get("num_scales", 6),
+                            "microscope_service_id": self.service_id,
+                            "experiment_name": experiment_name,
+                            "stage_limits": self.squidController.experiment_manager.stage_limits
+                        }
+                    except Exception as e:
+                        logger.warning(f"Could not get detailed acquisition settings: {e}")
+                        acquisition_settings = {
+                            "microscope_service_id": self.service_id,
+                            "experiment_name": experiment_name,
+                            "total_size_mb": total_size_mb
+                        }
+
+                # Generate dataset name with timestamp
+                dataset_name = f"{experiment_name}-{time.strftime('%Y%m%d-%H%M%S')}"
+                
+                # Use hypha-artifact for direct folder upload
+                from hypha_artifact import AsyncHyphaArtifact
+                
+                token = os.environ.get("REEF_WORKSPACE_TOKEN")
+                if not token:
+                    raise Exception("REEF_WORKSPACE_TOKEN environment variable not set")
+                
+                workspace = "reef-imaging"
+                logger.info(f"Creating artifact '{dataset_name}' for upload")
+                
+                artifact = AsyncHyphaArtifact(
+                    artifact_id=dataset_name,
+                    workspace=workspace,
+                    token=token,
+                    server_url=self.server_url
+                )
+                
+                # Create the artifact (delete existing if it already exists)
                 try:
-                    from squid_control.hardware.config import CONFIG, ChannelMapper
-                    
-                    # Get canvas to extract metadata
-                    canvas = self.squidController.experiment_manager.get_canvas(experiment_name)
-                    export_info = canvas.get_export_info() if canvas else {}
-                    
-                    acquisition_settings = {
-                        "pixel_size_xy_um": export_info.get("canvas_dimensions", {}).get("pixel_size_um", self.squidController.pixel_size_xy),
-                        "channels": export_info.get("channels", ChannelMapper.get_all_human_names()),
-                        "canvas_dimensions": export_info.get("canvas_dimensions", {}),
-                        "num_scales": export_info.get("num_scales", 6),
-                        "microscope_service_id": self.service_id,
-                        "experiment_name": experiment_name,
-                        "stage_limits": self.squidController.experiment_manager.stage_limits
-                    }
-                except Exception as e:
-                    logger.warning(f"Could not get detailed acquisition settings: {e}")
-                    acquisition_settings = {
-                        "microscope_service_id": self.service_id,
-                        "experiment_name": experiment_name,
-                        "total_size_mb": total_size_mb
-                    }
-
-            # Generate dataset name with timestamp
-            dataset_name = f"{experiment_name}-{time.strftime('%Y%m%d-%H%M%S')}"
-            
-            # Use hypha-artifact for direct folder upload
-            from hypha_artifact import AsyncHyphaArtifact
-            
-            token = os.environ.get("REEF_WORKSPACE_TOKEN")
-            if not token:
-                raise Exception("REEF_WORKSPACE_TOKEN environment variable not set")
-            
-            workspace = "reef-imaging"
-            logger.info(f"Creating artifact '{dataset_name}' for upload")
-            
-            artifact = AsyncHyphaArtifact(
-                artifact_id=dataset_name,
-                workspace=workspace,
-                token=token,
-                server_url=self.server_url
-            )
-            
-            # Create the artifact (delete existing if it already exists)
-            try:
-                await artifact.create()
-                logger.info(f"Artifact created: {workspace}/{dataset_name}")
-            except Exception as e:
-                error_str = str(e).lower()
-                if "already exists" in error_str or "fileexistserror" in error_str:
-                    logger.warning(f"Artifact already exists, deleting and recreating...")
-                    # Delete the existing artifact using artifact manager
-                    from hypha_rpc import connect_to_server
-                    server = await connect_to_server({"server_url": self.server_url, "token": token})
-                    artifact_manager = await server.get_service("public/artifact-manager")
-                    await artifact_manager.delete(artifact_id=f"{workspace}/{dataset_name}", delete_files=True)
-                    logger.info(f"Deleted existing artifact: {workspace}/{dataset_name}")
-                    server.disconnect()
-                    # Now create fresh
                     await artifact.create()
                     logger.info(f"Artifact created: {workspace}/{dataset_name}")
-                else:
-                    raise
-            
-            # Edit mode for staging changes
-            await artifact.edit(stage=True)
-            
-            # Upload the zarr folder recursively
-            logger.info(f"Uploading zarr folder: {zarr_path}")
-            await artifact.put(str(zarr_path), "/data.zarr", recursive=True)
-            
-            # Add manifest with acquisition settings if available
-            if acquisition_settings:
-                import json
-                import tempfile
-                manifest_content = json.dumps({
-                    "name": experiment_name,
-                    "description": description or f"Experiment {experiment_name}",
-                    "acquisition_settings": acquisition_settings
-                }, indent=2)
-                # Write manifest to a temporary file, then upload (put() expects file paths, not bytes)
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-                    f.write(manifest_content)
-                    temp_manifest_path = f.name
-                try:
-                    await artifact.put(temp_manifest_path, "/manifest.json")
-                finally:
-                    os.unlink(temp_manifest_path)  # Clean up temp file
-            
-            # Commit the changes
-            await artifact.commit(comment=description or f"Experiment {experiment_name}")
-            
-            logger.info(f"Successfully uploaded experiment '{experiment_name}' as '{dataset_name}'")
+                except Exception as e:
+                    error_str = str(e).lower()
+                    if "already exists" in error_str or "fileexistserror" in error_str:
+                        logger.warning(f"Artifact already exists, deleting and recreating...")
+                        # Delete the existing artifact using artifact manager
+                        from hypha_rpc import connect_to_server
+                        server = await connect_to_server({"server_url": self.server_url, "token": token})
+                        artifact_manager = await server.get_service("public/artifact-manager")
+                        await artifact_manager.delete(artifact_id=f"{workspace}/{dataset_name}", delete_files=True)
+                        logger.info(f"Deleted existing artifact: {workspace}/{dataset_name}")
+                        server.disconnect()
+                        # Now create fresh
+                        await artifact.create()
+                        logger.info(f"Artifact created: {workspace}/{dataset_name}")
+                    else:
+                        raise
+                
+                # Edit mode for staging changes
+                await artifact.edit(stage=True)
+                
+                # Upload the zarr folder recursively
+                logger.info(f"Uploading zarr folder: {zarr_path}")
+                await artifact.put(str(zarr_path), "/data.zarr", recursive=True)
+                
+                # Add manifest with acquisition settings if available
+                if acquisition_settings:
+                    import json
+                    import tempfile
+                    manifest_content = json.dumps({
+                        "name": experiment_name,
+                        "description": description or f"Experiment {experiment_name}",
+                        "acquisition_settings": acquisition_settings
+                    }, indent=2)
+                    # Write manifest to a temporary file, then upload (put() expects file paths, not bytes)
+                    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+                        f.write(manifest_content)
+                        temp_manifest_path = f.name
+                    try:
+                        await artifact.put(temp_manifest_path, "/manifest.json")
+                    finally:
+                        os.unlink(temp_manifest_path)  # Clean up temp file
+                
+                # Commit the changes
+                await artifact.commit(comment=description or f"Experiment {experiment_name}")
+                
+                logger.info(f"Successfully uploaded experiment '{experiment_name}' as '{dataset_name}'")
 
-            return {
-                "success": True,
-                "experiment_name": experiment_name,
-                "dataset_name": dataset_name,
-                "total_size_mb": total_size_mb,
-                "acquisition_settings": acquisition_settings,
-                "description": description or f"Experiment {experiment_name}"
-            }
+                return {
+                    "success": True,
+                    "experiment_name": experiment_name,
+                    "dataset_name": dataset_name,
+                    "total_size_mb": total_size_mb,
+                    "acquisition_settings": acquisition_settings,
+                    "description": description or f"Experiment {experiment_name}"
+                }
 
         except Exception as e:
             logger.error(f"Error uploading experiment dataset: {e}")
@@ -2733,10 +3091,20 @@ class MicroscopeHyphaService:
             dict: Status of the scan, including segmentation_result with segmentation status
         """
         logger.warning("DEPRECATED: scan_region_to_zarr is deprecated and will be removed in a future release. Use scan_start() with saved_data_type='full_zarr' instead.")
+        operation_token = None
+        reset_token = None
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
+
+            operation_token = self._acquire_operation(
+                "scan_region_to_zarr",
+                ("hardware", "processing"),
+                metadata={"action_ID": action_ID, "experiment_name": experiment_name},
+            )
+            if operation_token is not None:
+                reset_token = self._operation_context_token.set(operation_token)
 
             # Set default illumination settings if not provided
             if illumination_settings is None:
@@ -2816,6 +3184,9 @@ class MicroscopeHyphaService:
             # Always reset the scanning flag, regardless of success or failure
             self.scanning_in_progress = False
             logger.info("Normal scanning completed, video buffering auto-start is now re-enabled")
+            if operation_token is not None:
+                self._release_operation(operation_token)
+                self._operation_context_token.reset(reset_token)
 
 
     @schema_function(skip_self=True)
@@ -2829,24 +3200,25 @@ class MicroscopeHyphaService:
             dict: Status of the reset operation
         """
         try:
-            if hasattr(self.squidController, 'zarr_canvas') and self.squidController.zarr_canvas is not None:
-                # Close the existing canvas
-                self.squidController.zarr_canvas.close()
+            with self._operation_context("reset_stitching_canvas", "processing"):
+                if hasattr(self.squidController, 'zarr_canvas') and self.squidController.zarr_canvas is not None:
+                    # Close the existing canvas
+                    self.squidController.zarr_canvas.close()
 
-                # Delete the zarr directory
-                import shutil
-                if self.squidController.zarr_canvas.zarr_path.exists():
-                    shutil.rmtree(self.squidController.zarr_canvas.zarr_path)
+                    # Delete the zarr directory
+                    import shutil
+                    if self.squidController.zarr_canvas.zarr_path.exists():
+                        shutil.rmtree(self.squidController.zarr_canvas.zarr_path)
 
-                # Clear the reference
-                self.squidController.zarr_canvas = None
+                    # Clear the reference
+                    self.squidController.zarr_canvas = None
 
-                logger.info("Stitching canvas reset successfully")
-                return {
-                    "success": True,
-                    "message": "Stitching canvas has been reset"
-                }
-            else:
+                    logger.info("Stitching canvas reset successfully")
+                    return {
+                        "success": True,
+                        "message": "Stitching canvas has been reset"
+                    }
+
                 return {
                     "success": True,
                     "message": "No stitching canvas to reset"
@@ -2885,10 +3257,20 @@ class MicroscopeHyphaService:
         Returns:
             dict: Status of the scan with performance metrics
         """
+        operation_token = None
+        reset_token = None
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
+
+            operation_token = self._acquire_operation(
+                "quick_scan_region_to_zarr",
+                ("hardware", "processing"),
+                metadata={"experiment_name": experiment_name},
+            )
+            if operation_token is not None:
+                reset_token = self._operation_context_token.set(operation_token)
             
             # Validate exposure time early
             if exposure_time > 30:
@@ -2988,6 +3370,9 @@ class MicroscopeHyphaService:
             # Always reset the scanning flag, regardless of success or failure
             self.scanning_in_progress = False
             logger.info("Quick region scanning completed, video buffering auto-start is now re-enabled")
+            if operation_token is not None:
+                self._release_operation(operation_token)
+                self._operation_context_token.reset(reset_token)
 
     @schema_function(skip_self=True)
     def get_stitched_region(self, center_x_mm: float = Field(..., description="Region center X in stage coordinates (mm)"),
@@ -3007,11 +3392,21 @@ class MicroscopeHyphaService:
         Returns: Dictionary with success status, base64 PNG or array data, shape, dtype, is_rgb flag, channels_used list, and region metadata.
         Notes: Automatically spans multiple wells if region crosses boundaries. Multiple channels merge into RGB with channel-specific colors (BF=white, 405nm=blue, 488nm=green, 561nm=yellow, 638nm=red, 730nm=magenta).
         """
+        operation_token = None
+        reset_token = None
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 logger.warning("User not authorized to access this service")
                 raise Exception("User not authorized to access this service")
+
+            operation_token = self._acquire_operation(
+                "get_stitched_region",
+                "processing",
+                metadata={"experiment_name": experiment_name},
+            )
+            if operation_token is not None:
+                reset_token = self._operation_context_token.set(operation_token)
 
             # Parse channel_name string into a list
             if isinstance(channel_name, str):
@@ -3187,6 +3582,10 @@ class MicroscopeHyphaService:
         except Exception as e:
             logger.error(f"Failed to get stitched region: {e}", exc_info=True)
             raise e
+        finally:
+            if operation_token is not None:
+                self._release_operation(operation_token)
+                self._operation_context_token.reset(reset_token)
 
     def _merge_channels_to_rgb(self, channel_regions):
         """
@@ -3261,9 +3660,14 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            result = self.squidController.create_experiment(experiment_name)
-            logger.info(f"Created experiment: {experiment_name}")
-            return result
+            async with self._async_operation_context(
+                "create_experiment",
+                "processing",
+                metadata={"experiment_name": experiment_name},
+            ):
+                result = self.squidController.create_experiment(experiment_name)
+                logger.info(f"Created experiment: {experiment_name}")
+                return result
         except Exception as e:
             logger.error(f"Failed to create experiment: {e}")
             raise e
@@ -3298,9 +3702,14 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            result = self.squidController.set_active_experiment(experiment_name)
-            logger.info(f"Set active experiment: {experiment_name}")
-            return result
+            async with self._async_operation_context(
+                "set_active_experiment",
+                "processing",
+                metadata={"experiment_name": experiment_name},
+            ):
+                result = self.squidController.set_active_experiment(experiment_name)
+                logger.info(f"Set active experiment: {experiment_name}")
+                return result
         except Exception as e:
             logger.error(f"Failed to set active experiment: {e}")
             raise e
@@ -3317,9 +3726,14 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            result = self.squidController.remove_experiment(experiment_name)
-            logger.info(f"Removed experiment: {experiment_name}")
-            return result
+            async with self._async_operation_context(
+                "remove_experiment",
+                "processing",
+                metadata={"experiment_name": experiment_name},
+            ):
+                result = self.squidController.remove_experiment(experiment_name)
+                logger.info(f"Removed experiment: {experiment_name}")
+                return result
         except Exception as e:
             logger.error(f"Failed to remove experiment: {e}")
             raise e
@@ -3336,9 +3750,14 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            result = self.squidController.reset_experiment(experiment_name)
-            logger.info(f"Reset experiment: {experiment_name}")
-            return result
+            async with self._async_operation_context(
+                "reset_experiment",
+                "processing",
+                metadata={"experiment_name": experiment_name},
+            ):
+                result = self.squidController.reset_experiment(experiment_name)
+                logger.info(f"Reset experiment: {experiment_name}")
+                return result
         except Exception as e:
             logger.error(f"Failed to reset experiment: {e}")
             raise e
@@ -3378,66 +3797,71 @@ class MicroscopeHyphaService:
             if context and not self.check_permission(context.get("user", {})):
                 raise Exception("User not authorized to access this service")
 
-            # Check if zarr artifact manager is available
-            if self.artifact_manager is None:
-                raise Exception("Artifact manager not initialized. Check that REEF_WORKSPACE_TOKEN is set.")
+            async with self._async_operation_context(
+                "process_timelapse_offline",
+                "processing",
+                metadata={"experiment_id": experiment_id},
+            ):
+                # Check if zarr artifact manager is available
+                if self.artifact_manager is None:
+                    raise Exception("Artifact manager not initialized. Check that REEF_WORKSPACE_TOKEN is set.")
 
-            logger.info(f"Starting offline processing for experiment ID: {experiment_id}")
-            logger.info(f"Parameters: upload_immediately={upload_immediately}, cleanup_temp_files={cleanup_temp_files}, use_parallel_wells={use_parallel_wells}")
-            logger.info("🧵 Running offline processing in separate thread to prevent network disconnections")
+                logger.info(f"Starting offline processing for experiment ID: {experiment_id}")
+                logger.info(f"Parameters: upload_immediately={upload_immediately}, cleanup_temp_files={cleanup_temp_files}, use_parallel_wells={use_parallel_wells}")
+                logger.info("🧵 Running offline processing in separate thread to prevent network disconnections")
 
-            # Define the blocking processing function to run in a thread
-            def run_offline_processing():
-                """
-                Run the offline processing in a separate thread.
-                This prevents blocking the main event loop and maintains network connections.
-                """
-                try:
-                    # Import and create the offline processor
-                    from squid_control.offline_processing import OfflineProcessor
-                    processor = OfflineProcessor(
-                        self.squidController,
-                        self.artifact_manager,
-                        self.service_id
-                    )
-                    logger.info("OfflineProcessor created successfully in worker thread")
-
-                    # Create a new event loop for this thread since offline processing uses async operations
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-
+                # Define the blocking processing function to run in a thread
+                def run_offline_processing():
+                    """
+                    Run the offline processing in a separate thread.
+                    This prevents blocking the main event loop and maintains network connections.
+                    """
                     try:
-                        # Run the offline processing in the new event loop
-                        logger.info("Calling processor.stitch_and_upload_timelapse in worker thread...")
-                        result = loop.run_until_complete(
-                            processor.stitch_and_upload_timelapse(
-                                experiment_id, upload_immediately, cleanup_temp_files,
-                                use_parallel_wells=use_parallel_wells
-                            )
+                        # Import and create the offline processor
+                        from squid_control.offline_processing import OfflineProcessor
+                        processor = OfflineProcessor(
+                            self.squidController,
+                            self.artifact_manager,
+                            self.service_id
                         )
+                        logger.info("OfflineProcessor created successfully in worker thread")
 
-                        logger.info(f"Offline processing completed in worker thread: {result.get('total_datasets', 0)} datasets processed")
-                        logger.info(f"Processing mode: {result.get('processing_mode', 'unknown')}")
-                        return result
+                        # Create a new event loop for this thread since offline processing uses async operations
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
 
-                    finally:
-                        # Clean up the event loop
-                        loop.close()
+                        try:
+                            # Run the offline processing in the new event loop
+                            logger.info("Calling processor.stitch_and_upload_timelapse in worker thread...")
+                            result = loop.run_until_complete(
+                                processor.stitch_and_upload_timelapse(
+                                    experiment_id, upload_immediately, cleanup_temp_files,
+                                    use_parallel_wells=use_parallel_wells
+                                )
+                            )
 
-                except Exception as e:
-                    logger.error(f"Error in offline processing worker thread: {e}")
-                    return {
-                        "success": False,
-                        "error": str(e),
-                        "experiment_id": experiment_id
-                    }
+                            logger.info(f"Offline processing completed in worker thread: {result.get('total_datasets', 0)} datasets processed")
+                            logger.info(f"Processing mode: {result.get('processing_mode', 'unknown')}")
+                            return result
 
-            # Run the processing function in a separate thread using asyncio.to_thread
-            logger.info("🚀 Launching offline processing in worker thread...")
-            result = await asyncio.to_thread(run_offline_processing)
+                        finally:
+                            # Clean up the event loop
+                            loop.close()
 
-            logger.info(f"🎉 Offline processing thread completed: {result}")
-            return result
+                    except Exception as e:
+                        logger.error(f"Error in offline processing worker thread: {e}")
+                        return {
+                            "success": False,
+                            "error": str(e),
+                            "experiment_id": experiment_id
+                        }
+
+                # Run the processing function in a separate thread using asyncio.to_thread
+                logger.info("🚀 Launching offline processing in worker thread...")
+                result = await asyncio.to_thread(run_offline_processing)
+
+                logger.info(f"🎉 Offline processing thread completed: {result}")
+                return result
 
         except Exception as e:
             logger.error(f"Error in offline stitching and upload service method: {e}")
@@ -3445,7 +3869,7 @@ class MicroscopeHyphaService:
 
     # ===== Unified Scan API Methods =====
 
-    async def _run_scan_with_state_tracking(self, scan_method, *args, **kwargs):
+    async def _run_scan_with_state_tracking(self, operation_token, scan_method, *args, **kwargs):
         """
         Internal wrapper that updates scan state during execution.
         
@@ -3459,17 +3883,23 @@ class MicroscopeHyphaService:
         Returns:
             The result from the scan method, or None if failed
         """
-        try:
-            self.scan_state['state'] = 'running'
-            self.scan_state['error_message'] = None
+        reset_token = None
+        if operation_token is not None:
+            reset_token = self._operation_context_token.set(operation_token)
 
+        try:
             logger.info(f"Starting scan with method: {scan_method.__name__}")
 
             # Run the actual scan method
             result = await scan_method(*args, **kwargs)
 
-            self.scan_state['state'] = 'completed'
-            logger.info(f"Scan completed successfully: {scan_method.__name__}")
+            if getattr(self.squidController, 'scan_stop_requested', False):
+                self.scan_state['state'] = 'failed'
+                self.scan_state['error_message'] = 'Scan was cancelled by user'
+                logger.info(f"Scan stopped after cancellation request: {scan_method.__name__}")
+            else:
+                self.scan_state['state'] = 'completed'
+                logger.info(f"Scan completed successfully: {scan_method.__name__}")
             return result
 
         except asyncio.CancelledError:
@@ -3485,6 +3915,9 @@ class MicroscopeHyphaService:
 
         finally:
             self.scan_state['scan_task'] = None
+            if operation_token is not None:
+                self._release_operation(operation_token)
+                self._operation_context_token.reset(reset_token)
 
     @schema_function(skip_self=True)
     async def scan_start(self,
@@ -3552,6 +3985,7 @@ class MicroscopeHyphaService:
         - experiment_name (str): Experiment name
         - uploading (bool): Enable upload after scanning
         """
+        operation_token = None
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
@@ -3580,6 +4014,14 @@ class MicroscopeHyphaService:
             do_reflection_af = config.get('do_reflection_af', True)
             well_plate_type = config.get('well_plate_type', '96')
 
+            operation_token = self._acquire_operation(
+                "scan_start",
+                ("hardware", "processing"),
+                metadata={"saved_data_type": saved_data_type, "action_ID": action_ID},
+            )
+
+            self.scan_state['state'] = 'running'
+            self.scan_state['error_message'] = None
             logger.info(f"Starting unified scan with profile: {saved_data_type}")
 
             # Route to appropriate scan method based on profile
@@ -3594,6 +4036,7 @@ class MicroscopeHyphaService:
                 focus_map_points = config.get('focus_map_points', None)
 
                 scan_coro = self._run_scan_with_state_tracking(
+                    operation_token,
                     self.scan_plate_save_raw_images,
                     well_plate_type=well_plate_type,
                     illumination_settings=illumination_settings,
@@ -3626,6 +4069,7 @@ class MicroscopeHyphaService:
                 timepoint = config.get('timepoint', 0)
 
                 scan_coro = self._run_scan_with_state_tracking(
+                    operation_token,
                     self.scan_region_to_zarr,
                     start_x_mm=start_x_mm,
                     start_y_mm=start_y_mm,
@@ -3663,6 +4107,7 @@ class MicroscopeHyphaService:
                         raise ValueError(f"Position {idx} must have 'x' and 'y' coordinates")
                 
                 scan_coro = self._run_scan_with_state_tracking(
+                    operation_token,
                     self.scan_flexible_positions,
                     positions=positions,
                     illumination_settings=illumination_settings,
@@ -3695,6 +4140,7 @@ class MicroscopeHyphaService:
                     raise ValueError("quick_zarr scan requires 'scan_width_mm' and 'scan_height_mm' parameters")
 
                 scan_coro = self._run_scan_with_state_tracking(
+                    operation_token,
                     self.quick_scan_region_to_zarr,
                     start_x_mm=start_x_mm,
                     start_y_mm=start_y_mm,
@@ -3724,6 +4170,12 @@ class MicroscopeHyphaService:
             }
 
         except Exception as e:
+            if operation_token is not None:
+                self._release_operation(operation_token)
+            if self.scan_state['scan_task'] is None and self.scan_state['state'] == 'running':
+                self.scan_state['state'] = 'idle'
+                self.scan_state['error_message'] = None
+                self.scan_state['saved_data_type'] = None
             logger.error(f"Failed to start scan: {e}")
             raise e
 
@@ -3743,7 +4195,8 @@ class MicroscopeHyphaService:
                 "success": True,
                 "state": self.scan_state['state'],
                 "error_message": self.scan_state['error_message'],
-                "saved_data_type": self.scan_state['saved_data_type']
+                "saved_data_type": self.scan_state['saved_data_type'],
+                "busy_status": self._get_busy_status_snapshot(),
             }
 
         except Exception as e:
@@ -3780,21 +4233,17 @@ class MicroscopeHyphaService:
             # Call controller's stop method
             self.squidController.stop_scan_and_stitching()
 
-            # Cancel the scan task
-            if self.scan_state['scan_task'] and not self.scan_state['scan_task'].done():
-                self.scan_state['scan_task'].cancel()
-                logger.info("Cancelled scan task")
-
-                # Wait a moment for cancellation to propagate
+            task = self.scan_state['scan_task']
+            if task and not task.done():
                 try:
-                    await asyncio.wait_for(self.scan_state['scan_task'], timeout=1.0)
-                except (asyncio.CancelledError, asyncio.TimeoutError):
-                    pass
-
-            # Update state
-            self.scan_state['state'] = 'failed'
-            self.scan_state['error_message'] = 'Scan cancelled by user'
-            self.scan_state['scan_task'] = None
+                    await asyncio.wait_for(asyncio.shield(task), timeout=1.0)
+                except asyncio.TimeoutError:
+                    logger.info("Scan cancellation is still in progress in the background")
+                    return {
+                        "success": True,
+                        "message": "Scan cancellation requested; scan is stopping in the background",
+                        "state": self.scan_state['state']
+                    }
 
             logger.info("Scan cancelled successfully")
 
@@ -3858,26 +4307,27 @@ class MicroscopeHyphaService:
             if self.squidController.filter_wheel is None:
                 raise Exception("Filter wheel not available on this microscope")
 
-            # Handle case where parameters might be passed as a dictionary
-            if isinstance(position, dict):
-                # Extract position from dictionary
-                logger.info(f"Received dictionary parameters: {position}")
-                position_value = position.get('position', 1)
-            else:
-                # Convert position to int in case it's an ObjectProxy
-                logger.info(f"Received position as: {type(position)} = {position}")
-                position_value = int(position)
+            async with self._async_operation_context("set_filter_wheel_position", "hardware"):
+                # Handle case where parameters might be passed as a dictionary
+                if isinstance(position, dict):
+                    # Extract position from dictionary
+                    logger.info(f"Received dictionary parameters: {position}")
+                    position_value = position.get('position', 1)
+                else:
+                    # Convert position to int in case it's an ObjectProxy
+                    logger.info(f"Received position as: {type(position)} = {position}")
+                    position_value = int(position)
 
-            success = self.squidController.filter_wheel.set_filter_position(position_value)
+                success = self.squidController.filter_wheel.set_filter_position(position_value)
 
-            if success:
-                logger.info(f"Filter wheel moved to position {position_value}")
-                return {
-                    "success": True,
-                    "position": position_value,
-                    "message": f"Filter wheel set to position {position_value}"
-                }
-            else:
+                if success:
+                    logger.info(f"Filter wheel moved to position {position_value}")
+                    return {
+                        "success": True,
+                        "position": position_value,
+                        "message": f"Filter wheel set to position {position_value}"
+                    }
+
                 raise Exception(f"Failed to set filter wheel to position {position_value}")
 
         except Exception as e:
@@ -3922,16 +4372,17 @@ class MicroscopeHyphaService:
             if self.squidController.filter_wheel is None:
                 raise Exception("Filter wheel not available on this microscope")
 
-            success = self.squidController.filter_wheel.next_position()
+            async with self._async_operation_context("next_filter_position", "hardware"):
+                success = self.squidController.filter_wheel.next_position()
 
-            if success:
-                position = self.squidController.filter_wheel.get_filter_position()
-                return {
-                    "success": True,
-                    "position": position,
-                    "message": f"Moved to filter position {position}"
-                }
-            else:
+                if success:
+                    position = self.squidController.filter_wheel.get_filter_position()
+                    return {
+                        "success": True,
+                        "position": position,
+                        "message": f"Moved to filter position {position}"
+                    }
+
                 raise Exception("Failed to move to next filter position")
 
         except Exception as e:
@@ -3952,16 +4403,17 @@ class MicroscopeHyphaService:
             if self.squidController.filter_wheel is None:
                 raise Exception("Filter wheel not available on this microscope")
 
-            success = self.squidController.filter_wheel.previous_position()
+            async with self._async_operation_context("previous_filter_position", "hardware"):
+                success = self.squidController.filter_wheel.previous_position()
 
-            if success:
-                position = self.squidController.filter_wheel.get_filter_position()
-                return {
-                    "success": True,
-                    "position": position,
-                    "message": f"Moved to filter position {position}"
-                }
-            else:
+                if success:
+                    position = self.squidController.filter_wheel.get_filter_position()
+                    return {
+                        "success": True,
+                        "position": position,
+                        "message": f"Moved to filter position {position}"
+                    }
+
                 raise Exception("Failed to move to previous filter position")
 
         except Exception as e:
@@ -3987,75 +4439,76 @@ class MicroscopeHyphaService:
             if self.squidController.objective_switcher is None:
                 raise Exception("Objective switcher not available on this microscope")
 
-            # Handle case where parameters might be passed as a dictionary
-            if isinstance(objective_name, dict):
-                # Extract parameters from dictionary
-                logger.info(f"Received dictionary parameters: {objective_name}")
-                objective_name_str = str(objective_name.get('objective_name', ''))
-                move_z = objective_name.get('move_z', True)
-            else:
-                # Convert objective_name to string in case it's an ObjectProxy
-                logger.info(f"Received objective_name as: {type(objective_name)} = {objective_name}")
-                objective_name_str = str(objective_name)
+            async with self._async_operation_context("switch_objective", "hardware"):
+                # Handle case where parameters might be passed as a dictionary
+                if isinstance(objective_name, dict):
+                    # Extract parameters from dictionary
+                    logger.info(f"Received dictionary parameters: {objective_name}")
+                    objective_name_str = str(objective_name.get('objective_name', ''))
+                    move_z = objective_name.get('move_z', True)
+                else:
+                    # Convert objective_name to string in case it's an ObjectProxy
+                    logger.info(f"Received objective_name as: {type(objective_name)} = {objective_name}")
+                    objective_name_str = str(objective_name)
 
-            # Validate that we have a valid objective name
-            if not objective_name_str or objective_name_str.strip() == '':
-                raise Exception("No objective name provided")
+                # Validate that we have a valid objective name
+                if not objective_name_str or objective_name_str.strip() == '':
+                    raise Exception("No objective name provided")
 
-            logger.info(f"Looking for objective: '{objective_name_str}'")
+                logger.info(f"Looking for objective: '{objective_name_str}'")
 
-            # Get available objectives and their positions
-            position_names = self.squidController.objective_switcher.get_position_names()
-            logger.info(f"Available objectives: {position_names}")
+                # Get available objectives and their positions
+                position_names = self.squidController.objective_switcher.get_position_names()
+                logger.info(f"Available objectives: {position_names}")
 
-            # Find the position for the requested objective
-            position = None
-            for pos, name in position_names.items():
-                if name.lower() == objective_name_str.lower():
-                    position = pos
-                    break
+                # Find the position for the requested objective
+                position = None
+                for pos, name in position_names.items():
+                    if name.lower() == objective_name_str.lower():
+                        position = pos
+                        break
 
-            if position is None:
-                available_objectives = list(position_names.values())
-                raise Exception(f"Objective '{objective_name_str}' not found. Available objectives: {available_objectives}")
+                if position is None:
+                    available_objectives = list(position_names.values())
+                    raise Exception(f"Objective '{objective_name_str}' not found. Available objectives: {available_objectives}")
 
-            # Move to the found position
-            if position == 1:
-                success = self.squidController.objective_switcher.move_to_position_1(move_z=move_z)
-            elif position == 2:
-                success = self.squidController.objective_switcher.move_to_position_2(move_z=move_z)
-            else:
-                raise Exception(f"Invalid objective position: {position}")
+                # Move to the found position
+                if position == 1:
+                    success = self.squidController.objective_switcher.move_to_position_1(move_z=move_z)
+                elif position == 2:
+                    success = self.squidController.objective_switcher.move_to_position_2(move_z=move_z)
+                else:
+                    raise Exception(f"Invalid objective position: {position}")
 
-            if success:
-                logger.info(f"Objective switcher switched to {objective_name_str} (position {position})")
+                if success:
+                    logger.info(f"Objective switcher switched to {objective_name_str} (position {position})")
 
-                # Update objective-related parameters after successful switch
-                try:
-                    # Update the current objective in objectiveStore
-                    self.squidController.objectiveStore.current_objective = objective_name_str
-                    logger.info(f"Updated objectiveStore.current_objective to: {objective_name_str}")
+                    # Update objective-related parameters after successful switch
+                    try:
+                        # Update the current objective in objectiveStore
+                        self.squidController.objectiveStore.current_objective = objective_name_str
+                        logger.info(f"Updated objectiveStore.current_objective to: {objective_name_str}")
 
-                    # Recalculate pixel size and related parameters
-                    self.squidController.get_pixel_size()
-                    logger.info(f"Recalculated pixel size: {self.squidController.pixel_size_xy} µm")
+                        # Recalculate pixel size and related parameters
+                        self.squidController.get_pixel_size()
+                        logger.info(f"Recalculated pixel size: {self.squidController.pixel_size_xy} µm")
 
-                    # Log the updated parameters
-                    logger.info(f"Objective switch completed - New objective: {objective_name_str}, "
-                              f"Pixel size: {self.squidController.pixel_size_xy} µm")
+                        # Log the updated parameters
+                        logger.info(f"Objective switch completed - New objective: {objective_name_str}, "
+                                  f"Pixel size: {self.squidController.pixel_size_xy} µm")
 
-                except Exception as param_error:
-                    logger.warning(f"Failed to update objective parameters: {param_error}")
-                    # Don't fail the entire operation if parameter update fails
+                    except Exception as param_error:
+                        logger.warning(f"Failed to update objective parameters: {param_error}")
+                        # Don't fail the entire operation if parameter update fails
 
-                return {
-                    "success": True,
-                    "objective_name": objective_name_str,
-                    "position": position,
-                    "pixel_size_xy": getattr(self.squidController, 'pixel_size_xy', None),
-                    "message": f"Switched to objective {objective_name_str}"
-                }
-            else:
+                    return {
+                        "success": True,
+                        "objective_name": objective_name_str,
+                        "position": position,
+                        "pixel_size_xy": getattr(self.squidController, 'pixel_size_xy', None),
+                        "message": f"Switched to objective {objective_name_str}"
+                    }
+
                 raise Exception(f"Failed to switch to objective {objective_name_str}")
 
         except Exception as e:
@@ -4117,15 +4570,16 @@ class MicroscopeHyphaService:
             if self.squidController.objective_switcher is None:
                 raise Exception("Objective switcher not available on this microscope")
 
-            success = self.squidController.objective_switcher.set_speed(speed)
+            async with self._async_operation_context("set_objective_switcher_speed", "hardware"):
+                success = self.squidController.objective_switcher.set_speed(speed)
 
-            if success:
-                return {
-                    "success": True,
-                    "speed": speed,
-                    "message": f"Objective switcher speed set to {speed}"
-                }
-            else:
+                if success:
+                    return {
+                        "success": True,
+                        "speed": speed,
+                        "message": f"Objective switcher speed set to {speed}"
+                    }
+
                 raise Exception("Failed to set objective switcher speed")
 
         except Exception as e:
@@ -4169,4 +4623,3 @@ class MicroscopeHyphaService:
         except Exception as e:
             logger.error(f"Error getting available objectives: {e}")
             raise e
-
