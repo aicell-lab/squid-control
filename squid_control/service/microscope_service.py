@@ -2629,6 +2629,13 @@ class MicroscopeHyphaService:
             "process_timelapse_offline": self.process_timelapse_offline,
         }
 
+        # Simulation-only sample switching endpoints should be available on the
+        # main microscope service because the UI connects to this service, not
+        # the separate MCP service.
+        if self.is_simulation:
+            service_config["list_simulation_samples"] = self.list_simulation_samples
+            service_config["switch_sample"] = self.switch_sample
+
         # Conditionally register Squid+ specific endpoints
         if self.is_squid_plus:
             squid_plus_endpoints = {
