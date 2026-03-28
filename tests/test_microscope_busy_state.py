@@ -64,6 +64,25 @@ def _install_service_stubs() -> None:
         CACHE_CONFIG_FILE_PATH="",
     )
 
+    # Add SIMULATED_CAMERA class to prevent import errors in other tests
+    class SIMULATED_CAMERA:
+        ORIN_X = 20
+        ORIN_Y = 20
+        ORIN_Z = 4
+        MAGNIFICATION_FACTOR = 80
+
+    config_module.SIMULATED_CAMERA = SIMULATED_CAMERA
+
+    # Add wellplate format classes
+    class WELLPLATE_FORMAT_96:
+        NUMBER_OF_SKIP = 0
+        WELL_SIZE_MM = 6.21
+        WELL_SPACING_MM = 9
+        A1_X_MM = 14.3
+        A1_Y_MM = 11.36
+
+    config_module.WELLPLATE_FORMAT_96 = WELLPLATE_FORMAT_96
+
     class ChannelMapper:
         @staticmethod
         def get_id_to_param_map():
