@@ -1,11 +1,15 @@
 import asyncio
 import os
 import shutil
+import sys
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+
+# Save original sys.modules state for restoration after tests that modify it
+_original_sys_modules = dict(sys.modules)
 
 # Configure matplotlib environment BEFORE any matplotlib import
 os.environ['MPLBACKEND'] = 'Agg'
@@ -208,3 +212,23 @@ def pytest_runtest_setup(item):
         import os
         if not os.environ.get("REEF_WORKSPACE_TOKEN"):
             pytest.skip("REEF_WORKSPACE_TOKEN not set - skipping integration test")
+
+@pytest.fixture(autouse=True, scope="function")
+def cleanup_sys_modules_after_busy_state_tests(request):
+    """Clean up sys.modules after test_microscope_busy_state tests to prevent import pollution."""
+    yield
+    
+    # After test_microscope_busy_state tests run, restore sys.modules
+    if "test_microscope_busy_state" in request.node.nodeid:
+        # Remove any modules that were added by the test stubs
+        modules_to_remove = [
+            key for key in list(sys.modules.keys())
+            if key not in _original_sys_modules and key.startswith(("squid_control", "hypha_rpc", "aiortc"))
+        ]
+        for mod in modules_to_remove:
+            del sys.modules[mod]
+        
+        # Restore original modules that were replaced
+        for key, mod in _original_sys_modules.items():
+            if key.startswith(("squid_control", "hypha_rpc", "aiortc")):
+                sys.modules[key] = mod

@@ -111,6 +111,11 @@ def _install_service_stubs() -> None:
     video_stream_module.MicroscopeVideoTrack = type("MicroscopeVideoTrack", (), {})
     sys.modules["squid_control.service.video_stream"] = video_stream_module
 
+    # Add stub for simulation_zarr_asgi module (imported by microscope_service.py)
+    simulation_zarr_module = types.ModuleType("squid_control.service.simulation_zarr_asgi")
+    simulation_zarr_module.create_simulation_zarr_asgi_app = lambda *args, **kwargs: None
+    sys.modules["squid_control.service.simulation_zarr_asgi"] = simulation_zarr_module
+
     logging_utils_module = types.ModuleType("squid_control.utils.logging_utils")
     logging_utils_module.setup_logging = logging.getLogger
     sys.modules["squid_control.utils.logging_utils"] = logging_utils_module
@@ -126,12 +131,16 @@ def _install_service_stubs() -> None:
     sys.modules["squid_control.simulation.samples"] = simulation_module
 
 
+# Module-level cache for the service module
+_service_module_cache = None
+
 def _load_service_module():
+    global _service_module_cache
+    if _service_module_cache is not None:
+        return _service_module_cache
+
     _install_service_stubs()
     module_name = "busy_state_test_service_module"
-    existing_module = sys.modules.get(module_name)
-    if existing_module is not None:
-        return existing_module
 
     module_path = (
         Path(__file__).resolve().parents[1]
@@ -145,12 +154,26 @@ def _load_service_module():
     assert spec.loader is not None
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
+    _service_module_cache = module
     return module
 
 
-service_module = _load_service_module()
-MicroscopeBusyError = service_module.MicroscopeBusyError
-MicroscopeHyphaService = service_module.MicroscopeHyphaService
+# Lazy load only when tests run
+MicroscopeBusyError = None
+MicroscopeHyphaService = None
+
+def _ensure_loaded():
+    global MicroscopeBusyError, MicroscopeHyphaService
+    if MicroscopeBusyError is None:
+        service_module = _load_service_module()
+        MicroscopeBusyError = service_module.MicroscopeBusyError
+        MicroscopeHyphaService = service_module.MicroscopeHyphaService
+
+@pytest.fixture(scope="module", autouse=True)
+def _load_module_fixture():
+    """Fixture to ensure the service module is loaded before tests run."""
+    _ensure_loaded()
+    yield
 
 pytestmark = pytest.mark.asyncio
 
@@ -192,11 +215,16 @@ class FakeController:
 
 @pytest.fixture
 def microscope_service():
+    _ensure_loaded()
     service = MicroscopeHyphaService.__new__(MicroscopeHyphaService)
     service.authorized_emails = None
     service.is_simulation = True
     service.is_local = True
     service.config_name = None
+    service.service_id = "test-microscope-service"
+    service.simulation_zarr_url = "http://localhost:9999"
+    service.active_simulation_sample = None
+    service.server = None
     service.current_x = 0
     service.current_y = 0
     service.current_z = 0
