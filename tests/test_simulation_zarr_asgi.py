@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,12 @@ from squid_control.service.simulation_zarr_asgi import create_simulation_zarr_as
 
 
 LOGGER = logging.getLogger(__name__)
+
+# Skip all tests in this file when running on GitHub Actions (no simulated data available)
+pytestmark = pytest.mark.skipif(
+    os.environ.get("GITHUB_ACTIONS") == "true",
+    reason="Simulated data not available in GitHub Actions environment"
+)
 
 
 def _write_zarr_dataset(
