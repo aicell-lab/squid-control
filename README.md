@@ -213,6 +213,16 @@ python -m squid_control microscope --simulation
 
 ---
 
+## Troubleshooting
+
+**SSHFS permission denied in Python threads:** When mounting a remote disk via SSHFS, add the `allow_other` option and ensure `user_allow_other` is enabled in `/etc/fuse.conf`:
+
+```bash
+sshfs user@host:/remote/path /local/mount -o allow_other
+```
+
+---
+
 ## Fork Notice
 
 This repository is a fork of [octopi-research](https://github.com/hongquanli/octopi-research) by Hongquan Li, extended with Hypha integration, WebRTC streaming, Zarr stitching, simulation mode, and a cloud mirror service.
