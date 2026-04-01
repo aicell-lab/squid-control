@@ -64,6 +64,7 @@ Connects to the Teensy 4.1 microcontroller over USB and registers the microscope
 ### Local mode (private server)
 
 ```bash
+# conda activate 'squid' or 'source venv/bin/activate'
 python -m squid_control microscope --local
 ```
 
@@ -208,6 +209,7 @@ Simulation requires no physical hardware. The virtual microscope:
 - Falls back to example images if network is unavailable
 
 ```bash
+# conda activate 'squid' or 'source venv/bin/activate'
 python -m squid_control microscope --simulation
 ```
 

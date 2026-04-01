@@ -6,7 +6,7 @@ set -e
 
 MOUNT_POINT="$HOME/reef_harddisk"
 REMOTE_PATH="tao@192.168.2.1:/media/reef/harddisk"
-SSH_KEY="$HOME/.ssh/id_rsa"
+SSH_KEY="$HOME/.ssh/id_ed25519" # or  id_rsa depending on your key type
 
 # Get current user's UID and GID
 USER_UID=$(id -u)
