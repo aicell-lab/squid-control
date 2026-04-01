@@ -4279,7 +4279,7 @@ class MicroscopeHyphaService:
 
             operation_token = self._acquire_operation(
                 "get_stitched_region",
-                "processing",
+                "visualization",
                 metadata={"experiment_name": experiment_name},
             )
             if operation_token is not None:
