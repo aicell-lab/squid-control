@@ -454,7 +454,7 @@ class MicroscopeHyphaService:
 
         normalized = []
         for scope in scopes:
-            if scope not in {"hardware", "processing"}:
+            if scope not in {"hardware", "processing", "visualization"}:
                 raise ValueError(f"Unknown operation scope: {scope}")
             if scope not in normalized:
                 normalized.append(scope)
@@ -4269,21 +4269,11 @@ class MicroscopeHyphaService:
         Returns: Dictionary with success status, base64 PNG or array data, shape, dtype, is_rgb flag, channels_used list, and region metadata.
         Notes: Automatically spans multiple wells if region crosses boundaries. Multiple channels merge into RGB with channel-specific colors (BF=white, 405nm=blue, 488nm=green, 561nm=yellow, 638nm=red, 730nm=magenta).
         """
-        operation_token = None
-        reset_token = None
         try:
             # Check authentication
             if context and not self.check_permission(context.get("user", {})):
                 logger.warning("User not authorized to access this service")
                 raise Exception("User not authorized to access this service")
-
-            operation_token = self._acquire_operation(
-                "get_stitched_region",
-                "visualization",
-                metadata={"experiment_name": experiment_name},
-            )
-            if operation_token is not None:
-                reset_token = self._operation_context_token.set(operation_token)
 
             # Parse channel_name string into a list
             if isinstance(channel_name, str):
@@ -4477,10 +4467,6 @@ class MicroscopeHyphaService:
         except Exception as e:
             logger.error(f"Failed to get stitched region: {e}", exc_info=True)
             raise e
-        finally:
-            if operation_token is not None:
-                self._release_operation(operation_token)
-                self._operation_context_token.reset(reset_token)
 
     def _merge_channels_to_rgb(self, channel_regions):
         """
