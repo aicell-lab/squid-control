@@ -68,16 +68,68 @@ from squid_control.utils.logging_utils import setup_logging
 logger = setup_logging("squid_controller.log")
 
 class SquidController(ScanningMixin, AcquisitionMixin):
-    fps_software_trigger= 10
+    fps_software_trigger = 10
 
-    def __init__(self, is_simulation, config_name=None, *args, **kwargs):
-        super().__init__(*args,**kwargs)
+    @staticmethod
+    def build_from_config(
+        is_simulation: bool = False,
+        config_name: str | None = None,
+        skip_init: bool = False
+    ) -> "SquidController":
+        """Factory method to create a SquidController with clean separation of concerns.
+        
+        This factory pattern separates configuration loading, object construction,
+        and hardware initialization for better testability and flexibility.
+        
+        Args:
+            is_simulation: Whether to run in simulation mode
+            config_name: Configuration profile name (e.g., 'HCS_v2', 'HCS_v2_63x')
+            skip_init: If True, skip hardware homing and setup (for testing/restart)
+            
+        Returns:
+            SquidController instance ready for use
+            
+        Example:
+            # For normal operation
+            controller = SquidController.build_from_config(is_simulation=True)
+            
+            # For testing without homing
+            controller = SquidController.build_from_config(skip_init=True)
+        """
+        controller = SquidController(
+            is_simulation=is_simulation,
+            config_name=config_name,
+            skip_init=skip_init
+        )
+        return controller
+
+    def __init__(
+        self,
+        is_simulation: bool,
+        config_name: str | None = None,
+        skip_init: bool = False
+    ) -> None:
+        """Initialize SquidController.
+        
+        Note: This constructor performs full hardware initialization including
+        homing. For more control, use SquidController.build_from_config() which
+        provides a factory pattern with skip_init option.
+        
+        Args:
+            is_simulation: Whether to run in simulation mode
+            config_name: Configuration profile name (optional)
+            skip_init: If True, skip hardware homing and setup
+        """
+        # Note: Mixins don't define __init__, so we don't need super() call
+        # super().__init__()  # object.__init__() accepts no arguments
+        
         self.data_channel = None
         self.is_simulation = is_simulation
         self.config_name = config_name
         self.is_busy = False
         self.scan_stop_requested = False  # Flag to stop ongoing scans
         self.zarr_artifact_manager = None  # Initialize zarr artifact manager to None
+        self._skip_init = skip_init  # Store for setup_hardware() method
         if is_simulation:
             # Use specified config name or default to HCS_v2_example
             config_file = f'configuration_{config_name}_example.ini' if config_name else 'configuration_HCS_v2_example.ini'
@@ -267,6 +319,16 @@ class SquidController(ScanningMixin, AcquisitionMixin):
                 self.autofocusController,
             )
 
+        # Hardware setup phase (can be skipped with skip_init=True)
+        if not self._skip_init:
+            self._perform_hardware_homing_and_setup()
+        else:
+            logger.info("skip_init=True: Skipping hardware homing and setup")
+            # Still initialize Squid+ hardware objects but don't home
+            self._initialize_squid_plus_hardware()
+            
+    def _perform_hardware_homing_and_setup(self) -> None:
+        """Perform hardware homing and initialization. Called from __init__ unless skip_init=True."""
         # retract the objective
         self.navigationController.home_z()
         # wait for the operation to finish
@@ -274,8 +336,7 @@ class SquidController(ScanningMixin, AcquisitionMixin):
         while self.microcontroller.is_busy():
             time.sleep(0.005)
             if time.time() - t0 > 10:
-                logger.error("z homing timeout, the program will exit")
-                exit()
+                raise TimeoutError("Z homing timeout - stage may be stuck or limit switch faulty")
         logger.info("objective retracted")
 
         # Initialize Squid+ hardware after basic setup (creates objects but doesn't home yet)
@@ -312,32 +373,31 @@ class SquidController(ScanningMixin, AcquisitionMixin):
         )
 
         # home XY, set zero and set software limit
-        logger.info("home xy")
-        timestamp_start = time.time()
-        # x needs to be at > + 20 mm when homing y
-        self.navigationController.move_x(20)  # to-do: add blocking code
-        while self.microcontroller.is_busy():
-            time.sleep(0.005)
-        # home y
-        self.navigationController.home_y()
-        t0 = time.time()
-        while self.microcontroller.is_busy():
-            time.sleep(0.005)
-            if time.time() - t0 > 10:
-                logger.error("y homing timeout, the program will exit")
-                exit()
-        self.navigationController.zero_y()
-        # home x
-        self.navigationController.home_x()
-        t0 = time.time()
-        while self.microcontroller.is_busy():
-            time.sleep(0.005)
-            if time.time() - t0 > 10:
-                logger.error("y homing timeout, the program will exit")
-                exit()
-        self.navigationController.zero_x()
-        self.slidePositionController.homing_done = True
-        logger.info("home xy done")
+        if not self._skip_init:
+            logger.info("home xy")
+            timestamp_start = time.time()
+            # x needs to be at > + 20 mm when homing y
+            self.navigationController.move_x(20)  # to-do: add blocking code
+            while self.microcontroller.is_busy():
+                time.sleep(0.005)
+            # home y
+            self.navigationController.home_y()
+            t0 = time.time()
+            while self.microcontroller.is_busy():
+                time.sleep(0.005)
+                if time.time() - t0 > 10:
+                    raise TimeoutError("Y homing timeout - stage may be stuck or limit switch faulty")
+            self.navigationController.zero_y()
+            # home x
+            self.navigationController.home_x()
+            t0 = time.time()
+            while self.microcontroller.is_busy():
+                time.sleep(0.005)
+                if time.time() - t0 > 10:
+                    raise TimeoutError("X homing timeout - stage may be stuck or limit switch faulty")
+            self.navigationController.zero_x()
+            self.slidePositionController.homing_done = True
+            logger.info("home xy done")
 
         # Initialize filter wheel AFTER XY homing (matches official software pattern in gui_hcs.py setup_hardware)
         if hasattr(self, 'filter_wheel') and self.filter_wheel is not None:
@@ -360,23 +420,23 @@ class SquidController(ScanningMixin, AcquisitionMixin):
                 logger.warning("⚠️  Filter wheel is available but not homed - set SQUID_FILTERWHEEL_HOMING_ENABLED=True to enable")
 
         # move to scanning position
-        self.navigationController.move_x(32.3)
-        while self.microcontroller.is_busy():
-            time.sleep(0.005)
-        self.navigationController.move_y(29.35)
-        while self.microcontroller.is_busy():
-            time.sleep(0.005)
+        if not self._skip_init:
+            self.navigationController.move_x(32.3)
+            while self.microcontroller.is_busy():
+                time.sleep(0.005)
+            self.navigationController.move_y(29.35)
+            while self.microcontroller.is_busy():
+                time.sleep(0.005)
 
-        # move z
-        self.navigationController.move_z_to(CONFIG.DEFAULT_Z_POS_MM)
-        # wait for the operation to finish
+            # move z
+            self.navigationController.move_z_to(CONFIG.DEFAULT_Z_POS_MM)
+            # wait for the operation to finish
 
-        t0 = time.time()
-        while self.microcontroller.is_busy():
-            time.sleep(0.005)
-            if time.time() - t0 > 5:
-                logger.error("z return timeout, the program will exit")
-                exit()
+            t0 = time.time()
+            while self.microcontroller.is_busy():
+                time.sleep(0.005)
+                if time.time() - t0 > 5:
+                    raise TimeoutError("Z return timeout - stage may be stuck")
 
         # set output's gains
         div = 1 if CONFIG.OUTPUT_GAINS.REFDIV is True else 0
@@ -476,7 +536,7 @@ class SquidController(ScanningMixin, AcquisitionMixin):
         # Clean up ZARR_PATH directory on startup
         #self._cleanup_zarr_directory() # Disabled for now
 
-    def get_pixel_size(self):
+    def get_pixel_size(self) -> None:
         """Calculate pixel size based on imaging parameters including binning factor."""
         try:
             tube_lens_mm = float(CONFIG.TUBE_LENS_MM)
@@ -513,7 +573,7 @@ class SquidController(ScanningMixin, AcquisitionMixin):
         logger.info(f"Pixel size: {self.pixel_size_xy} µm (binning factor: {binning_factor}, adjustment factor: {CONFIG.PIXEL_SIZE_ADJUSTMENT_FACTOR})")
 
 
-    def move_to_well(self,row,column, well_plate_type='96'):
+    def move_to_well(self, row: str, column: int, well_plate_type: str = '96') -> None:
         if well_plate_type == '6':
             wellplate_format = WELLPLATE_FORMAT_6
         elif well_plate_type == '12':
@@ -850,7 +910,45 @@ class SquidController(ScanningMixin, AcquisitionMixin):
 
         return True, x_pos_before, y_pos_before, z_pos_before, x_pos, y_pos, z_pos
 
-    def home_stage(self):
+    def setup_hardware(self) -> None:
+        """Explicit hardware setup when skip_init=True was used during construction.
+        
+        This method performs the hardware initialization that was skipped when
+        using the factory pattern with skip_init=True. Call this after construction
+        when you're ready to home the stage and initialize hardware.
+        
+        Example:
+            controller = SquidController.build_from_config(skip_init=True)
+            # ... do some config, checks, etc ...
+            controller.setup_hardware()  # Now home the stage
+            
+        Raises:
+            TimeoutError: If homing operations timeout
+            RuntimeError: If hardware initialization fails
+        """
+        if not self._skip_init:
+            logger.warning("setup_hardware() called but skip_init was False - hardware already initialized")
+            return
+            
+        logger.info("Performing deferred hardware setup...")
+        
+        try:
+            self._perform_hardware_homing_and_setup()
+            self._skip_init = False  # Mark as initialized
+            logger.info("Hardware setup completed successfully")
+        except TimeoutError:
+            logger.error("Hardware setup timed out")
+            raise
+        except Exception as e:
+            logger.error(f"Hardware setup failed: {e}")
+            raise RuntimeError(f"Hardware setup failed: {e}") from e
+
+    def home_stage(self) -> None:
+        """Home the stage (Z first, then XY).
+        
+        Raises:
+            TimeoutError: If homing operations timeout
+        """
         # retract the object
         self.navigationController.home_z()
         # wait for the operation to finish
@@ -858,8 +956,7 @@ class SquidController(ScanningMixin, AcquisitionMixin):
         while self.microcontroller.is_busy():
             time.sleep(0.005)
             if time.time() - t0 > 10:
-                logger.error('z homing timeout, the program will exit')
-                exit()
+                raise TimeoutError("Z homing timeout - stage may be stuck or limit switch faulty")
         logger.info('objective retracted')
         self.navigationController.set_z_limit_pos_mm(CONFIG.SOFTWARE_POS_LIMIT.Z_POSITIVE)
 
@@ -876,8 +973,7 @@ class SquidController(ScanningMixin, AcquisitionMixin):
         while self.microcontroller.is_busy():
             time.sleep(0.005)
             if time.time() - t0 > 10:
-                logger.error('y homing timeout, the program will exit')
-                exit()
+                raise TimeoutError("Y homing timeout - stage may be stuck or limit switch faulty")
         self.navigationController.zero_y()
         # home x
         self.navigationController.home_x()
@@ -885,13 +981,12 @@ class SquidController(ScanningMixin, AcquisitionMixin):
         while self.microcontroller.is_busy():
             time.sleep(0.005)
             if time.time() - t0 > 10:
-                logger.error('y homing timeout, the program will exit')
-                exit()
+                raise TimeoutError("X homing timeout - stage may be stuck or limit switch faulty")
         self.navigationController.zero_x()
         self.slidePositionController.homing_done = True
         logger.info('home xy done')
 
-    def return_stage(self):
+    def return_stage(self) -> None:
         # move to scanning position
         self.navigationController.move_x(30.26)
         while self.microcontroller.is_busy():
@@ -909,7 +1004,7 @@ class SquidController(ScanningMixin, AcquisitionMixin):
             if time.time() - t0 > 5:
                 logger.error('z return timeout, the program will exit')
 
-    def close(self):
+    def close(self) -> None:
         # In simulation mode, skip stage movements to avoid delays
         if self.is_simulation:
             print("Simulation mode: Skipping stage close operations")
@@ -968,18 +1063,22 @@ class SquidController(ScanningMixin, AcquisitionMixin):
         if hasattr(self, 'experiment_manager'):
             self.experiment_manager.close()
 
-    def set_stage_velocity(self, velocity_x_mm_per_s=None, velocity_y_mm_per_s=None):
+    def set_stage_velocity(
+        self,
+        velocity_x_mm_per_s: float | None = None,
+        velocity_y_mm_per_s: float | None = None
+    ) -> dict[str, any]:
         """
         Set the maximum velocity for X and Y stage axes.
         
         Args:
-            velocity_x_mm_per_s (float, optional): Maximum velocity for X axis in mm/s. 
-                                                 If None, uses default from configuration.
-            velocity_y_mm_per_s (float, optional): Maximum velocity for Y axis in mm/s.
-                                                 If None, uses default from configuration.
+            velocity_x_mm_per_s: Maximum velocity for X axis in mm/s. 
+                                If None, uses default from configuration.
+            velocity_y_mm_per_s: Maximum velocity for Y axis in mm/s.
+                                If None, uses default from configuration.
         
         Returns:
-            dict: Status and current velocity settings
+            Dictionary with 'success' (bool), 'message' (str), and velocity settings
         """
         # Use default values from configuration if not specified
         if velocity_x_mm_per_s is None:
