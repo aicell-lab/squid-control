@@ -31,7 +31,12 @@ from pydantic import Field
 # Import from squid_control package
 try:
     from squid_control.hardware.camera import TriggerModeSetting
-    from squid_control.hardware.config import CONFIG, ChannelMapper
+    from squid_control.hardware.config import (
+        CONFIG,
+        ChannelMapper,
+        get_active_config_path,
+        update_ini_option,
+    )
     from squid_control.storage.snapshot_utils import SnapshotManager
     from squid_control.controller.squid_controller import SquidController
     from squid_control.simulation.samples import SAMPLE_ALIASES as _SAMPLE_ALIASES
@@ -43,7 +48,12 @@ except ImportError:
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
     from squid_control.hardware.camera import TriggerModeSetting
-    from squid_control.hardware.config import CONFIG, ChannelMapper
+    from squid_control.hardware.config import (
+        CONFIG,
+        ChannelMapper,
+        get_active_config_path,
+        update_ini_option,
+    )
     from squid_control.storage.snapshot_utils import SnapshotManager
     from squid_control.controller.squid_controller import SquidController
     from squid_control.simulation.samples import SAMPLE_ALIASES as _SAMPLE_ALIASES
@@ -2458,15 +2468,48 @@ class MicroscopeHyphaService:
                 settle_time_s=0.1,
             ):
                 if self.is_simulation:
-                    pass
+                    logger.info(
+                        "Simulation mode: skipping hardware laser reference calibration"
+                    )
                 else:
                     # Run the potentially blocking set_reference operation in a separate thread executor
                     # This prevents the asyncio event loop from being blocked during laser reference setting
-                    await asyncio.get_event_loop().run_in_executor(
+                    await asyncio.get_running_loop().run_in_executor(
                         None,  # Use default ThreadPoolExecutor
                         self.squidController.laserAutofocusController.set_reference,
                     )
-                logger.info("The laser reference is set")
+
+                _, _, current_z_mm, _ = (
+                    self.squidController.navigationController.update_pos(
+                        self.squidController.microcontroller
+                    )
+                )
+                CONFIG.DEFAULT_Z_POS_MM = float(current_z_mm)
+
+                active_config_path = get_active_config_path()
+                if active_config_path:
+                    z_value = f"{current_z_mm:.6f}".rstrip("0").rstrip(".")
+                    update_ini_option(
+                        active_config_path,
+                        "GENERAL",
+                        "default_z_pos_mm",
+                        z_value,
+                    )
+                    logger.info(
+                        "Updated DEFAULT_Z_POS_MM to %s in %s",
+                        z_value,
+                        active_config_path,
+                    )
+                else:
+                    logger.warning(
+                        "Laser reference was set, but no active configuration file "
+                        "was found for persisting DEFAULT_Z_POS_MM."
+                    )
+
+                logger.info(
+                    "The laser reference is set and DEFAULT_Z_POS_MM updated to %.6f",
+                    current_z_mm,
+                )
                 return "The laser reference is set"
         except Exception as e:
             logger.error(f"Failed to set laser reference: {e}")

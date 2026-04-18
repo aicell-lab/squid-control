@@ -14,6 +14,10 @@ logger = logging.getLogger('squid_controller')
 class AcquisitionMixin:
     """Mixin providing image acquisition and autofocus for SquidController."""
 
+    async def _wait_for_stage(self):
+        while self.microcontroller.is_busy():
+            await asyncio.sleep(0.005)
+
     async def send_trigger_simulation(self, channel=0, intensity=100, exposure_time=100):
         logger.debug('Getting simulated image')
         current_x, current_y, current_z, *_ = self.navigationController.update_pos(microcontroller=self.microcontroller)
@@ -55,7 +59,26 @@ class AcquisitionMixin:
                 self.autofocusController.wait_till_autofocus_has_completed()
             else:
                 # Use laser autofocus as normal
-                self.laserAutofocusController.move_to_target(0)
+                try:
+                    self.laserAutofocusController.move_to_target(0)
+                except Exception as first_error:
+                    logger.warning(
+                        "Reflection autofocus failed at the current Z position. "
+                        "Retrying from DEFAULT_Z_POS_MM=%s. Original error: %s",
+                        CONFIG.DEFAULT_Z_POS_MM,
+                        first_error,
+                    )
+                    self.navigationController.move_z_to(CONFIG.DEFAULT_Z_POS_MM)
+                    await self._wait_for_stage()
+                    try:
+                        self.laserAutofocusController.move_to_target(0)
+                    except Exception as retry_error:
+                        logger.error(
+                            "Reflection autofocus retry from DEFAULT_Z_POS_MM=%s failed: %s",
+                            CONFIG.DEFAULT_Z_POS_MM,
+                            retry_error,
+                        )
+                        raise retry_error from first_error
 
     def measure_displacement(self):
         self.laserAutofocusController.measure_displacement()

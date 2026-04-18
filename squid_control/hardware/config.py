@@ -1,6 +1,7 @@
 import glob
 import json
 import os
+import re
 from configparser import ConfigParser
 from enum import Enum
 from pathlib import Path
@@ -55,6 +56,96 @@ def populate_class_from_dict(myclass, options):
         actualkey = key.upper()
         actualvalue = conf_attribute_reader(value)
         setattr(myclass, actualkey, actualvalue)
+
+
+def _default_config_candidates() -> list[Path]:
+    """Return common configuration file locations in priority order."""
+    config_root = Path(__file__).resolve().parent.parent
+    config_names = [
+        "configuration_Squid+.ini",
+        "configuration_HCS_v2.ini",
+        "configuration_Squid+_example.ini",
+        "configuration_HCS_v2_example.ini",
+        "configuration_HCS_v2_63x_example.ini",
+    ]
+    candidate_dirs = [config_root, config_root / "config"]
+
+    return [
+        directory / name
+        for directory in candidate_dirs
+        for name in config_names
+    ]
+
+
+def get_active_config_path() -> Optional[Path]:
+    """Resolve the active configuration file path if one is known."""
+    candidates: list[Path] = []
+
+    active_config_path = getattr(CONFIG, "ACTIVE_CONFIG_PATH", None)
+    if active_config_path:
+        candidates.append(Path(active_config_path))
+
+    cache_config_path = getattr(CONFIG, "CACHE_CONFIG_FILE_PATH", None)
+    if cache_config_path and os.path.exists(cache_config_path):
+        try:
+            with open(cache_config_path) as file:
+                cached_path = file.readline().strip()
+            if cached_path:
+                candidates.append(Path(cached_path))
+        except OSError:
+            pass
+
+    candidates.extend(_default_config_candidates())
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+
+    return None
+
+
+def update_ini_option(
+    config_path: str | Path,
+    section: str,
+    option: str,
+    value: str,
+) -> Path:
+    """Update a single INI option while preserving surrounding file formatting."""
+    resolved_path = Path(config_path).expanduser().resolve()
+    text = resolved_path.read_text()
+
+    section_pattern = re.compile(
+        rf"(?ms)^(\[{re.escape(section)}\]\s*$)(?P<body>.*?)(?=^\[|\Z)"
+    )
+    section_match = section_pattern.search(text)
+    option_pattern = re.compile(
+        rf"(?m)^(?P<prefix>\s*{re.escape(option)}\s*=\s*)(?P<current>.*?)(?P<suffix>\s*(?:[;#].*)?)$"
+    )
+
+    if section_match:
+        body = section_match.group("body")
+        option_match = option_pattern.search(body)
+        if option_match:
+            updated_body = option_pattern.sub(
+                rf"\g<prefix>{value}\g<suffix>",
+                body,
+                count=1,
+            )
+        else:
+            insertion = f"{option} = {value}\n"
+            separator = "" if body.endswith(("\n", "\r")) else "\n"
+            updated_body = f"{body}{separator}{insertion}"
+        updated_text = (
+            text[: section_match.start("body")]
+            + updated_body
+            + text[section_match.end("body") :]
+        )
+    else:
+        separator = "" if not text or text.endswith(("\n", "\r")) else "\n"
+        updated_text = f"{text}{separator}[{section}]\n{option} = {value}\n"
+
+    resolved_path.write_text(updated_text)
+    return resolved_path
 
 
 class AcquisitionSetting(BaseModel):
@@ -746,6 +837,7 @@ class BaseConfig(BaseModel):
 
     SHOW_DAC_CONTROL: bool = False
     CACHE_CONFIG_FILE_PATH: str = None
+    ACTIVE_CONFIG_PATH: str = None
     CHANNEL_CONFIGURATIONS_PATH: str = os.path.join(os.path.dirname(os.path.dirname(__file__)), "config", "u2os_fucci_illumination_configurations.xml")
     LAST_COORDS_PATH: str = ""
 
@@ -813,6 +905,7 @@ class BaseConfig(BaseModel):
                                 setattr(self, section_upper, actualvalue)
                         else:
                             setattr(self, key.upper(), actualvalue)
+            self.ACTIVE_CONFIG_PATH = str(config_files[0])
             try:
                 with open(self.CACHE_CONFIG_FILE_PATH, "w") as file:
                     file.write(str(config_files[0]))
