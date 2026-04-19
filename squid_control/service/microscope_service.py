@@ -2759,6 +2759,7 @@ class MicroscopeHyphaService:
             "set_reflection_autofocus_reference": self.autofocus_set_reflection_reference,
             "contrast_autofocus": self.contrast_autofocus,
             "get_current_well_location": self.get_current_well_location,
+            "get_busy_status": self.get_busy_status,
             "get_status": self.get_status,
         }
 
