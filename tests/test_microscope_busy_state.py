@@ -97,6 +97,8 @@ def _install_service_stubs() -> None:
 
     config_module.ChannelMapper = ChannelMapper
     config_module.load_config = lambda *args, **kwargs: None
+    config_module.get_active_config_path = lambda: None
+    config_module.update_ini_option = lambda *args, **kwargs: None
     sys.modules["squid_control.hardware.config"] = config_module
 
     snapshot_module = types.ModuleType("squid_control.storage.snapshot_utils")

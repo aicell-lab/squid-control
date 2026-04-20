@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from squid_control.service.microscope_service import MicroscopeHyphaService
 from squid_control.service.simulation_zarr_asgi import create_simulation_zarr_asgi_app
 
 
@@ -129,7 +128,9 @@ def _prepare_service(
     )
     monkeypatch.setattr(config_module, "load_config", lambda *args, **kwargs: None)
 
-    service = MicroscopeHyphaService(is_simulation=True, is_local=True)
+    service = microscope_service_module.MicroscopeHyphaService(
+        is_simulation=True, is_local=True
+    )
     service.service_id = "test-simulated-microscope"
     service.simulation_zarr_url = (
         "https://example.test/reef-imaging/apps/test-simulated-microscope-zarr"
