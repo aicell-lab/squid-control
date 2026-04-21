@@ -1722,21 +1722,12 @@ class MicroscopeHyphaService:
                     channel_id, intensity, exposure_time
                 )
                 logger.info("The image is snapped")
-                # Image is already uint8 from snap_image method
 
                 if return_array:
                     return gray_img
 
-                # Encode the image directly to PNG without converting to BGR
+                # Encode + gather metadata while still holding hardware lock
                 _, png_image = cv2.imencode(".png", gray_img)
-
-                # Save using artifact manager (REQUIRED when not return_array)
-                if not self.snapshot_manager:
-                    raise Exception(
-                        "Snapshot manager not available. Ensure REEF_WORKSPACE_TOKEN is set."
-                    )
-
-                # Get current position for metadata
                 status = self.get_status()
                 metadata = {
                     "timestamp": time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime()),
@@ -1749,18 +1740,28 @@ class MicroscopeHyphaService:
                     "position_z": status.get("current_z"),
                     "microscope_service_id": self.service_id,
                 }
+                png_bytes = png_image.tobytes()
 
-                # Save using artifact manager
-                data_url = await self.snapshot_manager.save_snapshot(
-                    microscope_service_id=self.service_id,
-                    image_bytes=png_image.tobytes(),
-                    metadata=metadata,
-                )
-                logger.info(
-                    f"The image is snapped and saved to artifact manager as {data_url}"
+            # Hardware lock released — upload happens outside the critical section.
+            # The image data is already in memory, so the hardware is free for
+            # other operations while we upload.
+
+            # Save using artifact manager (REQUIRED when not return_array)
+            if not self.snapshot_manager:
+                raise Exception(
+                    "Snapshot manager not available. Ensure REEF_WORKSPACE_TOKEN is set."
                 )
 
-                return data_url
+            data_url = await self.snapshot_manager.save_snapshot(
+                microscope_service_id=self.service_id,
+                image_bytes=png_bytes,
+                metadata=metadata,
+            )
+            logger.info(
+                f"The image is snapped and saved to artifact manager as {data_url}"
+            )
+
+            return data_url
         except Exception as e:
             logger.error(f"Failed to snap image: {e}")
             raise e
@@ -2978,7 +2979,8 @@ class MicroscopeHyphaService:
         if self.artifact_manager:
             try:
                 self.snapshot_manager = SnapshotManager(self.artifact_manager)
-                logger.info("Snapshot manager initialized successfully")
+                self.snapshot_manager.start_flush_loop()
+                logger.info("Snapshot manager initialized successfully (flush loop started)")
             except Exception as e:
                 logger.warning(f"Failed to initialize snapshot manager: {e}")
                 self.snapshot_manager = None
