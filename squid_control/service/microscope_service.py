@@ -710,7 +710,15 @@ class MicroscopeHyphaService:
                     logger.warning(
                         f"Artifact manager health check failed: {str(artifact_error)}"
                     )
-                    # Don't raise an error for artifact manager issues as it's not critical for basic operation
+                    try:
+                        await self.artifact_manager.refresh_service()
+                        logger.info(
+                            "Artifact manager service proxy refreshed after health check failure"
+                        )
+                    except Exception as refresh_error:
+                        logger.warning(
+                            f"Could not refresh artifact manager proxy: {refresh_error}"
+                        )
             else:
                 logger.info("Artifact manager not initialized, skipping health check")
 
