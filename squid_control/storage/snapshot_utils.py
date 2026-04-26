@@ -17,6 +17,8 @@ from typing import Dict, Optional
 
 import httpx
 
+from hypha_rpc.rpc import RemoteException
+
 from .artifact_manager.artifact_manager import SquidArtifactManager
 
 logger = logging.getLogger(__name__)
@@ -339,7 +341,7 @@ class SnapshotManager:
                 pass
 
             if not _is_retry and isinstance(
-                exc, (asyncio.TimeoutError, ConnectionError, OSError)
+                exc, (asyncio.TimeoutError, ConnectionError, OSError, RemoteException)
             ):
                 logger.warning(
                     "Artifact manager upload failed (%s), refreshing proxy and retrying...",
