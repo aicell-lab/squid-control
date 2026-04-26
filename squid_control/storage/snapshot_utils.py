@@ -17,6 +17,8 @@ from typing import Dict, Optional
 
 import httpx
 
+from hypha_rpc.rpc import RemoteException
+
 from .artifact_manager.artifact_manager import SquidArtifactManager
 
 logger = logging.getLogger(__name__)
@@ -51,7 +53,6 @@ class SnapshotManager:
                         Defaults to /tmp/snapshot-buffer
         """
         self.artifact_manager = artifact_manager
-        self._svc = artifact_manager._svc
         self.workspace = "reef-imaging"
 
         # Local directory for safety-net persistence before upload
@@ -61,6 +62,16 @@ class SnapshotManager:
         # Background flush for crash recovery (orphaned local files)
         self._flush_task: Optional[asyncio.Task] = None
         self._stopping = False
+
+    @property
+    def _svc(self):
+        """Always read the current artifact-manager proxy.
+
+        Never caches a stale reference -- when artifact_manager.refresh_service()
+        is called after a connection error, this property automatically picks up
+        the fresh proxy.
+        """
+        return self.artifact_manager._svc
 
     async def get_or_create_snapshots_gallery(self, microscope_service_id: str) -> dict:
         """
@@ -245,17 +256,19 @@ class SnapshotManager:
             except Exception as exc:
                 last_exc = exc
                 logger.warning(
-                    "Upload attempt %d/%d failed: %s",
+                    "Upload attempt %d/%d failed: %s (%s)",
                     attempt,
                     self._MAX_RETRIES,
                     exc,
+                    type(exc).__name__,
                 )
                 if attempt < self._MAX_RETRIES:
                     await asyncio.sleep(self._RETRY_BACKOFF_S)
 
         # All retries exhausted — the background flush loop will pick this up.
         raise Exception(
-            f"Failed to upload snapshot after {self._MAX_RETRIES} attempts: {last_exc}. "
+            f"Failed to upload snapshot after {self._MAX_RETRIES} attempts: "
+            f"{type(last_exc).__name__}: {last_exc}. "
             f"Image is preserved locally at {local_path}"
         )
 
@@ -274,6 +287,7 @@ class SnapshotManager:
         filename: str,
         image_bytes: bytes,
         metadata: Dict,
+        _is_retry: bool = False,
     ) -> str:
         """Upload a single snapshot via the artifact manager RPC."""
         dataset = await self.get_or_create_daily_dataset(microscope_service_id)
@@ -320,11 +334,30 @@ class SnapshotManager:
             logger.info("Snapshot saved remotely: %s", file_url)
             return file_url
 
-        except Exception:
+        except Exception as exc:
             try:
                 await self._svc.discard(artifact_id=dataset["id"])
             except Exception:
                 pass
+
+            if not _is_retry and isinstance(
+                exc, (asyncio.TimeoutError, ConnectionError, OSError, RemoteException)
+            ):
+                logger.warning(
+                    "Artifact manager upload failed (%s), refreshing proxy and retrying...",
+                    type(exc).__name__,
+                )
+                try:
+                    await self.artifact_manager.refresh_service()
+                    return await self._upload_to_artifact_manager(
+                        microscope_service_id,
+                        filename,
+                        image_bytes,
+                        metadata,
+                        _is_retry=True,
+                    )
+                except Exception:
+                    pass
             raise
 
     # ------------------------------------------------------------------
@@ -381,7 +414,18 @@ class SnapshotManager:
                 image_path.unlink(missing_ok=True)
                 meta_path.unlink(missing_ok=True)
             except Exception as exc:
-                logger.warning("Flush failed for %s: %s", info["filename"], exc)
+                now = time.time()
+                if (
+                    not hasattr(self, "_last_flush_warning")
+                    or now - self._last_flush_warning > 60
+                ):
+                    logger.warning(
+                        "Flush failed for %s: %s (%s)",
+                        info["filename"],
+                        exc,
+                        type(exc).__name__,
+                    )
+                    self._last_flush_warning = now
                 remaining += 1
 
         return remaining

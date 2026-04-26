@@ -85,6 +85,15 @@ class SquidArtifactManager:
         self.server = server
         self._svc = await server.get_service("public/artifact-manager")
 
+    async def refresh_service(self):
+        """Re-acquire the artifact-manager service proxy from the existing connection.
+
+        Raises ConnectionError if the server connection is not available.
+        """
+        if self.server is None:
+            raise ConnectionError("Server connection not available")
+        self._svc = await self.server.get_service("public/artifact-manager")
+
 
     def _artifact_id(self, workspace, name):
         """
