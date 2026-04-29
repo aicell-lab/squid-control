@@ -502,6 +502,10 @@ class MicroscopeHyphaService:
             if token in self._operations_by_token
         ]
 
+    # Maximum time to wait for a blocking operation to finish before giving up.
+    _SCOPE_WAIT_TIMEOUT_S = 5.0
+    _SCOPE_WAIT_INTERVAL_S = 0.05
+
     def _acquire_operation(
         self,
         operation_name: str,
@@ -512,52 +516,62 @@ class MicroscopeHyphaService:
         requested_scopes = self._normalize_operation_scopes(scopes)
         current_token = self._operation_context_token.get()
 
-        with self._operation_state_lock:
-            current_record = (
-                self._operations_by_token.get(current_token)
-                if current_token is not None
-                else None
-            )
+        deadline = time.time() + self._SCOPE_WAIT_TIMEOUT_S
+        while True:
+            with self._operation_state_lock:
+                current_record = (
+                    self._operations_by_token.get(current_token)
+                    if current_token is not None
+                    else None
+                )
 
-            if current_record is not None:
-                current_scopes = set(current_record["scopes"])
-                if set(requested_scopes).issubset(current_scopes):
-                    if metadata:
-                        current_record["metadata"].update(metadata)
-                    return None
+                if current_record is not None:
+                    current_scopes = set(current_record["scopes"])
+                    if set(requested_scopes).issubset(current_scopes):
+                        if metadata:
+                            current_record["metadata"].update(metadata)
+                        return None
 
-            blocking_operations = self._find_blocking_operations(
-                requested_scopes,
-                current_token=current_token,
-            )
-            if blocking_operations:
+                blocking_operations = self._find_blocking_operations(
+                    requested_scopes,
+                    current_token=current_token,
+                )
+                if not blocking_operations:
+                    if current_record is not None:
+                        current_record["scopes"].update(requested_scopes)
+                        if metadata:
+                            current_record["metadata"].update(metadata)
+                        for scope in requested_scopes:
+                            self._scope_owners[scope] = current_token
+                        return None
+
+                    self._operation_counter += 1
+                    token = f"op-{self._operation_counter}"
+                    record = {
+                        "token": token,
+                        "name": operation_name,
+                        "scopes": set(requested_scopes),
+                        "started_at": time.time(),
+                        "metadata": dict(metadata or {}),
+                    }
+                    self._operations_by_token[token] = record
+                    for scope in requested_scopes:
+                        self._scope_owners[scope] = token
+                    return token
+
+            if time.time() >= deadline:
+                with self._operation_state_lock:
+                    blocking_operations = self._find_blocking_operations(
+                        requested_scopes,
+                        current_token=current_token,
+                    )
                 raise MicroscopeBusyError(
                     requested_operation=operation_name,
                     requested_scopes=list(requested_scopes),
                     blocking_operations=blocking_operations,
                 )
 
-            if current_record is not None:
-                current_record["scopes"].update(requested_scopes)
-                if metadata:
-                    current_record["metadata"].update(metadata)
-                for scope in requested_scopes:
-                    self._scope_owners[scope] = current_token
-                return None
-
-            self._operation_counter += 1
-            token = f"op-{self._operation_counter}"
-            record = {
-                "token": token,
-                "name": operation_name,
-                "scopes": set(requested_scopes),
-                "started_at": time.time(),
-                "metadata": dict(metadata or {}),
-            }
-            self._operations_by_token[token] = record
-            for scope in requested_scopes:
-                self._scope_owners[scope] = token
-            return token
+            time.sleep(self._SCOPE_WAIT_INTERVAL_S)
 
     def _release_operation(self, token: Optional[str]):
         if token is None:
@@ -711,9 +725,9 @@ class MicroscopeHyphaService:
                         f"Artifact manager health check failed: {str(artifact_error)}"
                     )
                     try:
-                        await self.artifact_manager.refresh_service()
+                        await self.artifact_manager._reset_and_reconnect()
                         logger.info(
-                            "Artifact manager service proxy refreshed after health check failure"
+                            "Artifact manager reconnected after health check failure"
                         )
                     except Exception as refresh_error:
                         logger.warning(
@@ -2968,7 +2982,12 @@ class MicroscopeHyphaService:
                         "workspace": "reef-imaging",
                     }
                 )
-                await self.artifact_manager.connect_server(artifact_server)
+                await self.artifact_manager.connect_server(
+                    artifact_server,
+                    server_url="https://hypha.aicell.io",
+                    token=artifact_token,
+                    workspace="reef-imaging",
+                )
                 logger.info("Artifact manager initialized successfully")
 
                 # Pass the artifact manager to the squid controller for zarr uploads

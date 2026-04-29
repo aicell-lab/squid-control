@@ -67,9 +67,9 @@ class SnapshotManager:
     def _svc(self):
         """Always read the current artifact-manager proxy.
 
-        Never caches a stale reference -- when artifact_manager.refresh_service()
-        is called after a connection error, this property automatically picks up
-        the fresh proxy.
+        Never caches a stale reference -- when
+        artifact_manager._reset_and_reconnect() is called after a connection
+        error, this property automatically picks up the fresh proxy.
         """
         return self.artifact_manager._svc
 
@@ -344,11 +344,11 @@ class SnapshotManager:
                 exc, (asyncio.TimeoutError, ConnectionError, OSError, RemoteException)
             ):
                 logger.warning(
-                    "Artifact manager upload failed (%s), refreshing proxy and retrying...",
+                    "Artifact manager upload failed (%s), disconnecting and reconnecting...",
                     type(exc).__name__,
                 )
                 try:
-                    await self.artifact_manager.refresh_service()
+                    await self.artifact_manager._reset_and_reconnect()
                     return await self._upload_to_artifact_manager(
                         microscope_service_id,
                         filename,
