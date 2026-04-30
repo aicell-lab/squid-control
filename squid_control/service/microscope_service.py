@@ -689,11 +689,9 @@ class MicroscopeHyphaService:
                     "Remote server not initialized, skipping remote health check"
                 )
 
-            # Check artifact manager connection if available
-            if self.artifact_manager is not None:
+            # Check artifact manager connection if available and connected
+            if self.artifact_manager is not None and self.artifact_manager._svc is not None:
                 try:
-                    # Test artifact manager connection by listing galleries
-                    # Use a simple gallery listing to test the connection
                     default_gallery_id = "reef-imaging/microscope-snapshots"
                     gallery_contents = await self.artifact_manager._svc.list(
                         parent_id=default_gallery_id
@@ -710,7 +708,10 @@ class MicroscopeHyphaService:
                     logger.warning(
                         f"Artifact manager health check failed: {str(artifact_error)}"
                     )
-                    # Don't raise an error for artifact manager issues as it's not critical for basic operation
+            elif self.artifact_manager is not None:
+                logger.info(
+                    "Artifact manager RPC disconnected (using HTTP-only snapshot uploads)"
+                )
             else:
                 logger.info("Artifact manager not initialized, skipping health check")
 
@@ -2959,7 +2960,12 @@ class MicroscopeHyphaService:
                         "workspace": "reef-imaging",
                     }
                 )
-                await self.artifact_manager.connect_server(artifact_server)
+                await self.artifact_manager.connect_server(
+                    artifact_server,
+                    server_url="https://hypha.aicell.io",
+                    token=artifact_token,
+                    workspace="reef-imaging",
+                )
                 logger.info("Artifact manager initialized successfully")
 
                 # Pass the artifact manager to the squid controller for zarr uploads
@@ -2978,7 +2984,9 @@ class MicroscopeHyphaService:
         if self.artifact_manager:
             try:
                 self.snapshot_manager = SnapshotManager(self.artifact_manager)
-                logger.info("Snapshot manager initialized successfully")
+                await self.snapshot_manager.initialize(self.service_id)
+                self.snapshot_manager.start_flush_loop()
+                logger.info("Snapshot manager initialized (RPC disconnected, HTTP-only uploads)")
             except Exception as e:
                 logger.warning(f"Failed to initialize snapshot manager: {e}")
                 self.snapshot_manager = None

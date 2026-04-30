@@ -8,6 +8,7 @@ For zarr dataset uploads, use the hypha-artifact package (AsyncHyphaArtifact) in
 For zarr visualization, use the vizarr package (GPU-accelerated, client-side viewer).
 """
 
+import logging
 import re
 
 import dotenv
@@ -19,6 +20,9 @@ ENV_FILE = dotenv.find_dotenv()
 if ENV_FILE:
     dotenv.load_dotenv(ENV_FILE)
 
+logger = logging.getLogger(__name__)
+
+
 class SquidArtifactManager:
     """
     Manages artifacts for the application.
@@ -29,6 +33,9 @@ class SquidArtifactManager:
     def __init__(self):
         self._svc = None
         self.server = None
+        self._server_url = None
+        self._token = None
+        self._workspace = None
 
     def _sanitize_dataset_name(self, name: str) -> str:
         """
@@ -75,15 +82,40 @@ class SquidArtifactManager:
         # Remove scan type and timestamp patterns from the end
         return re.sub(r'_(normal|quick)-scan(_\d{8}-\d+)?$', '', experiment_id)
 
-    async def connect_server(self, server):
+    async def connect_server(self, server, server_url=None, token=None, workspace=None):
         """
         Connect to the server.
 
         Args:
             server (Server): The server instance.
+            server_url: URL of the hypha server (stored for reconnection).
+            token: Auth token (stored for reconnection).
+            workspace: Workspace name (stored for reconnection).
         """
         self.server = server
+        self._server_url = server_url
+        self._token = token
+        self._workspace = workspace
         self._svc = await server.get_service("public/artifact-manager")
+
+    async def disconnect(self):
+        """Disconnect the server connection and clear the service proxy."""
+        if self.server:
+            try:
+                await self.server.disconnect()
+            except Exception as e:
+                logger.warning(f"Error disconnecting artifact-manager server: {e}")
+        self.server = None
+        self._svc = None
+        logger.info("Artifact manager disconnected")
+
+    @property
+    def server_url(self):
+        return self._server_url
+
+    @property
+    def token(self):
+        return self._token
 
 
     def _artifact_id(self, workspace, name):
