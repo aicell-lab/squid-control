@@ -3006,8 +3006,7 @@ class MicroscopeHyphaService:
         if self.artifact_manager:
             try:
                 self.snapshot_manager = SnapshotManager(self.artifact_manager)
-                self.snapshot_manager.start_flush_loop()
-                logger.info("Snapshot manager initialized successfully (flush loop started)")
+                logger.info("Snapshot manager initialized successfully")
             except Exception as e:
                 logger.warning(f"Failed to initialize snapshot manager: {e}")
                 self.snapshot_manager = None
