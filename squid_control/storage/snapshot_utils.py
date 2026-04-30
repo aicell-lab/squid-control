@@ -147,14 +147,26 @@ class SnapshotManager:
             f"{type(last_exc).__name__}: {last_exc}"
         )
 
+    async def _ensure_connection(self) -> None:
+        """Proactive health check before uploading — fast read on the gallery."""
+        try:
+            await self._svc.read(
+                artifact_id=f"{self.workspace}/microscope-snapshots"
+            )
+        except Exception:
+            logger.warning("Artifact manager health check failed, reconnecting...")
+            await self.artifact_manager._reset_and_reconnect()
+
     async def _upload_one(
         self,
         filename: str,
         image_bytes: bytes,
         metadata: Dict,
         microscope_service_id: str,
-        _is_retry: bool = False,
     ) -> str:
+        # Proactive health check before upload
+        await self._ensure_connection()
+
         dataset = await self.get_or_create_daily_dataset(microscope_service_id)
 
         await self._svc.edit(artifact_id=dataset["id"], stage=True)
@@ -191,27 +203,11 @@ class SnapshotManager:
             logger.info("Snapshot saved remotely: %s", file_url)
             return file_url
 
-        except Exception as exc:
+        except Exception:
             try:
                 await self._svc.discard(artifact_id=dataset["id"])
             except Exception:
                 pass
-
-            if not _is_retry and isinstance(
-                exc, (asyncio.TimeoutError, ConnectionError, OSError, RemoteException)
-            ):
-                logger.warning(
-                    "Artifact manager upload failed (%s), disconnecting and reconnecting...",
-                    type(exc).__name__,
-                )
-                try:
-                    await self.artifact_manager._reset_and_reconnect()
-                    return await self._upload_one(
-                        filename, image_bytes, metadata, microscope_service_id,
-                        _is_retry=True,
-                    )
-                except Exception:
-                    pass
             raise
 
     async def cleanup_test_datasets(self):

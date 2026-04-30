@@ -704,22 +704,12 @@ class MicroscopeHyphaService:
                 )
 
             # Check artifact manager connection if available
-            if self.artifact_manager is not None:
+            if self.artifact_manager is not None and self.artifact_manager._svc is not None:
                 try:
-                    # Test artifact manager connection by listing galleries
-                    # Use a simple gallery listing to test the connection
-                    default_gallery_id = "reef-imaging/microscope-snapshots"
-                    gallery_contents = await self.artifact_manager._svc.list(
-                        parent_id=default_gallery_id
+                    await self.artifact_manager._svc.read(
+                        artifact_id="reef-imaging/microscope-snapshots"
                     )
-                    if gallery_contents is None:
-                        logger.warning(
-                            "Artifact manager health check: No gallery_contents found, but connection is working"
-                        )
-                    else:
-                        logger.info(
-                            f"Artifact manager health check: Found {len(gallery_contents)} datasets"
-                        )
+                    logger.info("Artifact manager health check OK")
                 except Exception as artifact_error:
                     logger.warning(
                         f"Artifact manager health check failed: {str(artifact_error)}"
@@ -731,8 +721,10 @@ class MicroscopeHyphaService:
                         )
                     except Exception as refresh_error:
                         logger.warning(
-                            f"Could not refresh artifact manager proxy: {refresh_error}"
+                            f"Could not reconnect artifact manager: {refresh_error}"
                         )
+            elif self.artifact_manager is not None:
+                logger.info("Artifact manager RPC disconnected (using HTTP-only uploads)")
             else:
                 logger.info("Artifact manager not initialized, skipping health check")
 
